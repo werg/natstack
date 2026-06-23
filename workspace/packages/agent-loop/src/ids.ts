@@ -40,6 +40,24 @@ export const ids = {
     return `recv:${channelId}:${channelEnvelopeId}`;
   },
 
+  /** A promoted after-turn message's private recv copy. A NEW deterministic id
+   *  (not the arrival recv id) so `alreadyIngested`/store dedup never rejects
+   *  the promotion. `n` is the promotion seq. */
+  recvPromoted(sourceMessageId: string, n: number): string {
+    return `recv:promoted:${sourceMessageId}:${n}`;
+  },
+
+  /** Private trajectory copy of an edit mutation. `n` disambiguates repeated
+   *  edits of the same message. */
+  messageEdited(sourceMessageId: string, n: number): string {
+    return `msg:${sourceMessageId}:edited:${n}`;
+  },
+
+  /** Private trajectory copy of a retract mutation. */
+  messageRetracted(sourceMessageId: string, n: number): string {
+    return `msg:${sourceMessageId}:retracted:${n}`;
+  },
+
   turnOpened(turnId: string): string {
     return `turn:${turnId}:opened`;
   },

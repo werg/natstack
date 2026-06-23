@@ -72,6 +72,10 @@ export interface AgentTurnMetadata {
   delivery?: "none" | "channel" | "last-contact";
   ackToken?: string;
   silentOk?: boolean;
+  /** Send-after-turn intent: while a turn is open this message is held in the
+   *  deferred post-turn queue and promoted (one per turn) after close, instead
+   *  of steering the open turn. */
+  deliverAfterTurn?: boolean;
 }
 
 /** Config fields that are FOLD-OWNED: the reducer derives them from the log
@@ -124,6 +128,11 @@ export interface OpenTurn {
   /** count of turn.waiting events (drives waiting envelope id suffix). */
   waitingCount: number;
   metadata?: AgentTurnMetadata;
+  /** A soft "flush queued steers" interrupt is in flight: the in-flight model
+   *  call is being aborted, but the turn must CONTINUE (re-run the model with
+   *  the queued steers) rather than close. Distinct from `interrupted` (a hard
+   *  interrupt that closes the turn). Cleared when the next model call starts. */
+  pendingFlush?: "steers";
 }
 
 export interface InFlightModelCall {
@@ -173,6 +182,8 @@ export interface PendingCredentialWait {
 export interface SteeringEntry {
   envelopeId: string;
   seq: number;
+  /** Sender's canonical message id; the read-ack/edit/retract correlation key. */
+  sourceMessageId?: string;
   senderRef: ParticipantRef;
   content: unknown;
   metadata?: AgentTurnMetadata;
@@ -181,10 +192,23 @@ export interface SteeringEntry {
 export interface PendingPrompt {
   envelopeId: string;
   seq: number;
+  sourceMessageId?: string;
   senderRef: ParticipantRef;
   content: unknown;
   agentHops?: number;
   metadata?: AgentTurnMetadata;
+}
+
+/** A "send after turn" message held until the current turn closes, then
+ *  promoted (one per turn) into a fresh turn of its own. */
+export interface DeferredPrompt {
+  sourceMessageId: string;
+  envelopeId: string;
+  seq: number;
+  senderRef: ParticipantRef;
+  content: unknown;
+  metadata?: AgentTurnMetadata;
+  agentHops?: number;
 }
 
 /** Linear session entry — the materialized model-context path. */
@@ -193,6 +217,7 @@ export type SessionEntry =
       kind: "user";
       seq: number;
       envelopeId: string;
+      sourceMessageId?: string;
       senderRef?: ParticipantRef;
       content: unknown;
       metadata?: AgentTurnMetadata;
@@ -236,6 +261,8 @@ export interface AgentState {
   pendingCredentialWaits: Record<string, PendingCredentialWait>;
   steeringQueue: SteeringEntry[];
   pendingPrompt: PendingPrompt | null;
+  /** "Send after turn" messages, drained one per turn after each turn closes. */
+  deferredPostTurnQueue: DeferredPrompt[];
 }
 
 export const GENESIS_LAST_HASH =
@@ -269,6 +296,7 @@ export function initialAgentState(input: InitialStateInput): AgentState {
     pendingCredentialWaits: {},
     steeringQueue: [],
     pendingPrompt: null,
+    deferredPostTurnQueue: [],
   };
 }
 

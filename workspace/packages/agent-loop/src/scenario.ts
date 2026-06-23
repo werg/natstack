@@ -102,6 +102,10 @@ function registerEffects(scenario: Scenario, emitted: EffectDescriptor[]): void 
   const derived = derivePendingEffects(scenario.state);
   const derivable = new Set(derived.map((effect) => effect.effectId));
   for (const effect of emitted) {
+    // publish_envelope is best-effort and fire-and-forget (§1.4.6): the real
+    // driver inserts it directly and never re-derives it, so it is exempt from
+    // the reconstructibility subset check (mirrors the driver).
+    if (effect.kind === "publish_envelope") continue;
     if (!derivable.has(effect.effectId)) {
       throw new Error(
         `step emitted effect ${effect.effectId} that is not derivable from the folded state ` +

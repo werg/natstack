@@ -6,6 +6,7 @@
  */
 
 import {
+  AGENTIC_EVENT_PAYLOAD_KIND,
   AGENTIC_PROTOCOL_VERSION,
   type AgenticEvent,
   type ParticipantRef,
@@ -17,7 +18,10 @@ import {
   modelCallEffect,
   type AppendItem,
   type EffectDescriptor,
+  type ModelCallEffect,
+  type PublishEnvelopeEffect,
 } from "./effects.js";
+import type { DeferredPrompt } from "./state.js";
 import { applyEvent } from "./fold.js";
 import { ids } from "./ids.js";
 import { classifyModelFailure, type ModelFailureInfo } from "./model-errors.js";
@@ -53,7 +57,7 @@ function modelStartItems(
   turnId: string,
   modelCallCount: number,
   itemsBefore: number
-): { item: AppendItem; effect: EffectDescriptor } {
+): { item: AppendItem; effect: ModelCallEffect } {
   const messageId = ids.messageId(turnId, modelCallCount);
   const attemptId = ids.attemptId(messageId);
   const config = turnConfig(state);
@@ -120,6 +124,13 @@ function recvItem(command: Extract<Command, { kind: "prompt" | "steer" }>): Appe
         : [{ type: "text", content: String(command.content ?? "") }],
       outcome: "completed",
       ...(command.metadata ? { metadata: command.metadata } : {}),
+      // Sender's canonical id, carried IN ADDITION to the private recv envelope
+      // id so the fold can correlate read acks / edits / retracts.
+      ...(command.sourceMessageId ? { sourceMessageId: command.sourceMessageId } : {}),
+      // The REAL sender — the private recv envelope's actor is the agent (driver
+      // stamps it), so the fold must read the original author from here for the
+      // edit/retract author guard.
+      senderRef: command.senderRef,
     },
     causality: {
       messageId: ids.recvUserMessage(command.channelId, command.source.envelopeId) as never,
@@ -129,6 +140,169 @@ function recvItem(command: Extract<Command, { kind: "prompt" | "steer" }>): Appe
     // copy is private context (no republish).
     publish: false,
   };
+}
+
+function turnOpenedItem(turnId: string, metadata?: AgentTurnMetadata): AppendItem {
+  return {
+    envelopeId: ids.turnOpened(turnId),
+    payloadKind: "turn.opened",
+    payload: {
+      protocol: AGENTIC_PROTOCOL_VERSION,
+      ...(metadata ? { metadata } : {}),
+    },
+    causality: { turnId },
+    publish: shouldPublishTurnLifecycle(metadata),
+  };
+}
+
+/** A single `message.read` ack as a best-effort publish_envelope effect.
+ *  Deterministic identity (effectId + idempotencyKey) is one of three duplicate
+ *  guards (effect-outbox PK, channel-publish idempotency, monotone reducer). */
+function readAckEffect(
+  channelId: string,
+  sourceMessageId: string,
+  turnId: string,
+  ctx: StepContext
+): PublishEnvelopeEffect {
+  return {
+    effectId: `read:${sourceMessageId}:${turnId}`,
+    kind: "publish_envelope",
+    channelId,
+    idempotencyKey: `read:${sourceMessageId}:${turnId}`,
+    payloadKind: AGENTIC_EVENT_PAYLOAD_KIND,
+    payload: {
+      kind: "message.read",
+      actor: ctx.selfRef,
+      causality: { messageId: sourceMessageId },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, turnId },
+      createdAt: ctx.now,
+    },
+  };
+}
+
+/**
+ * Read acks for every sourceMessageId NEWLY consumed by an upcoming model call.
+ * Consumed = the steering entries this call's contextThroughSeq will prune
+ * (fold.ts) PLUS any fresh recv/promoted prompt appended in the SAME batch
+ * (passed explicitly — it is not yet a folded steering entry). Must be called
+ * with the EXACT contextThroughSeq the `message.started` builder embedded.
+ */
+function readAckEffects(opts: {
+  state: AgentState;
+  contextThroughSeq: number;
+  freshSourceMessageIds: string[];
+  turnId: string;
+  ctx: StepContext;
+}): PublishEnvelopeEffect[] {
+  const consumed = new Set<string>(opts.freshSourceMessageIds.filter(Boolean));
+  for (const entry of opts.state.steeringQueue) {
+    if (entry.seq <= opts.contextThroughSeq && entry.sourceMessageId) {
+      consumed.add(entry.sourceMessageId);
+    }
+  }
+  return [...consumed].map((sourceMessageId) =>
+    readAckEffect(opts.state.channelId, sourceMessageId, opts.turnId, opts.ctx)
+  );
+}
+
+/** Mint a fresh private recv copy for a promoted after-turn message. A NEW
+ *  deterministic envelopeId (not the arrival id) so dedup never rejects it;
+ *  only sourceMessageId + content carry over, and deliverAfterTurn is stripped
+ *  so the promotion is never re-deferred. */
+function promotedRecvItem(head: DeferredPrompt, promotionSeq: number): AppendItem {
+  const content =
+    head.content && typeof head.content === "object" && !Array.isArray(head.content)
+      ? (head.content as Record<string, unknown>)
+      : {};
+  const metadata = head.metadata ? { ...head.metadata, deliverAfterTurn: undefined } : undefined;
+  return {
+    envelopeId: ids.recvPromoted(head.sourceMessageId, promotionSeq),
+    payloadKind: "message.completed",
+    payload: {
+      ...content,
+      protocol: AGENTIC_PROTOCOL_VERSION,
+      role: "user",
+      outcome: "completed",
+      sourceMessageId: head.sourceMessageId,
+      senderRef: head.senderRef,
+      ...(metadata ? { metadata } : {}),
+    },
+    causality: {
+      messageId: ids.recvPromoted(head.sourceMessageId, promotionSeq) as never,
+      ...(head.agentHops !== undefined ? { agentHops: head.agentHops } : {}),
+    },
+    publish: false,
+  };
+}
+
+/**
+ * Open the next turn for a pending prompt and fire its first model call. Shared
+ * by the C-prompt wake path and the turn-close after-turn promotion. `state`
+ * must already reflect `precedingAppend` folded (pendingPrompt set, no open
+ * turn). `precedingAppend` are the items that precede `turn.opened` in the same
+ * batch (the orphan-cleanup append, or the promoted recv).
+ */
+function promotePendingPrompt(
+  state: AgentState,
+  ctx: StepContext,
+  precedingAppend: AppendItem[]
+): StepOutput {
+  const prompt = state.pendingPrompt!;
+  const turnId = ids.turnId(state.channelId, prompt.envelopeId);
+  const opened = turnOpenedItem(turnId, prompt.metadata);
+  const afterOpened: AgentState = {
+    ...state,
+    openTurn: {
+      turnId,
+      openedAtSeq: state.lastSeq + 1,
+      modelCallCount: 0,
+      interrupted: false,
+      waitingCount: 0,
+      ...(prompt.metadata ? { metadata: prompt.metadata } : {}),
+    },
+  };
+  const { item, effect } = modelStartItems(afterOpened, turnId, 0, 1);
+  const readAcks = readAckEffects({
+    state: afterOpened,
+    contextThroughSeq: effect.request.contextThroughSeq,
+    freshSourceMessageIds: prompt.sourceMessageId ? [prompt.sourceMessageId] : [],
+    turnId,
+    ctx,
+  });
+  return { append: [...precedingAppend, opened, item], effects: [effect, ...readAcks] };
+}
+
+/**
+ * Open a fresh turn that folds the queued steers when NO turn is open. Used when
+ * a blocked turn (waiting on a pending invocation, e.g. a feedback form, or
+ * already interrupted) was force-closed by a flush: steers can't inject
+ * mid-turn, so they bootstrap their own turn. The steer recvs are already in
+ * `entries`; the model call folds + read-acks them via contextThroughSeq.
+ */
+function promoteSteersAsTurn(state: AgentState, ctx: StepContext): StepOutput {
+  const head = state.steeringQueue[0]!;
+  const turnId = ids.turnId(state.channelId, head.envelopeId);
+  const opened = turnOpenedItem(turnId, head.metadata);
+  const afterOpened: AgentState = {
+    ...state,
+    openTurn: {
+      turnId,
+      openedAtSeq: state.lastSeq + 1,
+      modelCallCount: 0,
+      interrupted: false,
+      waitingCount: 0,
+      ...(head.metadata ? { metadata: head.metadata } : {}),
+    },
+  };
+  const { item, effect } = modelStartItems(afterOpened, turnId, 0, 1);
+  const readAcks = readAckEffects({
+    state: afterOpened,
+    contextThroughSeq: effect.request.contextThroughSeq,
+    freshSourceMessageIds: [],
+    turnId,
+    ctx,
+  });
+  return { append: [opened, item], effects: [effect, ...readAcks] };
 }
 
 function turnClosedItem(
@@ -191,6 +365,14 @@ function modelFailurePayload(
 function interruptCleanupItems(state: AgentState, reason: string): AppendItem[] {
   const items: AppendItem[] = [];
   for (const invocation of Object.values(state.pendingInvocations)) {
+    // Carry the transportCallId (the on-the-wire id the PROVIDER knows — its
+    // internal invocationId is never sent to them) so consumers can correlate
+    // the cancellation. Without it a panel feedback form, keyed by the
+    // transportCallId it received, can't tell its invocation was cancelled and
+    // lingers on screen after an interrupt/flush. Mirror the dispatch's id.
+    const transportCallId =
+      (invocation.transport as { transportCallId?: string } | null | undefined)?.transportCallId ??
+      ids.transportCallId(invocation.invocationId);
     items.push({
       envelopeId: ids.invocationTerminal(invocation.invocationId),
       payloadKind: "invocation.cancelled",
@@ -202,6 +384,7 @@ function interruptCleanupItems(state: AgentState, reason: string): AppendItem[] 
       },
       causality: {
         invocationId: invocation.invocationId as never,
+        transportCallId: transportCallId as never,
         turnId: invocation.turnId,
       },
       publish: true,
@@ -383,7 +566,12 @@ function maxModelCallsPerTurn(state: AgentState): number | null {
   return Math.floor(configured);
 }
 
-function nextModelCall(state: AgentState, itemsBefore: number): StepOutput {
+function nextModelCall(
+  state: AgentState,
+  itemsBefore: number,
+  ctx: StepContext,
+  freshSourceMessageIds: string[] = []
+): StepOutput {
   const turn = state.openTurn!;
   const maxModelCalls = maxModelCallsPerTurn(state);
   if (maxModelCalls !== null && turn.modelCallCount >= maxModelCalls) {
@@ -426,7 +614,97 @@ function nextModelCall(state: AgentState, itemsBefore: number): StepOutput {
     };
   }
   const { item, effect } = modelStartItems(state, turn.turnId, turn.modelCallCount, itemsBefore);
-  return { append: [item], effects: [effect] };
+  const readAcks = readAckEffects({
+    state,
+    contextThroughSeq: effect.request.contextThroughSeq,
+    freshSourceMessageIds,
+    turnId: turn.turnId,
+    ctx,
+  });
+  return { append: [item], effects: [effect, ...readAcks] };
+}
+
+/**
+ * One incremental flush step (an `Esc` / "Send now"): advance the pipeline by
+ * exactly one step. Priority: queued steers first (deliver them within the open
+ * turn, leaving the deferred queue untouched), else promote exactly ONE deferred
+ * head. Returns null to fall through to a plain interrupt. The driver still
+ * aborts any in-flight executor (the vessel calls abortChannel around this).
+ */
+function flushStep(state: AgentState, ctx: StepContext): StepOutput | null {
+  // Priority 1: deliver queued steers within the current open turn.
+  if (state.steeringQueue.length > 0) {
+    if (!state.openTurn) {
+      // No open turn (a prior flush force-closed it): steers can't inject
+      // mid-turn — bootstrap a fresh turn that folds them.
+      return promoteSteersAsTurn(state, ctx);
+    }
+    if (state.inFlightModelCall) {
+      // Soft flush: the driver aborts the model, but the turn must CONTINUE.
+      // The marker sets openTurn.pendingFlush; the interrupted terminal re-runs
+      // the model with the queued steers consumed. Appended BEFORE the abort
+      // (vessel ordering) so the flag is folded before the terminal lands.
+      return {
+        append: [
+          {
+            envelopeId: ids.systemEvent(state.openTurn.turnId, "flush-steers", state.lastSeq),
+            payloadKind: "system.event",
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              kind: "flush_steers",
+              details: { kind: "flush_steers" },
+            },
+            causality: { turnId: state.openTurn.turnId },
+            publish: true,
+          },
+        ],
+        effects: [],
+      };
+    }
+    if (!state.openTurn.interrupted && wakeGuardSatisfied(state)) {
+      return nextModelCall(state, 0, ctx);
+    }
+    // Blocked: the turn is interrupted, or waiting on a pending invocation (e.g.
+    // a feedback form). "Send now" means abandon the wait — interruptCleanupItems
+    // cancels every pending invocation (a valid cancelled tool-result) and closes
+    // the turn; the turn.closed cascade then opens a fresh turn folding the steers.
+    return { append: interruptCleanupItems(state, "user_interrupted"), effects: [] };
+  }
+
+  // Priority 2: promote exactly ONE deferred head.
+  if (state.deferredPostTurnQueue.length > 0) {
+    if (state.openTurn) {
+      if (state.inFlightModelCall) {
+        // Hard interrupt: abort + close. The turn-close cascade promotes the
+        // head into a fresh turn (one-per-turn cadence preserved under flush).
+        return {
+          append: [
+            {
+              envelopeId: ids.systemEvent(state.openTurn.turnId, "interrupt"),
+              payloadKind: "system.event",
+              payload: {
+                protocol: AGENTIC_PROTOCOL_VERSION,
+                kind: "interrupt",
+                details: { kind: "interrupt", reason: "user_interrupted" },
+              },
+              causality: { turnId: state.openTurn.turnId },
+              publish: true,
+            },
+          ],
+          effects: [],
+        };
+      }
+      // Idle open turn: close it now; the turn.closed cascade promotes the head.
+      return { append: interruptCleanupItems(state, "user_interrupted"), effects: [] };
+    }
+    // No open turn: promote the head directly.
+    const head = state.deferredPostTurnQueue[0]!;
+    const recv = promotedRecvItem(head, state.lastSeq);
+    const afterRecv = projectAppend(state, [recv], ctx.now);
+    return promotePendingPrompt(afterRecv, ctx, [recv]);
+  }
+
+  return null;
 }
 
 export function coreStep(state: AgentState, incoming: Incoming, ctx: StepContext): StepOutput {
@@ -455,22 +733,19 @@ function commandStep(state: AgentState, command: Command, ctx: StepContext): Ste
       if (alreadyIngested(state, ids.recvUserMessage(command.channelId, command.source.envelopeId))) {
         return EMPTY;
       }
+      // Send-after-turn while a turn is open: append the recv (the fold stashes
+      // it in deferredPostTurnQueue) but do NOT fire a model call — degrading to
+      // steer would otherwise reach nextModelCall and fire a redundant call.
+      if (command.metadata?.deliverAfterTurn && state.openTurn) {
+        return { append: [recvItem(command)], effects: [] };
+      }
       if (state.openTurn) {
         // degrade to steer (today's TurnDispatcher fallback)
         return commandStep(state, { ...command, kind: "steer" }, ctx);
       }
       const recv = recvItem(command);
       const turnId = ids.turnId(command.channelId, command.source.envelopeId);
-      const opened: AppendItem = {
-        envelopeId: ids.turnOpened(turnId),
-        payloadKind: "turn.opened",
-        payload: {
-          protocol: AGENTIC_PROTOCOL_VERSION,
-          ...(turnMetadata(command) ? { metadata: turnMetadata(command) } : {}),
-        },
-        causality: { turnId },
-        publish: shouldPublishTurnLifecycle(turnMetadata(command)),
-      };
+      const opened = turnOpenedItem(turnId, turnMetadata(command));
       const afterOpened = {
         ...state,
         openTurn: {
@@ -483,12 +758,23 @@ function commandStep(state: AgentState, command: Command, ctx: StepContext): Ste
         },
       };
       const { item, effect } = modelStartItems(afterOpened, turnId, 0, 2);
-      return { append: [recv, opened, item], effects: [effect] };
+      const readAcks = readAckEffects({
+        state: afterOpened,
+        contextThroughSeq: effect.request.contextThroughSeq,
+        freshSourceMessageIds: command.sourceMessageId ? [command.sourceMessageId] : [],
+        turnId,
+        ctx,
+      });
+      return { append: [recv, opened, item], effects: [effect, ...readAcks] };
     }
 
     case "steer": {
       const recv = recvItem(command);
       if (alreadyIngested(state, recv.envelopeId)) return EMPTY;
+      // Send-after-turn: stash via the fold; never degrade-to-continue.
+      if (command.metadata?.deliverAfterTurn && state.openTurn) {
+        return { append: [recv], effects: [] };
+      }
       const canContinue =
         state.openTurn &&
         !state.openTurn.interrupted &&
@@ -497,15 +783,62 @@ function commandStep(state: AgentState, command: Command, ctx: StepContext): Ste
       if (canContinue) {
         const next = nextModelCall(
           { ...state, openTurn: state.openTurn },
-          1 // the recv item precedes the message.started
+          1, // the recv item precedes the message.started
+          ctx,
+          command.sourceMessageId ? [command.sourceMessageId] : []
         );
         return { append: [recv, ...next.append], effects: next.effects };
       }
       return { append: [recv], effects: [] };
     }
 
+    case "edit": {
+      // Private trajectory copy of an edit mutation; the fold enforces the
+      // author guard and the read-wins cutoff. publish:false — the public
+      // channel already carries the client's message.edited.
+      return {
+        append: [
+          {
+            envelopeId: ids.messageEdited(command.sourceMessageId, state.lastSeq),
+            payloadKind: "message.edited",
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              by: command.by,
+              blocks: command.blocks,
+            },
+            causality: { messageId: command.sourceMessageId as never },
+            publish: false,
+          },
+        ],
+        effects: [],
+      };
+    }
+
+    case "retract": {
+      return {
+        append: [
+          {
+            envelopeId: ids.messageRetracted(command.sourceMessageId, state.lastSeq),
+            payloadKind: "message.retracted",
+            payload: { protocol: AGENTIC_PROTOCOL_VERSION, by: command.by },
+            causality: { messageId: command.sourceMessageId as never },
+            publish: false,
+          },
+        ],
+        effects: [],
+      };
+    }
+
     case "interrupt":
     case "abort": {
+      // Incremental flush (one Esc = one step): steers first, else promote one
+      // deferred head, else plain interrupt. The steer-vs-deferred decision is
+      // loop-side (reads the authoritative queues); the client only triggers
+      // interrupt + flushDeferred.
+      if (command.kind === "interrupt" && command.flushDeferred) {
+        const flushed = flushStep(state, ctx);
+        if (flushed) return flushed;
+      }
       if (!state.openTurn) return EMPTY;
       const reason = command.kind === "abort" ? (command.reason ?? "work_failed") : "user_interrupted";
       const marker: AppendItem = {
@@ -638,36 +971,12 @@ function commandStep(state: AgentState, command: Command, ctx: StepContext): Ste
         wakeGuardSatisfied(afterOrphan) &&
         (hasFreshInput(afterOrphan) || afterOrphan.openTurn.modelCallCount === 0 || append.length > 0)
       ) {
-        const next = nextModelCall(afterOrphan, append.length);
+        const next = nextModelCall(afterOrphan, append.length, ctx);
         return { append: [...append, ...next.append], effects: next.effects };
       }
-      // 4. no open turn + pendingPrompt → C-prompt path
+      // 4. no open turn + pendingPrompt → C-prompt path (shared promotion).
       if (!afterOrphan.openTurn && afterOrphan.pendingPrompt) {
-        const prompt = afterOrphan.pendingPrompt;
-        const turnId = ids.turnId(state.channelId, prompt.envelopeId);
-        const opened: AppendItem = {
-          envelopeId: ids.turnOpened(turnId),
-          payloadKind: "turn.opened",
-          payload: {
-            protocol: AGENTIC_PROTOCOL_VERSION,
-            ...(prompt.metadata ? { metadata: prompt.metadata } : {}),
-          },
-          causality: { turnId },
-          publish: true,
-        };
-        const afterOpened = {
-          ...afterOrphan,
-          openTurn: {
-            turnId,
-            openedAtSeq: afterOrphan.lastSeq + append.length + 1,
-            modelCallCount: 0,
-            interrupted: false,
-            waitingCount: 0,
-            ...(prompt.metadata ? { metadata: prompt.metadata } : {}),
-          },
-        };
-        const { item, effect } = modelStartItems(afterOpened, turnId, 0, append.length + 1);
-        return { append: [...append, opened, item], effects: [effect] };
+        return promotePendingPrompt(afterOrphan, ctx, append);
       }
       return { append, effects: [] };
     }
@@ -699,7 +1008,7 @@ function commandStep(state: AgentState, command: Command, ctx: StepContext): Ste
         causality: { turnId: turn.turnId, messageId: command.messageId as never },
         publish: true,
       };
-      const next = nextModelCall(state, 1);
+      const next = nextModelCall(state, 1, ctx);
       return { append: [marker, ...next.append], effects: next.effects };
     }
   }
@@ -720,6 +1029,17 @@ function eventStep(state: AgentState, envelope: LogEnvelope, ctx: StepContext): 
     if (!turn) return EMPTY;
     const outcome = String(payload["outcome"] ?? "completed");
     if (outcome === "interrupted" || turn.interrupted) {
+      // Soft "flush steers": the model was aborted to deliver queued steers
+      // sooner — CONTINUE the turn (re-run the model with the steers consumed)
+      // instead of closing, unless this was a hard interrupt.
+      if (
+        turn.pendingFlush === "steers" &&
+        !turn.interrupted &&
+        state.steeringQueue.length > 0 &&
+        wakeGuardSatisfied(state)
+      ) {
+        return nextModelCall(state, 0, ctx);
+      }
       return { append: interruptCleanupItems(state, "user_interrupted"), effects: [] };
     }
     const blocks = Array.isArray(payload["blocks"]) ? (payload["blocks"] as unknown[]) : [];
@@ -728,8 +1048,24 @@ function eventStep(state: AgentState, envelope: LogEnvelope, ctx: StepContext): 
       return expandToolCalls(state, toolCalls, String(causality["messageId"] ?? ""), turn.turnId, ctx);
     }
     // no tool calls
-    if (state.steeringQueue.length > 0) return nextModelCall(state, 0);
+    if (state.steeringQueue.length > 0) return nextModelCall(state, 0, ctx);
     return { append: [turnClosedItem(turn.turnId)], effects: [] };
+  }
+
+  // After-turn promotion: a closed turn drains exactly ONE deferred head into a
+  // fresh turn of its own (shared with the flush path). Fires on EVERY close —
+  // natural or flush-induced — keeping the one-turn-per-message cadence.
+  if (kind === "turn.closed") {
+    if (state.openTurn) return EMPTY;
+    // Steers orphaned by a forced close (flush against a blocked turn) take
+    // priority — matching the flush ordering (steers first, then deferred) —
+    // and bootstrap a fresh turn of their own.
+    if (state.steeringQueue.length > 0) return promoteSteersAsTurn(state, ctx);
+    if (state.deferredPostTurnQueue.length === 0) return EMPTY;
+    const head = state.deferredPostTurnQueue[0]!;
+    const recv = promotedRecvItem(head, state.lastSeq);
+    const afterRecv = projectAppend(state, [recv], ctx.now);
+    return promotePendingPrompt(afterRecv, ctx, [recv]);
   }
 
   // recoverable model failure → fresh attempt (multi-attempt rule)
@@ -751,7 +1087,7 @@ function eventStep(state: AgentState, envelope: LogEnvelope, ctx: StepContext): 
       return { append: [turnClosedItem(turn.turnId, { reason: "work_failed" })], effects: [] };
     }
     if (!wakeGuardSatisfied(state)) return EMPTY; // guard: invocations first
-    return nextModelCall(state, 0);
+    return nextModelCall(state, 0, ctx);
   }
 
   // E-invocation-terminal
@@ -767,7 +1103,7 @@ function eventStep(state: AgentState, envelope: LogEnvelope, ctx: StepContext): 
     if (Object.keys(state.pendingInvocations).length > 0) return EMPTY; // not last yet
     if (Object.keys(state.pendingApprovals).length > 0) return EMPTY;
     if (Object.keys(state.pendingCredentialWaits).length > 0) return EMPTY;
-    return nextModelCall(state, 0);
+    return nextModelCall(state, 0, ctx);
   }
 
   // E-approval-resolved
@@ -817,7 +1153,7 @@ function eventStep(state: AgentState, envelope: LogEnvelope, ctx: StepContext): 
         wakeGuardSatisfied(state) &&
         Object.keys(state.pendingInvocations).length === 0
       ) {
-        return nextModelCall(state, 0);
+        return nextModelCall(state, 0, ctx);
       }
     }
   }

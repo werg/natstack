@@ -4,7 +4,7 @@
  * effect failures.
  */
 
-import type { LogEnvelope, ParticipantRef } from "@workspace/agentic-protocol";
+import type { LogEnvelope, MessageBlockInput, ParticipantRef } from "@workspace/agentic-protocol";
 import type { AgentLoopConfig, AgentTurnMetadata } from "./state.js";
 import type { EffectKind } from "./effects.js";
 
@@ -22,6 +22,10 @@ export type Command =
       channelId: string;
       /** the triggering channel envelope. */
       source: { envelopeId: string };
+      /** Sender's canonical message identity (`agentic.causality.messageId`),
+       *  threaded explicitly — NOT derived from `ids.recvUserMessage`. Read
+       *  acks, edits and retracts all key on this. */
+      sourceMessageId?: string;
       content: UserContent;
       senderRef: ParticipantRef;
       agentHops?: number;
@@ -31,13 +35,16 @@ export type Command =
       kind: "steer";
       channelId: string;
       source: { envelopeId: string };
+      sourceMessageId?: string;
       content: UserContent;
       senderRef: ParticipantRef;
       agentHops?: number;
       metadata?: AgentTurnMetadata;
     }
-  | { kind: "interrupt" }
+  | { kind: "interrupt"; flushDeferred?: boolean }
   | { kind: "abort"; reason?: string }
+  | { kind: "edit"; sourceMessageId: string; blocks: MessageBlockInput[]; by: ParticipantRef }
+  | { kind: "retract"; sourceMessageId: string; by: ParticipantRef }
   | { kind: "setConfig"; patch: Partial<AgentLoopConfig> }
   | { kind: "compact" }
   | { kind: "resumeAfterReset"; messageId: string; resetAt: string }

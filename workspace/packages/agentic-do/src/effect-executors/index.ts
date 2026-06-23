@@ -160,6 +160,10 @@ export const publishExecutor: EffectExecutor<PublishEnvelopeEffect> = {
       channelId: descriptor.channelId,
       payloadKind: descriptor.payloadKind,
       payload: descriptor.payload,
+      // Forward the idempotency key so duplicate publishes (read acks, etc.)
+      // dedupe at the channel — one of the three duplicate guards. The port
+      // accepts it; only this executor was dropping it.
+      idempotencyKey: descriptor.idempotencyKey,
     });
     return { kind: "tool", result: null, isError: false } satisfies EffectOutcome;
   },

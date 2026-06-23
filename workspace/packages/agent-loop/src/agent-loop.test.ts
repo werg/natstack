@@ -912,3 +912,329 @@ describe("determinism properties", () => {
     });
   });
 });
+
+describe("agent-loop message delivery (acks, edit/retract, after-turn, flush)", () => {
+  const userRef = { kind: "user" as const, id: "panel:user", participantId: "panel:user" };
+
+  function promptWith(
+    s: Scenario,
+    opts: {
+      envelopeId: string;
+      sourceMessageId?: string;
+      content?: string;
+      metadata?: { deliverAfterTurn?: boolean };
+    }
+  ): void {
+    dispatch(s, {
+      type: "command",
+      command: {
+        kind: "prompt",
+        channelId: "chan-1",
+        source: { envelopeId: opts.envelopeId },
+        ...(opts.sourceMessageId ? { sourceMessageId: opts.sourceMessageId } : {}),
+        content: opts.content ?? "hello",
+        senderRef: userRef,
+        ...(opts.metadata ? { metadata: opts.metadata } : {}),
+      },
+    });
+  }
+
+  function readAcks(s: Scenario): Array<{ messageId: string; turnId?: string }> {
+    return s.outputs
+      .flatMap((output) => output.effects)
+      .filter((effect) => effect.kind === "publish_envelope")
+      .map((effect) => {
+        const payload = (effect as { payload: Record<string, unknown> }).payload;
+        const causality = (payload["causality"] ?? {}) as Record<string, unknown>;
+        const inner = (payload["payload"] ?? {}) as Record<string, unknown>;
+        return { messageId: String(causality["messageId"]), turnId: inner["turnId"] as string };
+      });
+  }
+
+  it("emits a read ack when a fresh prompt is folded into a model call", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    const acks = readAcks(s);
+    expect(acks.map((ack) => ack.messageId)).toContain("u1");
+    expect(acks.find((ack) => ack.messageId === "u1")?.turnId).toBe(turn1);
+  });
+
+  it("fires the read ack for a mid-turn-steered message on the continuation model call", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    // steer arrives while the first model call is in flight → queued, no ack yet
+    dispatch(s, {
+      type: "command",
+      command: {
+        kind: "steer",
+        channelId: "chan-1",
+        source: { envelopeId: "env-2" },
+        sourceMessageId: "s1",
+        content: "more",
+        senderRef: userRef,
+      },
+    });
+    expect(readAcks(s).map((ack) => ack.messageId)).not.toContain("s1");
+    // model completes text-only with a steer queued → continuation consumes it
+    resolveEffect(s, ids.modelEffect(msg0), {
+      kind: "model",
+      blocks: [{ type: "text", content: "ok" }],
+      stopReason: "completed",
+    });
+    expect(readAcks(s).map((ack) => ack.messageId)).toContain("s1");
+  });
+
+  it("holds an after-turn message out of context and fires NO extra model call", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    const before = pendingEffectIds(s);
+    const outputsBefore = s.outputs.length;
+    promptWith(s, {
+      envelopeId: "env-2",
+      sourceMessageId: "d1",
+      content: "later",
+      metadata: { deliverAfterTurn: true },
+    });
+    // recv appended, but no NEW model_call effect and no context entry
+    expect(pendingEffectIds(s)).toEqual(before);
+    expect(s.state.deferredPostTurnQueue.map((d) => d.sourceMessageId)).toEqual(["d1"]);
+    expect(s.state.entries.some((e) => e.kind === "user" && e.sourceMessageId === "d1")).toBe(false);
+    const newModelCalls = s.outputs
+      .slice(outputsBefore)
+      .flatMap((o) => o.effects)
+      .filter((e) => e.kind === "model_call");
+    expect(newModelCalls).toHaveLength(0);
+  });
+
+  it("promotes deferred messages one-per-turn after each close, with fresh envelope ids", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    promptWith(s, { envelopeId: "env-2", sourceMessageId: "d1", metadata: { deliverAfterTurn: true } });
+    promptWith(s, { envelopeId: "env-3", sourceMessageId: "d2", metadata: { deliverAfterTurn: true } });
+    expect(s.state.deferredPostTurnQueue.map((d) => d.sourceMessageId)).toEqual(["d1", "d2"]);
+
+    // first turn closes → promote d1 into its own fresh turn
+    resolveEffect(s, ids.modelEffect(msg0), {
+      kind: "model",
+      blocks: [{ type: "text", content: "done" }],
+      stopReason: "completed",
+    });
+    expect(s.state.deferredPostTurnQueue.map((d) => d.sourceMessageId)).toEqual(["d2"]);
+    expect(s.state.openTurn).not.toBeNull();
+    // promoted recv used a fresh deterministic id (not the arrival env-2)
+    expect(s.log.some((row) => row.envelopeId.startsWith("recv:promoted:d1:"))).toBe(true);
+
+    // d1's turn closes → promote d2
+    const d1Msg = ids.messageId(s.state.openTurn!.turnId, 0);
+    resolveEffect(s, ids.modelEffect(d1Msg), {
+      kind: "model",
+      blocks: [{ type: "text", content: "done d1" }],
+      stopReason: "completed",
+    });
+    expect(s.state.deferredPostTurnQueue).toHaveLength(0);
+    expect(s.state.openTurn).not.toBeNull();
+    expect(readAcks(s).map((ack) => ack.messageId)).toEqual(
+      expect.arrayContaining(["u1", "d1", "d2"])
+    );
+  });
+
+  it("edits queued steer content before read", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    dispatch(s, {
+      type: "command",
+      command: {
+        kind: "steer",
+        channelId: "chan-1",
+        source: { envelopeId: "env-2" },
+        sourceMessageId: "s1",
+        content: "first",
+        senderRef: userRef,
+      },
+    });
+    dispatch(s, {
+      type: "command",
+      command: { kind: "edit", sourceMessageId: "s1", blocks: [{ type: "text", content: "edited" }], by: userRef },
+    });
+    const entry = s.state.steeringQueue.find((e) => e.sourceMessageId === "s1");
+    expect((entry?.content as { blocks?: unknown }).blocks).toEqual([{ type: "text", content: "edited" }]);
+  });
+
+  it("no-ops an edit/retract after the message was read (consumed into context)", () => {
+    const s = scenario();
+    // u1 is folded into the first model call → consumed (read); only in entries.
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1", content: "original" });
+    const entryBefore = s.state.entries.find(
+      (e) => e.kind === "user" && e.sourceMessageId === "u1"
+    );
+    expect(entryBefore).toBeDefined();
+    dispatch(s, {
+      type: "command",
+      command: { kind: "edit", sourceMessageId: "u1", blocks: [{ type: "text", content: "x" }], by: userRef },
+    });
+    dispatch(s, {
+      type: "command",
+      command: { kind: "retract", sourceMessageId: "u1", by: userRef },
+    });
+    // read wins: the consumed entry is untouched, never removed.
+    const entryAfter = s.state.entries.find(
+      (e) => e.kind === "user" && e.sourceMessageId === "u1"
+    );
+    expect(entryAfter).toEqual(entryBefore);
+  });
+
+  it("retracts a queued steer before read", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    dispatch(s, {
+      type: "command",
+      command: {
+        kind: "steer",
+        channelId: "chan-1",
+        source: { envelopeId: "env-2" },
+        sourceMessageId: "s1",
+        content: "oops",
+        senderRef: userRef,
+      },
+    });
+    expect(s.state.steeringQueue).toHaveLength(1);
+    dispatch(s, {
+      type: "command",
+      command: { kind: "retract", sourceMessageId: "s1", by: userRef },
+    });
+    expect(s.state.steeringQueue).toHaveLength(0);
+  });
+
+  it("flush with queued steers delivers the steers and leaves the deferred queue intact", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    dispatch(s, {
+      type: "command",
+      command: {
+        kind: "steer",
+        channelId: "chan-1",
+        source: { envelopeId: "env-2" },
+        sourceMessageId: "s1",
+        content: "now",
+        senderRef: userRef,
+      },
+    });
+    promptWith(s, { envelopeId: "env-3", sourceMessageId: "d1", metadata: { deliverAfterTurn: true } });
+    // flush: steers present + model in flight → soft flush marker
+    dispatch(s, { type: "command", command: { kind: "interrupt", flushDeferred: true } });
+    expect(s.state.openTurn?.pendingFlush).toBe("steers");
+    expect(s.state.deferredPostTurnQueue.map((d) => d.sourceMessageId)).toEqual(["d1"]);
+    // aborted model terminal → continuation consumes the steer (turn stays open)
+    resolveEffect(s, ids.modelEffect(msg0), { kind: "model", blocks: [], stopReason: "aborted" });
+    expect(s.state.openTurn).not.toBeNull();
+    expect(readAcks(s).map((ack) => ack.messageId)).toContain("s1");
+    expect(s.state.deferredPostTurnQueue.map((d) => d.sourceMessageId)).toEqual(["d1"]);
+  });
+
+  it("allows repeated soft flushes in the same turn", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    dispatch(s, {
+      type: "command",
+      command: {
+        kind: "steer",
+        channelId: "chan-1",
+        source: { envelopeId: "env-2" },
+        sourceMessageId: "s1",
+        content: "first steer",
+        senderRef: userRef,
+      },
+    });
+
+    dispatch(s, { type: "command", command: { kind: "interrupt", flushDeferred: true } });
+    const firstFlushId = s.log.find(
+      (row) => row.payloadKind === "system.event" && row.envelopeId.includes("flush-steers")
+    )?.envelopeId;
+    expect(firstFlushId).toBeDefined();
+    expect(s.state.openTurn?.pendingFlush).toBe("steers");
+    resolveEffect(s, ids.modelEffect(msg0), { kind: "model", blocks: [], stopReason: "aborted" });
+    expect(readAcks(s).map((ack) => ack.messageId)).toContain("s1");
+
+    const msg1 = ids.messageId(turn1, 1);
+    expect(pendingEffectIds(s)).toContain(ids.modelEffect(msg1));
+    dispatch(s, {
+      type: "command",
+      command: {
+        kind: "steer",
+        channelId: "chan-1",
+        source: { envelopeId: "env-3" },
+        sourceMessageId: "s2",
+        content: "second steer",
+        senderRef: userRef,
+      },
+    });
+
+    dispatch(s, { type: "command", command: { kind: "interrupt", flushDeferred: true } });
+    const flushIds = s.log
+      .filter((row) => row.payloadKind === "system.event" && row.envelopeId.includes("flush-steers"))
+      .map((row) => row.envelopeId);
+    expect(flushIds).toHaveLength(2);
+    expect(flushIds[1]).not.toBe(firstFlushId);
+    expect(s.state.openTurn?.pendingFlush).toBe("steers");
+
+    resolveEffect(s, ids.modelEffect(msg1), { kind: "model", blocks: [], stopReason: "aborted" });
+    expect(s.state.openTurn).not.toBeNull();
+    expect(readAcks(s).map((ack) => ack.messageId)).toContain("s2");
+  });
+
+  it("flush against a turn waiting on a pending invocation cancels it and delivers the steers", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    // The model parks on a tool call (e.g. a feedback form) — the invocation
+    // stays pending, no model in flight, so wakeGuard is unsatisfied.
+    resolveEffect(s, ids.modelEffect(msg0), {
+      kind: "model",
+      blocks: [{ type: "toolCall", id: "tc-1", name: "feedback_form", arguments: {} }],
+      stopReason: "completed",
+    });
+    expect(pendingEffectIds(s)).toEqual([ids.invocationEffect("tc-1")]);
+    expect(s.state.openTurn).not.toBeNull();
+    // Queue a steer while blocked → lands in the steering queue (no ack yet).
+    dispatch(s, {
+      type: "command",
+      command: {
+        kind: "steer",
+        channelId: "chan-1",
+        source: { envelopeId: "env-2" },
+        sourceMessageId: "s1",
+        content: "actually do X",
+        senderRef: userRef,
+      },
+    });
+    expect(s.state.steeringQueue.map((e) => e.sourceMessageId)).toEqual(["s1"]);
+    // Flush ("Send now"): abandon the pending form + deliver the steer.
+    dispatch(s, { type: "command", command: { kind: "interrupt", flushDeferred: true } });
+    // The pending invocation was cancelled (a valid cancelled tool-result)...
+    const cancelled = s.log.find((r) => r.payloadKind === "invocation.cancelled");
+    expect(cancelled).toBeTruthy();
+    // ...and the cancel carries the transportCallId the provider knows, so a
+    // panel feedback form can correlate it and dismiss (not linger on screen).
+    expect((cancelled!.causality as { transportCallId?: string }).transportCallId).toBe(
+      ids.transportCallId("tc-1")
+    );
+    // ...a fresh turn opened that folds + read-acks the steer, and the steer
+    // queue drained — i.e. the agent actually makes progress.
+    expect(readAcks(s).map((a) => a.messageId)).toContain("s1");
+    expect(s.state.steeringQueue).toEqual([]);
+    expect(s.state.openTurn).not.toBeNull();
+    expect(pendingEffectIds(s).some((id) => id.includes("model"))).toBe(true);
+  });
+
+  it("flush with no steers promotes exactly one deferred head per flush", () => {
+    const s = scenario();
+    promptWith(s, { envelopeId: "env-1", sourceMessageId: "u1" });
+    promptWith(s, { envelopeId: "env-2", sourceMessageId: "d1", metadata: { deliverAfterTurn: true } });
+    promptWith(s, { envelopeId: "env-3", sourceMessageId: "d2", metadata: { deliverAfterTurn: true } });
+    // flush: no steers, model in flight, deferred present → hard interrupt + close
+    dispatch(s, { type: "command", command: { kind: "interrupt", flushDeferred: true } });
+    resolveEffect(s, ids.modelEffect(msg0), { kind: "model", blocks: [], stopReason: "aborted" });
+    // one head promoted into a fresh turn; the other still queued
+    expect(s.state.deferredPostTurnQueue.map((d) => d.sourceMessageId)).toEqual(["d2"]);
+    expect(s.state.openTurn).not.toBeNull();
+  });
+});

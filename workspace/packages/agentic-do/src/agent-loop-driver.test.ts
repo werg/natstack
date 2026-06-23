@@ -38,6 +38,7 @@ async function makeHarness(opts: {
   policies?: StepPolicy[];
   ephemeral?: EphemeralEmit;
   executorOverride?: DriverDeps["executorOverride"];
+  runBackground?: DriverDeps["runBackground"];
   killPoint?: (point: string) => void;
   selfRefFor?: DriverDeps["selfRefFor"];
   gad?: Awaited<ReturnType<typeof createTestDO<GadWorkspaceDO>>>;
@@ -114,6 +115,7 @@ async function makeHarness(opts: {
     },
     now: () => (now += 7),
     scheduleAlarm: (at) => alarms.push(at),
+    ...(opts.runBackground ? { runBackground: opts.runBackground } : {}),
     executorOverride: (descriptor) => {
       const override = opts.executorOverride?.(descriptor);
       if (override) return override;
@@ -198,6 +200,122 @@ function deferred<T>() {
 }
 
 describe("AgentLoopDriver", () => {
+  it("publishes a read-ack EAGERLY at step time, not behind the (pending) model call", async () => {
+    // Regression for the steer-read-ack delay: a fire-and-forget publish_envelope
+    // (read-ack) co-emitted with a long model_call used to wait in the effect
+    // pump until the model finished. Hang the model call and DON'T drain the
+    // alarm — the read-ack must already be on the channel (eager step-time
+    // publish), proving it no longer queues behind the model dispatch.
+    const harness = await makeHarness({
+      script: { model: [], tool: [] },
+      executorOverride: (descriptor) =>
+        descriptor.kind === "model_call"
+          ? ({
+              kind: "model_call",
+              execute: () => new Promise<EffectOutcome>(() => {}), // never resolves
+            } as EffectExecutor)
+          : null,
+    });
+    await harness.driver.handleIncoming(CHANNEL, {
+      type: "command",
+      command: {
+        kind: "prompt",
+        channelId: CHANNEL,
+        source: { envelopeId: "env-1" },
+        sourceMessageId: "u1",
+        content: "hi",
+        senderRef: { kind: "user", id: "panel:user", participantId: "panel:user" },
+      },
+    });
+    const reads = harness.channelPublishes.filter(
+      (p) => (p.payload as { kind?: string } | undefined)?.kind === "message.read"
+    );
+    expect(
+      reads.some(
+        (r) =>
+          (r.payload as { causality?: { messageId?: string } } | undefined)?.causality
+            ?.messageId === "u1"
+      )
+    ).toBe(true);
+  });
+
+  it("a long model_call on one channel does NOT pin the shared pump (other channels still dispatch)", async () => {
+    // Regression: dispatchDue used to `await Promise.all` every loop's due rows,
+    // so one channel's minutes-long model_call head-of-line-blocked every other
+    // channel. With detached dispatch, channel A's hung model must not stop
+    // channel B's turn from dispatching.
+    const CHANNEL_B = "chan-d2";
+    const hung = deferred<EffectOutcome>();
+    let bModelCalls = 0;
+    const harness = await makeHarness({
+      script: { model: [], tool: [] },
+      runBackground: (fn) => {
+        void fn(); // simulate waitUntil: run the detached dispatch in the background
+      },
+      executorOverride: (descriptor) => {
+        if (descriptor.kind !== "model_call") return null;
+        if (descriptor.channelId === CHANNEL) {
+          return { kind: "model_call", execute: () => hung.promise } as EffectExecutor; // hangs forever
+        }
+        return {
+          kind: "model_call",
+          async execute() {
+            bModelCalls += 1;
+            return textReply("hi from B");
+          },
+        } as EffectExecutor;
+      },
+    });
+    // Channel A: model call hangs (detached — must not pin the pump).
+    await harness.driver.handleIncoming(CHANNEL, promptIncoming("env-a"));
+    // Channel B: a different channel's turn must still dispatch + complete.
+    await harness.driver.handleIncoming(CHANNEL_B, {
+      type: "command",
+      command: {
+        kind: "prompt",
+        channelId: CHANNEL_B,
+        source: { envelopeId: "env-b" },
+        content: "hi",
+        senderRef: { kind: "user", id: "panel:user", participantId: "panel:user" },
+      },
+    });
+    await settle(harness.driver, 6);
+    // Channel B got its model call despite channel A's model hanging.
+    expect(bModelCalls).toBe(1);
+  });
+
+  it("propagates detached dispatch driver failures to the background runner", async () => {
+    const background: Promise<unknown>[] = [];
+    let failAppends = false;
+    const harness = await makeHarness({
+      script: { model: [], tool: [] },
+      runBackground: (fn) => {
+        const promise = fn();
+        promise.catch(() => {});
+        background.push(promise);
+      },
+      executorOverride: (descriptor) =>
+        descriptor.kind === "model_call"
+          ? ({
+              kind: "model_call",
+              async execute() {
+                failAppends = true;
+                return textReply("done");
+              },
+            } as EffectExecutor)
+          : null,
+      gadFault: (method) =>
+        failAppends && method === "appendLogEvent" ? new Error("append down") : null,
+    });
+
+    await harness.driver.handleIncoming(CHANNEL, promptIncoming("env-bg-fail"));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    await expect(Promise.all(background)).rejects.toThrow("append down");
+    expect(harness.driver.outbox.all()[0]?.leaseExpiresAt).not.toBeNull();
+  });
+
   it("stamps channel-specific self identity on durable turn events", async () => {
     const harness = await makeHarness({
       script: { model: [], tool: [] },

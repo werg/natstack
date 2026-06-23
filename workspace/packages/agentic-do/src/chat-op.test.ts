@@ -20,6 +20,7 @@ import {
 import type { ChannelEvent, ParticipantDescriptor } from "@workspace/harness";
 import { AgentVesselBase } from "./agent-vessel.js";
 import type { ChannelClient } from "./channel-client.js";
+import type { AgentLoopDriver } from "./agent-loop-driver.js";
 
 /** Wait until the relay has issued its channel call (auth uses an async sha256,
  *  so the call is enqueued a few microtasks after chatOp is invoked). */
@@ -157,11 +158,38 @@ class TestVessel extends AgentVesselBase {
   }
 }
 
+class PromptEventProbe extends TestVessel {
+  readonly handleIncomingSpy = vi.fn(async (_channelId: string, _incoming: unknown) => {});
+
+  protected override async shouldRespond(): Promise<boolean> {
+    return true;
+  }
+
+  protected override async ensurePromptArtifacts(): Promise<void> {}
+
+  protected override get driver(): AgentLoopDriver {
+    return {
+      handleIncoming: this.handleIncomingSpy,
+    } as unknown as AgentLoopDriver;
+  }
+
+  markEmptyRosterFresh(channelId: string): void {
+    this.setStateValue(`agent:roster:${channelId}`, "[]");
+  }
+}
+
 async function makeVessel(): Promise<TestVessel> {
   const { instance } = await createTestDO(TestVessel, { __objectKey: "agent-key" });
   // Register a subscription row so the card path has a participant id, without
   // booting the driver/prompt machinery.
   await instance.registerSubscriptionForTest();
+  return instance;
+}
+
+async function makePromptProbe(): Promise<PromptEventProbe> {
+  const { instance } = await createTestDO(PromptEventProbe, { __objectKey: "agent-key" });
+  await instance.registerSubscriptionForTest();
+  instance.markEmptyRosterFresh(CHANNEL);
   return instance;
 }
 
@@ -310,6 +338,45 @@ describe("AgentVesselBase.chatOp", () => {
   });
 });
 
+describe("AgentVesselBase.processChannelEvent", () => {
+  it("forwards message metadata into the loop command", async () => {
+    const vessel = await makePromptProbe();
+    const event: ChannelEvent = {
+      id: 1,
+      messageId: "env-after-turn",
+      type: AGENTIC_EVENT_PAYLOAD_KIND,
+      payload: {
+        kind: "message.completed",
+        actor: { kind: "user", id: "panel:user", participantId: "panel:user" },
+        causality: { messageId: "msg-after-turn" },
+        payload: {
+          protocol: "agentic.trajectory.v1",
+          role: "user",
+          blocks: [{ type: "text", content: "next please" }],
+          outcome: "completed",
+          metadata: { deliverAfterTurn: true },
+        },
+        createdAt: new Date().toISOString(),
+      } as unknown as AgenticEvent,
+      senderId: "panel:user",
+      ts: Date.now(),
+    };
+
+    await vessel.processChannelEvent(CHANNEL, event);
+
+    expect(vessel.handleIncomingSpy).toHaveBeenCalledTimes(1);
+    expect(vessel.handleIncomingSpy.mock.calls[0]?.[1]).toMatchObject({
+      type: "command",
+      command: {
+        kind: "prompt",
+        source: { envelopeId: "env-after-turn" },
+        sourceMessageId: "msg-after-turn",
+        metadata: { deliverAfterTurn: true },
+      },
+    });
+  });
+});
+
 describe("AgentVesselBase.onEvalComplete (deferred-eval resume)", () => {
   /** Replace the lazily-built driver with a spy so we can assert the delivered outcome. */
   function stubDriver(vessel: TestVessel): ReturnType<typeof vi.fn> {
@@ -440,11 +507,17 @@ class EvalGateProbe extends TestVessel {
     return this.handleStandardAgentMethodCall(channelId, methodName, args);
   }
   /** Replace the lazily-built driver with a spy so `pause` doesn't boot the real
-   *  driver (which needs a live gateway/GAD). */
-  stubDriverForPause(): { abortChannel: ReturnType<typeof vi.fn>; handleIncoming: ReturnType<typeof vi.fn> } {
+   *  driver (which needs a live gateway/GAD). `inFlight` models whether a model
+   *  call was running when the flush hit (drives the conditional-abort path). */
+  stubDriverForPause(
+    opts: { inFlight?: boolean } = {}
+  ): { abortChannel: ReturnType<typeof vi.fn>; handleIncoming: ReturnType<typeof vi.fn> } {
     const abortChannel = vi.fn();
     const handleIncoming = vi.fn(async () => {});
-    (this as unknown as { _driver: unknown })._driver = { abortChannel, handleIncoming };
+    const loop = vi.fn(async () => ({
+      state: { inFlightModelCall: opts.inFlight ? { messageId: "m" } : null },
+    }));
+    (this as unknown as { _driver: unknown })._driver = { abortChannel, handleIncoming, loop };
     return { abortChannel, handleIncoming };
   }
 }
@@ -584,6 +657,23 @@ describe("AgentVesselBase pause (clears a wedged EvalDO)", () => {
     expect(out).toEqual({ result: { paused: true } });
     // It still ATTEMPTED the forceReset.
     expect(probe.rpcCalls.some((c) => c.method === "eval.forceReset")).toBe(true);
+  });
+
+  it("flushDeferred WITH a model call in flight aborts (soft flush re-runs with steers)", async () => {
+    const probe = await makeGateProbe();
+    const { abortChannel } = probe.stubDriverForPause({ inFlight: true });
+    await probe.callAgentMethod(CHANNEL, "pause", { flushDeferred: true });
+    expect(abortChannel).toHaveBeenCalledWith(CHANNEL);
+  });
+
+  it("flushDeferred with NO model call in flight does NOT abort (else it kills the fresh steer turn)", async () => {
+    const probe = await makeGateProbe();
+    const { abortChannel, handleIncoming } = probe.stubDriverForPause({ inFlight: false });
+    await probe.callAgentMethod(CHANNEL, "pause", { flushDeferred: true });
+    // The loop's flush opens a fresh turn whose model call delivers the steers;
+    // aborting here would kill it. So: interrupt delivered, but no abort.
+    expect(handleIncoming).toHaveBeenCalled();
+    expect(abortChannel).not.toHaveBeenCalled();
   });
 });
 

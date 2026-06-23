@@ -1384,6 +1384,11 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     // journals call terminals with the CALLER (us) as sender.
     if (await this.routeInvocationTerminal(channelId, event)) return;
 
+    // Edit/retract mutations target an existing message and may arrive outside
+    // an open turn — route them BEFORE the message.completed-only gate, and skip
+    // our own (the fold still enforces the author guard).
+    if (await this.routeMessageMutation(channelId, event)) return;
+
     const agentic = event.payload as AgenticEvent | null;
     if (!agentic || (agentic as { kind?: string }).kind !== "message.completed") return;
     if (event.senderId === this.participantId()) return;
@@ -1391,8 +1396,17 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     const respond = await this.shouldRespond(channelId, event);
     if (!respond) return;
 
+    // Sender's canonical message identity — the read-ack / edit / retract
+    // correlation key. NOT derived from the recv envelope id.
+    const sourceMessageId =
+      ((agentic as AgenticEvent).causality?.messageId as string | undefined) ?? undefined;
+
+    // Only an actual recipient (shouldRespond === true) emits a received ack.
+    await this.publishReceivedAck(channelId, sourceMessageId);
+
     await this.maybeRefreshRoster(channelId);
     await this.ensurePromptArtifacts(channelId);
+    const metadata = this.turnMetadata(event);
     await this.driver.handleIncoming(channelId, {
       type: "command",
       command: {
@@ -1403,11 +1417,65 @@ export abstract class AgentVesselBase extends DurableObjectBase {
         kind: "prompt",
         channelId,
         source: { envelopeId: event.messageId },
+        ...(sourceMessageId ? { sourceMessageId } : {}),
         content: this.turnContent(channelId, event),
         senderRef: (agentic as AgenticEvent).actor,
         agentHops: event.annotations?.["agentHops"] as number | undefined,
+        ...(metadata ? { metadata } : {}),
       },
     });
+  }
+
+  /** Publish a `message.received` ack for a message this agent will consume.
+   *  Deterministic idempotency key dedupes redeliveries. */
+  private async publishReceivedAck(
+    channelId: string,
+    sourceMessageId: string | undefined
+  ): Promise<void> {
+    if (!sourceMessageId) return;
+    const participantId = this.subscriptions.getParticipantId(channelId) ?? this.participantId();
+    const event: AgenticEvent<"message.received"> = {
+      kind: "message.received",
+      actor: this.selfRef(channelId),
+      causality: { messageId: sourceMessageId as never },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+      createdAt: new Date().toISOString(),
+    };
+    await this.createChannelClient(channelId)
+      .publishAgenticEvent(participantId, event, {
+        idempotencyKey: `received:${channelId}:${sourceMessageId}:${participantId}`,
+        senderMetadata: { type: "agent", name: participantId },
+      })
+      .catch((err) => {
+        console.error(`[AgentVessel] received ack emit failed for ${channelId}:`, err);
+      });
+  }
+
+  /** Route a `message.edited` / `message.retracted` channel event to the loop
+   *  as an edit/retract command. The fold enforces the author guard and the
+   *  read-wins cutoff; here we only skip our own events and require a target. */
+  private async routeMessageMutation(channelId: string, event: ChannelEvent): Promise<boolean> {
+    if (event.type !== AGENTIC_EVENT_PAYLOAD_KIND) return false;
+    const agentic = event.payload as AgenticEvent | null;
+    const kind = (agentic as { kind?: string } | null)?.kind;
+    if (kind !== "message.edited" && kind !== "message.retracted") return false;
+    if (event.senderId === this.participantId()) return true; // our own; nothing to do
+    const sourceMessageId = (agentic as AgenticEvent).causality?.messageId as string | undefined;
+    const by = (agentic as AgenticEvent).actor;
+    if (!sourceMessageId || !by) return true;
+    if (kind === "message.edited") {
+      const payload = (agentic as AgenticEvent<"message.edited">).payload;
+      await this.driver.handleIncoming(channelId, {
+        type: "command",
+        command: { kind: "edit", sourceMessageId, blocks: payload.blocks, by },
+      });
+    } else {
+      await this.driver.handleIncoming(channelId, {
+        type: "command",
+        command: { kind: "retract", sourceMessageId, by },
+      });
+    }
+    return true;
   }
 
   /** Channel terminals for our pending channel_call/approval-form effects. */
@@ -1538,6 +1606,14 @@ export abstract class AgentVesselBase extends DurableObjectBase {
       .join("\n");
     const notes = this.feedback.consume(channelId);
     return notes.length > 0 ? [...notes, text].filter(Boolean).join("\n\n") : text;
+  }
+
+  private turnMetadata(event: ChannelEvent): AgentTurnMetadata | undefined {
+    const agentic = event.payload as { payload?: { metadata?: unknown } };
+    const metadata = agentic.payload?.metadata;
+    return metadata && typeof metadata === "object" && !Array.isArray(metadata)
+      ? (metadata as AgentTurnMetadata)
+      : undefined;
   }
 
   protected async shouldRespond(channelId: string, event: ChannelEvent): Promise<boolean> {
@@ -1797,11 +1873,34 @@ export abstract class AgentVesselBase extends DurableObjectBase {
   ): Promise<{ result: unknown; isError?: boolean } | null> {
     switch (methodName) {
       case "pause": {
-        this.driver.abortChannel(channelId);
-        await this.driver.handleIncoming(channelId, {
-          type: "command",
-          command: { kind: "interrupt" },
-        });
+        // `flushDeferred` (Esc / "Send now") = incremental flush: deliver queued
+        // steers, else promote one deferred head. Append the interrupt FIRST so
+        // its marker is folded before abort produces the interrupted terminal
+        // (deterministic continue-vs-close for the soft steer flush); a plain
+        // pause aborts first then interrupts.
+        const flushDeferred = (args as { flushDeferred?: unknown } | null)?.flushDeferred === true;
+        if (flushDeferred) {
+          // The post-append abort is ONLY for the soft-flush case (a model call
+          // is mid-flight): aborting it makes its interrupted terminal re-run the
+          // turn with the queued steers consumed. But when nothing is in flight —
+          // the turn is parked on a pending invocation (e.g. a feedback form) or
+          // idle — the loop's flush instead cancels the wait and opens a FRESH
+          // turn whose model call delivers the steers; aborting the channel here
+          // would kill that very call and the agent would make no progress. So
+          // only abort when a model call was actually running when the flush hit.
+          const hadInFlight = !!(await this.driver.loop(channelId)).state.inFlightModelCall;
+          await this.driver.handleIncoming(channelId, {
+            type: "command",
+            command: { kind: "interrupt", flushDeferred: true },
+          });
+          if (hadInFlight) this.driver.abortChannel(channelId);
+        } else {
+          this.driver.abortChannel(channelId);
+          await this.driver.handleIncoming(channelId, {
+            type: "command",
+            command: { kind: "interrupt" },
+          });
+        }
         // Best-effort: clear any wedged EvalDO so a restarted/paused agent never
         // inherits a stuck eval scope/run chain. The eval is owned by THIS agent
         // (subKey = channelId), so we call eval.forceReset for OURSELVES (the eval
