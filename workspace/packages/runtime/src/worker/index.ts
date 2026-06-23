@@ -187,30 +187,22 @@ function installWorkerConsoleBridge(rpc: Pick<DeferrableRpcClient, "call">): voi
           }
         })
         .join(" ");
-      workerLogService.write(level, message, source ? { source } : undefined).catch((err) => {
-        original.warn("[console-bridge] forward failed:", err);
+      // Normal path: forward ONLY via workerLog — don't also print to the local console,
+      // or every line double-prints in the server terminal (`[workerd]` + `[workerLog]`).
+      // On forward failure (workerLog unreachable), fall back to the original console so
+      // the line is never lost. `original.*` is bound pre-override ⇒ no recursion.
+      workerLogService.write(level, message, source ? { source } : undefined).catch(() => {
+        original[level](...args);
       });
     } finally {
       forwarding = false;
     }
   };
   const source = (globalThis as { __natstackWorkerSource?: string }).__natstackWorkerSource;
-  console.log = (...args: unknown[]) => {
-    original.log(...args);
-    forward("log", args, source);
-  };
-  console.info = (...args: unknown[]) => {
-    original.info(...args);
-    forward("info", args, source);
-  };
-  console.warn = (...args: unknown[]) => {
-    original.warn(...args);
-    forward("warn", args, source);
-  };
-  console.error = (...args: unknown[]) => {
-    original.error(...args);
-    forward("error", args, source);
-  };
+  console.log = (...args: unknown[]) => forward("log", args, source);
+  console.info = (...args: unknown[]) => forward("info", args, source);
+  console.warn = (...args: unknown[]) => forward("warn", args, source);
+  console.error = (...args: unknown[]) => forward("error", args, source);
 }
 
 /**

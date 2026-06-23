@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { currentJournal, Journal, withJournal } from "./journal.js";
+import { currentJournal, Journal, withJournal } from "../shared/journal.js";
 
 describe("panel operation journal", () => {
   it("does not reject overlapping async journal scopes", async () => {

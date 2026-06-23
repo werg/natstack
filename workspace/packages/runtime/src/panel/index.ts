@@ -188,12 +188,7 @@ export type { NotificationClient } from "./notifications.js";
 export type { CdpAutomation, CdpEndpoint } from "./cdpAutomation.js";
 
 // --- Panel-only affordances under the `panel` namespace (panel target only) ---
-import {
-  getStateArgs,
-  useStateArgs,
-  setStateArgs,
-  setStateArgsForPanel,
-} from "./stateArgs.js";
+import { getStateArgs, useStateArgs, setStateArgs, setStateArgsForPanel } from "./stateArgs.js";
 
 /**
  * Reopen THIS panel in place under a (possibly new) context + state args — a
@@ -208,7 +203,9 @@ async function reopen(
 ): Promise<{ id: string; title: string }> {
   let source = opts.source;
   if (!source) {
-    const meta = await rpc.call<{ source?: string } | null>("main", "panelTree.metadata", [_slotId]);
+    const meta = await rpc.call<{ source?: string } | null>("main", "panelTree.metadata", [
+      _slotId,
+    ]);
     source = meta?.source ?? undefined;
     if (!source) throw new Error("reopen: could not resolve the current panel source");
   }
@@ -245,14 +242,8 @@ export const panel = helpfulNamespace("panel", {
   }),
 });
 
-// --- Journaling (pure) under the `journal` namespace ---
-import { Journal, withJournal, currentJournal } from "./journal.js";
-export type { PanelJournalEntry } from "./journal.js";
-export const journal = helpfulNamespace("journal", {
-  Journal,
-  with: withJournal,
-  current: currentJournal,
-});
+// `journal` (panel-operation journaling) is now a portable barrel helper, exported
+// via `export * from "../shared/portable.js"` above — available on panel · worker · eval.
 
 // --- Domain namespaces kept top-level (coherent single objects) ---
 export { agentApi } from "./agentApi.js";

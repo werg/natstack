@@ -145,6 +145,9 @@
       "@workspace-panels/email/contract": [
         "workspace/panels/email/contract.ts"
       ],
+      "@workspace-skills/agents": [
+        "workspace/skills/agents/index.ts"
+      ],
       "@workspace-skills/workspace-dev": [
         "workspace/skills/workspace-dev/index.ts"
       ],
@@ -282,6 +285,9 @@
       ],
       "@workspace/runtime/hosted": [
         "workspace/packages/runtime/src/shared/hostedRuntime.ts"
+      ],
+      "@workspace/runtime/portable": [
+        "workspace/packages/runtime/src/shared/portable.ts"
       ],
       "@workspace/runtime/panel-runtime": [
         "workspace/packages/runtime/src/shared/panelRuntime.ts"

@@ -10,6 +10,9 @@
  * fetch factory. NO panel globals, DOM, or RPC singletons.
  */
 
+import { helpfulNamespace } from "./helpfulNamespace.js";
+import { Journal, withJournal, currentJournal } from "./journal.js";
+
 // Contract / schema authoring tools
 export * as Rpc from "../core/rpc.js";
 export { z } from "../core/zod.js";
@@ -23,3 +26,12 @@ export { normalizePath, getFileName, resolvePath } from "./pathUtils.js";
 export { buildPanelLink } from "../core/panelLinks.js";
 export { createGatewayFetch } from "./gatewayFetch.js";
 export type { GatewayFetch, GatewayFetchConfig } from "./gatewayFetch.js";
+
+// Pure panel-operation journaling (target-independent) under the `journal`
+// namespace — available identically on panel · worker · eval via the barrels.
+export type { PanelJournalEntry } from "./journal.js";
+export const journal = helpfulNamespace("journal", {
+  Journal,
+  with: withJournal,
+  current: currentJournal,
+});

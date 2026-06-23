@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { RpcClient } from "@natstack/rpc";
 import { executeSandbox } from "./sandbox.js";
 import { createHostedRuntime, type RuntimeHost } from "@workspace/runtime/hosted";
+import * as portableHelpers from "@workspace/runtime/portable";
 import { evalImportableSurface, EVAL_AMBIENT_ONLY } from "@natstack/shared/runtimeSurface.eval";
 
 /**
@@ -53,7 +54,9 @@ class FakeCdpConnection {}
 function evalEnv() {
   const rt = createHostedRuntime(fakeHost());
   const moduleMap: Record<string, unknown> = {
-    "@workspace/runtime": rt,
+    // Eval's `@workspace/runtime` = hosted instance + pure authoring helpers
+    // (mirrors EvalDO.runLocked, so panel/worker/eval expose the same helpers).
+    "@workspace/runtime": { ...rt, ...portableHelpers },
     "@workspace/cdp-client": { CdpConnection: FakeCdpConnection },
   };
   const bindings: Record<string, unknown> = {
@@ -93,7 +96,7 @@ describe("eval runtime surface contract", () => {
   it("import { openPanel } resolves to a function === the ambient binding", async () => {
     const result = await run(
       `import { openPanel as imp } from "@workspace/runtime";
-       return typeof imp === "function" && imp === openPanel;`,
+       return typeof imp === "function" && imp === openPanel;`
     );
     expect(result.success).toBe(true);
     expect(result.returnValue).toBe(true);
@@ -107,7 +110,7 @@ describe("eval runtime surface contract", () => {
 
   it("the ambient-only globals are present", async () => {
     const result = await run(
-      `return [typeof db, typeof scope, typeof scopes, typeof services, ctx?.objectKey].join(",");`,
+      `return [typeof db, typeof scope, typeof scopes, typeof services, ctx?.objectKey].join(",");`
     );
     expect(result.success).toBe(true);
     expect(result.returnValue).toBe("object,object,object,object,k");
@@ -115,7 +118,7 @@ describe("eval runtime surface contract", () => {
 
   it("resolves import { CdpConnection } from @workspace/cdp-client", async () => {
     const result = await run(
-      `import { CdpConnection } from "@workspace/cdp-client"; return typeof CdpConnection;`,
+      `import { CdpConnection } from "@workspace/cdp-client"; return typeof CdpConnection;`
     );
     expect(result.success).toBe(true);
     expect(result.returnValue).toBe("function");
@@ -123,9 +126,18 @@ describe("eval runtime surface contract", () => {
 
   it("imported gad === ambient gad (one shared surface, not a copy)", async () => {
     const result = await run(
-      `import { gad as importedGad } from "@workspace/runtime"; return importedGad === gad;`,
+      `import { gad as importedGad } from "@workspace/runtime"; return importedGad === gad;`
     );
     expect(result.success).toBe(true);
     expect(result.returnValue).toBe(true);
+  });
+
+  it("imports the pure authoring helpers (z/defineContract/journal) like panel/worker", async () => {
+    const result = await run(
+      `import { z, defineContract, journal } from "@workspace/runtime";
+       return [typeof z?.string, typeof defineContract, typeof journal?.Journal].join(",");`
+    );
+    expect(result.success).toBe(true);
+    expect(result.returnValue).toBe("function,function,function");
   });
 });

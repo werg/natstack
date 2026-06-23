@@ -94,31 +94,22 @@ function installConsoleBridge(rpc: Pick<RpcClient, "call">): void {
       message = "<unserializable>";
     }
     try {
-      // Fire-and-forget. Failures go to the *original* console to avoid
-      // infinite recursion if the RPC path itself is broken.
-      workerLogService.write(level, message).catch((err) => {
-        original.warn("[console-bridge] forward failed:", err);
+      // Normal path: forward ONLY via workerLog (the contextful `[do:<id>]` line). Do NOT
+      // also print to the local console, or every DO line double-prints in the server
+      // terminal (once as `[workerd]` from stdout, once as `[workerLog]`). If the forward
+      // fails (workerLog unreachable — early boot, server down), fall back to the original
+      // console so the line is never lost. `original.*` is bound pre-override ⇒ no recursion.
+      workerLogService.write(level, message).catch(() => {
+        original[level](...args);
       });
     } finally {
       forwarding = false;
     }
   };
-  console.log = (...args: unknown[]) => {
-    original.log(...args);
-    forward("log", args);
-  };
-  console.info = (...args: unknown[]) => {
-    original.info(...args);
-    forward("info", args);
-  };
-  console.warn = (...args: unknown[]) => {
-    original.warn(...args);
-    forward("warn", args);
-  };
-  console.error = (...args: unknown[]) => {
-    original.error(...args);
-    forward("error", args);
-  };
+  console.log = (...args: unknown[]) => forward("log", args);
+  console.info = (...args: unknown[]) => forward("info", args);
+  console.warn = (...args: unknown[]) => forward("warn", args);
+  console.error = (...args: unknown[]) => forward("error", args);
 }
 
 // Minimal types for workerd DurableObject context (cannot import cloudflare:workers in Node)

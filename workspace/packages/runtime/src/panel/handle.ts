@@ -7,7 +7,7 @@ import {
   type PanelRuntimeApi,
   type PanelRuntimeTree,
 } from "../shared/panelRuntime.js";
-import { currentJournal } from "./journal.js";
+import { currentJournal } from "../shared/journal.js";
 
 export type PanelHandle<
   T extends Rpc.ExposedMethods = Rpc.ExposedMethods,
@@ -86,10 +86,7 @@ function getRuntime(): PanelRuntimeApi {
   return _runtime;
 }
 
-export async function openPanel(
-  source: string,
-  options?: OpenPanelOptions
-): Promise<PanelHandle> {
+export async function openPanel(source: string, options?: OpenPanelOptions): Promise<PanelHandle> {
   return getRuntime().openPanel(source, options);
 }
 
