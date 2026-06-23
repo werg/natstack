@@ -34,14 +34,37 @@ import {
   type DisconnectedAgentInfo,
   type InvocationCardPayload,
 } from "@workspace/agentic-core";
+import type { MessageBlockInput } from "@workspace/agentic-protocol";
 import { cleanupPendingImages, type PendingImage } from "../../utils/imageUtils";
-import type { ChatInputContextValue } from "../../types";
+import type {
+  ChatInputContextValue,
+  FlushNarration,
+  PrimaryActionIntent,
+  UndoableAction,
+} from "../../types";
 import { useChannelMessages } from "../useChannelMessages.js";
 
 /** Maximum debug events to retain (ring buffer). */
 const MAX_DEBUG_EVENTS = 500;
 
 const DEFAULT_CHAT_TITLE_MAX_LENGTH = 64;
+
+/**
+ * Resolve the effective appearance when no explicit `theme` prop is passed.
+ * NEVER defaults to a literal "dark" — it follows the system / centralized
+ * appearance via `prefers-color-scheme`, so a light-mode user is never forced
+ * into dark by an embedder that forgot to thread a theme.
+ */
+export function resolveSystemTheme(): "light" | "dark" {
+  if (typeof window !== "undefined" && typeof window.matchMedia === "function") {
+    try {
+      return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+    } catch {
+      /* fall through */
+    }
+  }
+  return "light";
+}
 
 export function titleFromFirstUserMessage(message: string): string | null {
   const normalized = message.trim().replace(/\s+/g, " ");
@@ -66,6 +89,42 @@ export function shouldAutoSendInitialPrompt({
   force?: boolean;
 }): boolean {
   return Boolean(prompt && connected && !alreadySent && (force || !hasPriorMessages));
+}
+
+/**
+ * Reconcile the after-turn id set against the live transcript: drop an id once
+ * its message is PRESENT but no longer a pending-unread self message (read /
+ * retracted / errored). Ids not yet in the transcript — a just-sent message
+ * whose echo hasn't landed — are KEPT, so a concurrent update can't prune a tag
+ * before its message arrives. Returns `prev` unchanged when nothing drops, so
+ * it's effect-safe. Without this the set only grows — leaving the palette's
+ * queued count stale and "cancel queued" firing no-op retractions.
+ */
+export function pruneAfterTurnIds(
+  prev: Set<string>,
+  messages: ChatMessage[],
+  selfId: string | null
+): Set<string> {
+  if (prev.size === 0) return prev;
+  const byId = new Map(messages.map((m) => [m.id, m]));
+  const isPendingSelf = (m: ChatMessage): boolean =>
+    m.senderId === selfId &&
+    (m.kind ?? "message") === "message" &&
+    !m.error &&
+    !m.retracted &&
+    (m.receipts?.aggregate ?? "pending") === "pending";
+  let next: Set<string> | null = null;
+  for (const id of prev) {
+    const m = byId.get(id);
+    // Drop once the message is PRESENT but no longer a pending-unread self outbox
+    // item (read / retracted / errored). ABSENT ids are kept — a just-sent
+    // after-turn message may not have been projected back yet, and a concurrent
+    // transcript update must not prune its tag before its echo lands.
+    if (m && !isPendingSelf(m)) {
+      (next ??= new Set(prev)).delete(id);
+    }
+  }
+  return next ?? prev;
 }
 
 // =============================================================================
@@ -126,7 +185,7 @@ export interface ChatCoreState {
   // Actions
   sendMessage: (
     attachments?: AttachmentInput[],
-    options?: { mentions?: string[]; replyTo?: string }
+    options?: { mentions?: string[]; replyTo?: string; metadata?: Record<string, unknown> }
   ) => Promise<void>;
   handleInterruptAgent: (
     agentId: string,
@@ -162,6 +221,21 @@ export interface ChatCoreState {
   theme: "light" | "dark";
   config: ConnectionConfig;
 
+  // --- Delivery model ---
+  agentBusy: boolean;
+  hasOpenTurn: boolean;
+  primaryActionIntent: PrimaryActionIntent;
+  pendingSendCount: number;
+  afterTurnMessageIds: Set<string>;
+  failedSendMessageIds: Set<string>;
+  flushNarration: FlushNarration | undefined;
+  undoableAction: UndoableAction | undefined;
+  editPendingMessage: (messageId: string, newText: string) => Promise<void>;
+  cancelPendingMessage: (messageId: string) => Promise<void>;
+  flushOutboxAndInterrupt: () => Promise<void>;
+  undoLastAction: () => void;
+  retrySend: (messageId: string) => void;
+
   inputContextValue: ChatInputContextValue;
 }
 
@@ -181,10 +255,13 @@ export function useChatCore({
   channelConfig: _channelConfig,
   contextId: _contextId,
   metadata = DEFAULT_METADATA,
-  theme = "dark",
+  theme: themeProp,
   initialPrompt,
   forceInitialPrompt = false,
 }: UseChatCoreOptions): ChatCoreState {
+  // Appearance flows from the explicit prop OR the system / centralized
+  // appearance — never a hardcoded "dark" fallback.
+  const theme: "light" | "dark" = themeProp ?? resolveSystemTheme();
   // --- Stable refs ---
   const selfIdRef = useRef<string | null>(null);
   const hasConnectedRef = useRef(false);
@@ -310,6 +387,26 @@ export function useChatCore({
   const [replyTo, setReplyTo] = useState<string | null>(null);
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
 
+  // --- Delivery-model UI state (local only; not protocol state) ---
+  /** Transient count of in-flight sends — the "Sending…" ghost. */
+  const [pendingSendCount, setPendingSendCount] = useState(0);
+  /** Message ids sent with after-turn intent (drives the outbox lane cue). */
+  const [afterTurnMessageIds, setAfterTurnMessageIds] = useState<Set<string>>(new Set());
+  /** Message ids whose send failed (shown as "Failed — tap to retry"). */
+  const [failedSendMessageIds, setFailedSendMessageIds] = useState<Set<string>>(new Set());
+  /** Transient flush narration for the inline pill + aria-live. */
+  const [flushNarration, setFlushNarration] = useState<
+    { text: string; remaining: number } | undefined
+  >(undefined);
+  /** Short reversible undo window after a retract/cancel. */
+  const [undoableAction, setUndoableAction] = useState<
+    { kind: "retract" | "cancel"; messageIds: string[]; expiresAt: number } | undefined
+  >(undefined);
+  const undoTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flushTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Retained text of retracted messages so undo can re-send them. */
+  const retractedTextRef = useRef<Map<string, string>>(new Map());
+
   // --- Cleanup pending images on unmount ---
   const pendingImagesRef = useRef(pendingImages);
   pendingImagesRef.current = pendingImages;
@@ -326,6 +423,7 @@ export function useChatCore({
     messageTypes,
     hasMoreHistory: channelHasMore,
     loadingMore: channelLoadingMore,
+    hasOpenTurn,
     loadEarlierMessages: channelLoadEarlier,
     backfillAfterLocalPublish,
   } = useChannelMessages(client);
@@ -343,6 +441,29 @@ export function useChatCore({
       hasTranscriptMessagesRef.current = true;
     }
   }, [messages.length]);
+
+  // Prune the after-turn id set as messages leave the queue (read / retracted /
+  // gone) so it can't grow unbounded and leave stale palette state. See
+  // pruneAfterTurnIds.
+  useEffect(() => {
+    setAfterTurnMessageIds((prev) => pruneAfterTurnIds(prev, messages, selfId));
+  }, [messages, selfId]);
+
+  // Stable access to the latest messages inside callbacks (edit/cancel/flush).
+  const messagesRef = useRef<ChatMessage[]>(messages);
+  messagesRef.current = messages;
+
+  // --- agentBusy: OR every busy signal so interrupt/steer affordances stay
+  //     enabled across the whole turn (a single signal flickers mid-turn). ---
+  const agentBusy = useMemo(() => {
+    return (
+      messages.some((m) => m.contentType === "typing") ||
+      Object.values(participants).some(
+        (p) => (p.metadata as { typing?: boolean })?.typing === true
+      ) ||
+      hasOpenTurn
+    );
+  }, [messages, participants, hasOpenTurn]);
 
   // --- Connect ---
   const connectToChannel = useCallback(
@@ -539,7 +660,7 @@ export function useChatCore({
   const sendMessage = useCallback(
     async (
       attachments?: AttachmentInput[],
-      options?: { mentions?: string[]; replyTo?: string }
+      options?: { mentions?: string[]; replyTo?: string; metadata?: Record<string, unknown> }
     ): Promise<void> => {
       const currentInput = inputRef.current;
       const hasText = currentInput.trim().length > 0;
@@ -547,19 +668,47 @@ export function useChatCore({
       if ((!hasText && !hasAttachments) || !clientRef.current) return;
       const text = currentInput.trim();
       const previousReplyTo = options?.replyTo ?? null;
+      const isAfterTurn = options?.metadata?.["deliverAfterTurn"] === true;
       setInput("");
       inputRef.current = "";
       setReplyTo(null);
       void stopTyping().catch((err) => {
         console.warn("[useChatCore] Failed to stop typing before send:", err);
       });
+      // "Sending…" ghost: a transient local-only indicator while in flight.
+      setPendingSendCount((n) => n + 1);
+      let settledGhost = false;
+      const settleGhost = () => {
+        if (settledGhost) return;
+        settledGhost = true;
+        setPendingSendCount((n) => Math.max(0, n - 1));
+      };
       try {
         const hadPriorTranscriptMessages = hasTranscriptMessagesRef.current;
-        const { pubsubId } = await clientRef.current.send(text || "", {
+        const { messageId, pubsubId } = await clientRef.current.send(text || "", {
           attachments: hasAttachments ? attachments : undefined,
           mentions: options?.mentions && options.mentions.length > 0 ? options.mentions : undefined,
           replyTo: options?.replyTo,
+          metadata: options?.metadata,
         });
+        // Tag after-turn sends so the outbox can render the "after this turn"
+        // lane, and clear any prior failed flag for a retried id.
+        if (messageId) {
+          if (isAfterTurn) {
+            setAfterTurnMessageIds((prev) => {
+              const next = new Set(prev);
+              next.add(messageId);
+              return next;
+            });
+          }
+          setFailedSendMessageIds((prev) => {
+            if (!prev.has(messageId)) return prev;
+            const next = new Set(prev);
+            next.delete(messageId);
+            return next;
+          });
+        }
+        settleGhost();
         await backfillAfterLocalPublish(pubsubId);
         const defaultTitle =
           !defaultTitleSetRef.current && !hadPriorTranscriptMessages
@@ -575,6 +724,7 @@ export function useChatCore({
             });
         }
       } catch (err) {
+        settleGhost();
         setInput(text);
         inputRef.current = text;
         setReplyTo(previousReplyTo);
@@ -657,6 +807,169 @@ export function useChatCore({
     },
     []
   );
+
+  // --- Pause all busy agents (optionally requesting an incremental flush) ---
+  const pauseBusyAgents = useCallback(async (flushDeferred = false): Promise<number> => {
+    const c = clientRef.current;
+    if (!c) return 0;
+    const roster = participantsRef.current;
+    const agentIds = Object.entries(roster)
+      .filter(([, p]) => isAgentParticipantType(p.metadata.type))
+      .map(([id]) => id);
+    let paused = 0;
+    await Promise.all(
+      agentIds.map(async (id) => {
+        try {
+          await c.callMethod(id, "pause", {
+            reason: flushDeferred ? "User requested send now" : "User interrupted execution",
+            ...(flushDeferred ? { flushDeferred: true } : {}),
+          });
+          paused += 1;
+        } catch (err) {
+          console.warn("[Chat] Pause agent failed:", err);
+        }
+      })
+    );
+    return paused;
+  }, []);
+
+  // --- Edit a still-unread outbox message (rebuild text + attachment blocks
+  //     so images survive a text-only edit) ---
+  const editPendingMessage = useCallback(
+    async (messageId: string, newText: string): Promise<void> => {
+      const c = clientRef.current;
+      if (!c) return;
+      const msg = messagesRef.current.find((m) => m.id === messageId);
+      const attachments = msg?.attachments ?? [];
+      const blocks: MessageBlockInput[] = [
+        { blockId: `${messageId}:block:0` as never, type: "text", content: newText },
+        ...attachments.map((attachment, index) => ({
+          blockId: `${messageId}:block:${index + 1}` as never,
+          type: "attachment" as const,
+          metadata: {
+            mimeType: attachment.mimeType,
+            filename: attachment.name,
+          },
+        })),
+      ];
+      try {
+        const { pubsubId } = await c.editMessage(messageId, blocks, {
+          revision: msg?.revision,
+        });
+        await backfillAfterLocalPublish(pubsubId);
+      } catch (err) {
+        console.warn("[Chat] Edit message failed:", err);
+        throw err;
+      }
+    },
+    [backfillAfterLocalPublish]
+  );
+
+  // --- Cancel (retract) a still-unread outbox message + raise an Undo window ---
+  const cancelPendingMessage = useCallback(
+    async (messageId: string): Promise<void> => {
+      const c = clientRef.current;
+      if (!c) return;
+      const msg = messagesRef.current.find((m) => m.id === messageId);
+      if (msg) retractedTextRef.current.set(messageId, msg.content);
+      try {
+        const { pubsubId } = await c.retractMessage(messageId, {
+          reason: "Canceled by author",
+        });
+        await backfillAfterLocalPublish(pubsubId);
+      } catch (err) {
+        console.warn("[Chat] Retract message failed:", err);
+        throw err;
+      }
+      // Short reversible-until-committed undo window. Consecutive cancels within
+      // the window accumulate into ONE undoable action so a bulk "cancel queued"
+      // is restored by a single Undo (the retained text for each id is kept).
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+      setUndoableAction((current) =>
+        current && current.kind === "cancel"
+          ? { kind: "cancel", messageIds: [...current.messageIds, messageId], expiresAt: Date.now() + 5000 }
+          : { kind: "cancel", messageIds: [messageId], expiresAt: Date.now() + 5000 }
+      );
+      undoTimerRef.current = setTimeout(() => {
+        setUndoableAction((current) => {
+          if (current) for (const id of current.messageIds) retractedTextRef.current.delete(id);
+          return undefined;
+        });
+      }, 5000);
+    },
+    [backfillAfterLocalPublish]
+  );
+
+  // --- Undo the last retract/cancel by re-sending every retained text ---
+  const undoLastAction = useCallback(() => {
+    setUndoableAction((current) => {
+      if (!current) return undefined;
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+      for (const id of current.messageIds) {
+        const text = retractedTextRef.current.get(id);
+        retractedTextRef.current.delete(id);
+        if (text && clientRef.current) {
+          void clientRef.current
+            .send(text, {})
+            .then(({ pubsubId }) => backfillAfterLocalPublish(pubsubId))
+            .catch((err) => console.warn("[Chat] Undo re-send failed:", err));
+        }
+      }
+      return undefined;
+    });
+  }, [backfillAfterLocalPublish]);
+
+  // --- Flush: pause busy agents with flushDeferred and narrate the outcome ---
+  const flushOutboxAndInterrupt = useCallback(async (): Promise<void> => {
+    const outboxCount = messagesRef.current.filter(
+      (m) =>
+        m.senderId === selfIdRef.current &&
+        (m.kind ?? "message") === "message" &&
+        !m.error &&
+        !m.retracted &&
+        (m.receipts?.aggregate ?? "pending") === "pending"
+    ).length;
+    const paused = await pauseBusyAgents(true);
+    // The loop decides steers-vs-deferred; the client narrates from what it can
+    // see locally. One flush advances the pipeline by one step.
+    const remaining = Math.max(0, outboxCount - 1);
+    const text =
+      paused === 0 && outboxCount === 0
+        ? "Nothing to flush"
+        : remaining > 0
+          ? `Sent 1 of ${outboxCount} queued · ${remaining} waiting`
+          : outboxCount > 0
+            ? "Steers delivered — press again to send your next queued message."
+            : "Interrupted";
+    if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    setFlushNarration({ text, remaining });
+    flushTimerRef.current = setTimeout(() => setFlushNarration(undefined), 4000);
+  }, [pauseBusyAgents]);
+
+  // --- Retry a failed send by re-sending the retained draft ---
+  const retrySend = useCallback(
+    (messageId: string) => {
+      const text = retractedTextRef.current.get(messageId);
+      const c = clientRef.current;
+      if (!text || !c) return;
+      void c
+        .send(text, {})
+        .then(({ pubsubId }) => backfillAfterLocalPublish(pubsubId))
+        .catch((err) => console.warn("[Chat] Retry send failed:", err));
+    },
+    [backfillAfterLocalPublish]
+  );
+
+  // --- primaryActionIntent: what pressing Enter does right now ---
+  const primaryActionIntent: "send" | "steer" | "queue" = agentBusy ? "steer" : "send";
+
+  // Clear undo / flush timers on unmount.
+  useEffect(() => {
+    return () => {
+      if (undoTimerRef.current) clearTimeout(undoTimerRef.current);
+      if (flushTimerRef.current) clearTimeout(flushTimerRef.current);
+    };
+  }, []);
 
   const handleCancelInvocation = useCallback(
     async (invocation: InvocationCardPayload, senderId: string) => {
@@ -818,6 +1131,19 @@ export function useChatCore({
     channelName,
     theme,
     config,
+    agentBusy,
+    hasOpenTurn,
+    primaryActionIntent,
+    pendingSendCount,
+    afterTurnMessageIds,
+    failedSendMessageIds,
+    flushNarration,
+    undoableAction,
+    editPendingMessage,
+    cancelPendingMessage,
+    flushOutboxAndInterrupt,
+    undoLastAction,
+    retrySend,
     inputContextValue,
   };
 }

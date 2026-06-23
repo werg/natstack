@@ -37,6 +37,8 @@ export interface UseChannelMessagesResult {
   messageTypes: MessageTypeDefinition[];
   hasMoreHistory: boolean;
   loadingMore: boolean;
+  /** True while any agent turn is in the `open` state (turn lifecycle signal). */
+  hasOpenTurn: boolean;
   loadEarlierMessages: () => Promise<void>;
   backfillAfterLocalPublish: (pubsubId: number | undefined) => Promise<void>;
 }
@@ -53,6 +55,8 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
   const [messageTypes, setMessageTypes] = useState<MessageTypeDefinition[]>([]);
   const [hasMoreHistory, setHasMoreHistory] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  const [hasOpenTurn, setHasOpenTurn] = useState(false);
+  const hasOpenTurnRef = useRef(false);
 
   // Refs for internal state shared between the event consumer and pagination.
   const byIdRef = useRef(new Map<string, ChatMessage>());
@@ -91,6 +95,17 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
       setHasMoreHistory(true);
     }
     setMessages(order.map((id) => byId.get(id)!));
+    // "Busy" includes WAITING turns, not just open ones: a turn parked on a
+    // credential approval / wait is still blocked work, so interrupt/flush UX
+    // (Esc-flush, the "Steer" send intent) must stay enabled. Counting only
+    // "open" left the user unable to steer a waiting agent.
+    const openTurn = Object.values(channelStateRef.current.turns).some(
+      (turn) => turn.status === "open" || turn.status === "waiting"
+    );
+    if (openTurn !== hasOpenTurnRef.current) {
+      hasOpenTurnRef.current = openTurn;
+      setHasOpenTurn(openTurn);
+    }
     setActionBar(actionBarPayloadFromChannelView(channelStateRef.current));
     const nextMessageTypes = messageTypeDefinitionsFromChannelView(channelStateRef.current);
     const nextSignature = messageTypeDefinitionsSignature(nextMessageTypes);
@@ -402,7 +417,7 @@ export function useChannelMessages<T extends ParticipantMetadata = ParticipantMe
     }
   }, [rebuildFromChannelState]);
 
-  return { messages, actionBar, messageTypes, hasMoreHistory, loadingMore, loadEarlierMessages, backfillAfterLocalPublish };
+  return { messages, actionBar, messageTypes, hasMoreHistory, loadingMore, hasOpenTurn, loadEarlierMessages, backfillAfterLocalPublish };
 }
 
 type WireAttachment = {
@@ -462,10 +477,16 @@ function sameChatMessage(a: ChatMessage, b: ChatMessage): boolean {
     a.error !== b.error ||
     a.pending !== b.pending ||
     a.tier !== b.tier ||
-    a.replyTo !== b.replyTo
+    a.replyTo !== b.replyTo ||
+    // Delivery-model fields: without these, incoming receipt/edit/retract
+    // projections are treated as unchanged and the UI never updates.
+    a.retracted !== b.retracted ||
+    a.revision !== b.revision ||
+    a.editedAt !== b.editedAt
   ) {
     return false;
   }
+  if (JSON.stringify(a.receipts ?? null) !== JSON.stringify(b.receipts ?? null)) return false;
   if (JSON.stringify(a.mentions ?? []) !== JSON.stringify(b.mentions ?? [])) return false;
   if (JSON.stringify(attachmentSignatures(a.attachments)) !== JSON.stringify(attachmentSignatures(b.attachments))) return false;
   if (a.invocation !== b.invocation && JSON.stringify(a.invocation) !== JSON.stringify(b.invocation)) return false;

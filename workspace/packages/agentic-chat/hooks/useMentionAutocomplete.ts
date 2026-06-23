@@ -25,6 +25,9 @@ export interface MentionAutocompleteState {
 
 export function useMentionAutocomplete(
   roster: Record<string, Participant<ChatParticipantMetadata>>,
+  /** This client's own participant id — excluded from candidates (you can't
+   *  @-mention the chat panel itself). */
+  selfId?: string | null,
 ): MentionAutocompleteState {
   const [query, setQuery] = useState("");
   const [triggerStart, setTriggerStart] = useState(-1);
@@ -35,6 +38,7 @@ export function useMentionAutocomplete(
     const q = query.toLowerCase();
     return Object.entries(roster)
       .flatMap(([participantId, participant]): MentionCandidate[] => {
+        if (selfId && participantId === selfId) return []; // never mention self
         const handle = participant.metadata.handle;
         if (!handle) return [];
         const name = participant.metadata.name ?? handle;
@@ -44,7 +48,7 @@ export function useMentionAutocomplete(
       })
       .sort((a, b) => a.handle.localeCompare(b.handle))
       .slice(0, 8);
-  }, [query, roster]);
+  }, [query, roster, selfId]);
 
   const close = useCallback(() => {
     setTriggerStart(-1);

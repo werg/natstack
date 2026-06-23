@@ -127,11 +127,44 @@ export interface ChatInputContextValue {
   input: string;
   pendingImages: PendingImage[];
   onInputChange: (value: string) => void;
-  onSendMessage: (attachments?: AttachmentInput[], options?: { mentions?: string[]; replyTo?: string }) => Promise<void>;
+  onSendMessage: (
+    attachments?: AttachmentInput[],
+    options?: {
+      mentions?: string[];
+      replyTo?: string;
+      /** Written into the published message payload (e.g. deliverAfterTurn). */
+      metadata?: Record<string, unknown>;
+    }
+  ) => Promise<void>;
   onImagesChange: (images: PendingImage[]) => void;
   replyTo: string | null;
   replyToMessage: ChatMessage | null;
   setReplyTo: (messageId: string | null) => void;
+}
+
+/**
+ * What pressing Enter will do right now, given agent-busy + send-mode state.
+ * - `send`  — no agent busy: a normal send.
+ * - `steer` — an agent is mid-turn: the default send steers it.
+ * - `queue` — after-turn mode armed: the message waits until the turn closes.
+ */
+export type PrimaryActionIntent = "send" | "steer" | "queue";
+
+/** Transient outcome of the last incremental flush, for the pill + aria-live. */
+export interface FlushNarration {
+  text: string;
+  /** Remaining queued items after this flush step (drives "· N waiting"). */
+  remaining: number;
+}
+
+/** A short, reversible client-side undo window after retract/cancel. */
+export interface UndoableAction {
+  kind: "retract" | "cancel";
+  /** Messages covered by this undo. Consecutive cancels within the window
+   *  accumulate here so a single Undo restores them all (e.g. "cancel queued"). */
+  messageIds: string[];
+  /** Epoch ms when the undo window closes. */
+  expiresAt: number;
 }
 
 // ===========================================================================
@@ -195,6 +228,41 @@ export interface ChatContextValue {
   // Theme
   theme: "light" | "dark";
 
+  // --- Delivery model: outbox, send intent, flush, undo ---------------------
+  /**
+   * Whether any agent is currently mid-turn. Derived robustly by OR-ing every
+   * busy signal (durable typing message, ephemeral roster typing, open turn) so
+   * interrupt/steer affordances stay enabled across the whole turn.
+   */
+  agentBusy: boolean;
+  /** Whether the channel has an open/waiting turn that can receive after-turn messages. */
+  hasOpenTurn: boolean;
+  /** Edit a still-unread outbox message (rebuilds text + attachment blocks). */
+  editPendingMessage: (messageId: string, newText: string) => Promise<void>;
+  /** Retract a still-unread outbox message; raises an Undo snackbar. */
+  cancelPendingMessage: (messageId: string) => Promise<void>;
+  /** Esc / "Send now": pause busy agents with flushDeferred and narrate it. */
+  flushOutboxAndInterrupt: () => Promise<void>;
+  /** What pressing Enter will do right now (drives the send-button label/hint). */
+  primaryActionIntent: PrimaryActionIntent;
+  /** Transient outcome of the last flush, for the inline pill + aria-live. */
+  flushNarration?: FlushNarration;
+  /** The short client-side undo window after retract/cancel. */
+  undoableAction?: UndoableAction;
+  /** Undo the pending undoable action (re-send the retracted message text). */
+  undoLastAction?: () => void;
+  /**
+   * Transient count of locally-in-flight sends ("Sending…" ghost). Local UI
+   * state only; never protocol state.
+   */
+  pendingSendCount: number;
+  /** Message ids sent with after-turn intent — drives the outbox lane cue. */
+  afterTurnMessageIds: Set<string>;
+  /** Message ids whose send failed — shown as "Failed — tap to retry". */
+  failedSendMessageIds: Set<string>;
+  /** Re-attempt a failed send by message id. */
+  retrySend: (messageId: string) => void;
+
   // Handlers
   onLoadEarlierMessages: () => void;
   onInterrupt: (agentId: string, messageId?: string, agentHandle?: string) => void;
@@ -231,6 +299,8 @@ export interface ChatContextValue {
   onRemoveAgent?: (handle: string) => void;
   onFocusPanel?: (panelId: string) => void;
   onReloadPanel?: (panelId: string) => void;
+  /** Start a fresh conversation (surfaced for the command palette). */
+  onNewConversation?: () => void;
 
   // Tool approval (optional)
   toolApproval?: ToolApprovalProps;

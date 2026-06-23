@@ -47,8 +47,15 @@ function messageSignature(msg: ChatMessage): string {
     msg.kind ?? "",
     msg.content,
     msg.complete ? "1" : "0",
-    msg.pending ? "1" : "0",
+    // Include every field that affects grouped rendering so receipt / edit /
+    // retract changes re-memo the row (tier was previously omitted).
     msg.error ?? "",
+    msg.tier ?? "",
+    msg.receipts?.aggregate ?? "",
+    msg.receipts ? JSON.stringify(msg.receipts.byParticipant) : "",
+    msg.retracted ? "1" : "0",
+    msg.revision ?? "",
+    msg.editedAt ?? "",
     customUpdatedAt,
   ].join("\u001f");
 }
@@ -539,7 +546,9 @@ export const MessageList = React.memo(function MessageList({
       return <Flex className="message-item" direction="column">{customRenderMessage(msg, sender as SenderInfo)}</Flex>;
     }
 
-    const isStreaming = msg.kind === "message" && !msg.complete && !msg.pending;
+    // User messages are published as `message.completed` (so `complete` is
+    // already true); the legacy `!pending` term is moot, so drop it.
+    const isStreaming = msg.kind === "message" && !msg.complete;
 
     return (
       <Flex className="message-item" direction="column">
@@ -550,6 +559,7 @@ export const MessageList = React.memo(function MessageList({
           selfId={selfId}
           senderType={sender.type}
           senderInfo={sender as SenderInfo}
+          participants={allParticipants}
           mentionLabels={mentionLabels}
           replyContext={replyContext}
           isStreaming={isStreaming}

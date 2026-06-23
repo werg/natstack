@@ -6,6 +6,7 @@ import { ChatDirtyRepoWarnings } from "./ChatDirtyRepoWarnings";
 import { ChatActionBar } from "./ChatActionBar";
 import { ChatMessageArea } from "./ChatMessageArea";
 import { ChatFeedbackArea } from "./ChatFeedbackArea";
+import { Outbox } from "./Outbox";
 import { ChatInput } from "./ChatInput";
 import { ChatDebugConsole } from "./ChatDebugConsole";
 import "../styles.css";
@@ -51,6 +52,7 @@ export const ChatLayout = React.memo(function ChatLayout() {
         <ChatActionBar />
         <ChatMessageArea />
         <ChatFeedbackArea />
+        <Outbox />
         <ChatInput />
       </Flex>
       <ChatDebugConsole />

@@ -1,11 +1,12 @@
-import { useState, useRef, useEffect, useCallback } from "react";
-import { Box, Callout, Card, Flex, IconButton, Text, TextArea } from "@radix-ui/themes";
-import { PaperPlaneIcon, ImageIcon, Cross2Icon } from "@radix-ui/react-icons";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { Box, Button, Callout, Card, Flex, IconButton, Spinner, Text, TextArea } from "@radix-ui/themes";
+import { Cross2Icon } from "@radix-ui/react-icons";
 import { useIsMobile, useTouchDevice, useViewportHeight } from "@workspace/react/responsive";
 import { useChatContext } from "../context/ChatContext";
 import { getMentionsFromInput, useChatInputContext } from "../context/ChatInputContext";
 import { ImageInput, getAttachmentInputsFromPendingImages } from "./ImageInput";
 import { MentionAutocomplete } from "./MentionAutocomplete";
+import { SendButton } from "./SendButton";
 import { useMentionAutocomplete, type MentionCandidate } from "../hooks/useMentionAutocomplete";
 import {
   getImagesFromClipboard,
@@ -21,7 +22,19 @@ const MAX_IMAGE_COUNT = 10;
  * Reads from ChatContext.
  */
 export function ChatInput() {
-  const { connected, allParticipants } = useChatContext();
+  const {
+    connected,
+    allParticipants,
+    selfId,
+    agentBusy,
+    hasOpenTurn,
+    primaryActionIntent,
+    flushOutboxAndInterrupt,
+    flushNarration,
+    undoableAction,
+    undoLastAction,
+    pendingSendCount,
+  } = useChatContext();
   const {
     input,
     pendingImages,
@@ -35,15 +48,26 @@ export function ChatInput() {
   const isMobile = useIsMobile();
   const isTouch = useTouchDevice();
   const viewportHeight = useViewportHeight();
-  const iconButtonSize: "2" | "3" = isMobile ? "2" : isTouch ? "3" : "2";
+  const sendButtonSize: "2" | "3" = isMobile ? "2" : isTouch ? "3" : "2";
+
+  // Light haptic tick on send (touch devices). Settings-gated; default-on tick.
+  const hapticTick = useCallback(() => {
+    if (isTouch && typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+      try {
+        navigator.vibrate(8);
+      } catch {
+        /* best-effort */
+      }
+    }
+  }, [isTouch]);
 
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
   const [sendError, setSendError] = useState<string | null>(null);
   const [showImageInput, setShowImageInput] = useState(false);
   const [selectedMentionIds, setSelectedMentionIds] = useState<Record<string, string>>({});
-  const mentions = useMentionAutocomplete(allParticipants);
+  const mentions = useMentionAutocomplete(allParticipants, selfId);
 
-  // Auto-resize textarea: use rAF-coalesced onInput handler
+  // Auto-resize textarea: rAF-coalesced onInput handler.
   const resizeRafRef = useRef(0);
   const handleTextAreaInput = useCallback(() => {
     const textArea = textAreaRef.current;
@@ -106,37 +130,48 @@ export function ChatInput() {
     return () => document.removeEventListener("paste", handlePaste);
   }, [connected, pendingImages, onImagesChange]);
 
-  const handleSendMessage = useCallback(async () => {
-    try {
-      setSendError(null);
-      const attachments =
-        pendingImages.length > 0 ? getAttachmentInputsFromPendingImages(pendingImages) : undefined;
-      await onSendMessage(attachments, {
-        mentions: getMentionsFromInput(input, allParticipants, selectedMentionIds),
-        replyTo: replyTo ?? undefined,
-      });
-      onImagesChange([]);
-      setShowImageInput(false);
-      setSelectedMentionIds({});
-      mentions.close();
-      if (textAreaRef.current) {
-        textAreaRef.current.style.height = "auto";
+  const handleSendMessage = useCallback(
+    async (mode: "default" | "after-turn" = "default") => {
+      try {
+        setSendError(null);
+        const attachments =
+          pendingImages.length > 0
+            ? getAttachmentInputsFromPendingImages(pendingImages)
+            : undefined;
+        const effectiveMode = mode === "after-turn" && hasOpenTurn ? "after-turn" : "default";
+        await onSendMessage(attachments, {
+          mentions: getMentionsFromInput(input, allParticipants, selectedMentionIds),
+          replyTo: replyTo ?? undefined,
+          // After-turn delivery is a message intent in payload.metadata.
+          ...(effectiveMode === "after-turn" ? { metadata: { deliverAfterTurn: true } } : {}),
+        });
+        hapticTick();
+        onImagesChange([]);
+        setShowImageInput(false);
+        setSelectedMentionIds({});
+        mentions.close();
+        if (textAreaRef.current) {
+          textAreaRef.current.style.height = "auto";
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setSendError(message);
+        console.error("Failed to send message:", error);
       }
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      setSendError(message);
-      console.error("Failed to send message:", error);
-    }
-  }, [
-    onSendMessage,
-    pendingImages,
-    onImagesChange,
-    input,
-    allParticipants,
-    selectedMentionIds,
-    replyTo,
-    mentions,
-  ]);
+    },
+    [
+      onSendMessage,
+      pendingImages,
+      onImagesChange,
+      input,
+      allParticipants,
+      selectedMentionIds,
+      replyTo,
+      mentions,
+      hapticTick,
+      hasOpenTurn,
+    ]
+  );
 
   const handleInputChange = useCallback(
     (value: string) => {
@@ -207,12 +242,31 @@ export function ChatInput() {
           return;
         }
       }
-      if (e.key === "Enter" && !e.shiftKey) {
+      const mod = e.metaKey || e.ctrlKey;
+      // Escape = flush (advance the pipeline one step) + interrupt, gated on the
+      // mention popover being closed AND the composer empty (flush is
+      // incremental, so a stray Escape should not dump the queue).
+      if (e.key === "Escape" && !mentions.open && input.trim().length === 0 && agentBusy) {
         e.preventDefault();
-        void handleSendMessage();
+        void flushOutboxAndInterrupt();
+        return;
+      }
+      if (e.key === "Enter") {
+        if (e.shiftKey && !mod) {
+          // Shift+Enter = newline (default behavior).
+          return;
+        }
+        e.preventDefault();
+        if (mod && e.shiftKey) {
+          // Cmd/Ctrl+Shift+Enter = send after turn.
+          void handleSendMessage("after-turn");
+        } else {
+          // Enter (or Cmd/Ctrl+Enter) = send default (steers if mid-turn).
+          void handleSendMessage("default");
+        }
       }
     },
-    [handleSendMessage, mentions, insertMention]
+    [handleSendMessage, mentions, insertMention, input, agentBusy, flushOutboxAndInterrupt]
   );
 
   const toggleImageInput = useCallback(() => {
@@ -221,8 +275,13 @@ export function ChatInput() {
   }, [sendError]);
 
   const handleSendClick = useCallback(() => {
-    void handleSendMessage();
+    void handleSendMessage("default");
   }, [handleSendMessage]);
+  const handleSendAfterTurn = useCallback(() => {
+    void handleSendMessage("after-turn");
+  }, [handleSendMessage]);
+
+  const canSend = connected && (input.trim().length > 0 || pendingImages.length > 0);
 
   return (
     <>
@@ -277,75 +336,89 @@ export function ChatInput() {
             </IconButton>
           </Flex>
         )}
-        <Flex align="stretch" gap="2">
-          <Box style={{ position: "relative", flex: 1 }}>
-            {mentions.open && (
-              <MentionAutocomplete
-                candidates={mentions.candidates}
-                selectedIndex={mentions.selectedIndex}
-                position={mentions.caretPosition}
-                onHighlight={mentions.setSelectedIndex}
-                onSelect={insertMention}
-              />
-            )}
-            <TextArea
-              ref={textAreaRef}
-              size="2"
-              variant="surface"
-              style={{
-                width: "100%",
-                minHeight: isMobile ? 38 : 42,
-                maxHeight: isMobile ? Math.min(120, viewportHeight * 0.22) : 180,
-                resize: "none",
-              }}
-              placeholder={
-                isMobile
-                  ? "Type a message..."
-                  : "Type a message... (Enter to send, Shift+Enter for new line)"
-              }
-              value={input}
-              onChange={(e) => handleInputChange(e.target.value)}
-              onInput={handleTextAreaInput}
-              onKeyDown={handleKeyDown}
-              disabled={!connected}
+        {/* The send control is docked in the input's lower-right corner (inside
+            the field, not beside it). It stays put as the textarea grows; the
+            textarea reserves right-padding so text never runs under it. */}
+        <Box style={{ position: "relative" }}>
+          {mentions.open && (
+            <MentionAutocomplete
+              candidates={mentions.candidates}
+              selectedIndex={mentions.selectedIndex}
+              position={mentions.caretPosition}
+              onHighlight={mentions.setSelectedIndex}
+              onSelect={insertMention}
+            />
+          )}
+          <TextArea
+            ref={textAreaRef}
+            size="2"
+            variant="surface"
+            className="chat-input-textarea"
+            style={{
+              width: "100%",
+              // Match the dock's default band so the send button sits centered in
+              // the default two-line composer (see .chat-input-send-dock).
+              minHeight: "var(--composer-min-h, 3.5rem)",
+              maxHeight: isMobile ? Math.min(120, viewportHeight * 0.22) : 180,
+              resize: "none",
+            }}
+            placeholder={isMobile ? "Type a message…" : "Type a message…  (⏎ send · ⇧⏎ newline)"}
+            value={input}
+            onChange={(e) => handleInputChange(e.target.value)}
+            onInput={handleTextAreaInput}
+            onKeyDown={handleKeyDown}
+            disabled={!connected}
+          />
+          <Box className="chat-input-send-dock">
+            <SendButton
+              intent={primaryActionIntent}
+              agentBusy={agentBusy}
+              canSendAfterTurn={hasOpenTurn}
+              disabled={!canSend}
+              optionsDisabled={!connected}
+              size={sendButtonSize}
+              onSend={handleSendClick}
+              onSendAfterTurn={handleSendAfterTurn}
+              onAttach={connected ? toggleImageInput : undefined}
+              attachmentCount={pendingImages.length}
             />
           </Box>
-          <Flex className="chat-input-actions" direction="column" gap="1" align="center" justify="center">
-            <IconButton
-              className="chat-input-action-button"
-              variant={showImageInput || pendingImages.length > 0 ? "soft" : "ghost"}
-              size={iconButtonSize}
-              onClick={toggleImageInput}
-              disabled={!connected}
-              color={pendingImages.length > 0 ? "blue" : "gray"}
-              title={pendingImages.length > 0 ? `${pendingImages.length} image${pendingImages.length > 1 ? "s" : ""} attached` : "Attach images"}
-              aria-label="Attach images"
-            >
-              <Box position="relative" asChild>
-                <span>
-                  <ImageIcon />
-                  {pendingImages.length > 0 && (
-                    <Text as="span" className="chat-input-attachment-count" size="1">
-                      {pendingImages.length}
-                    </Text>
-                  )}
-                </span>
-              </Box>
-            </IconButton>
-            <IconButton
-              className="chat-input-action-button chat-input-send-button"
-              onClick={handleSendClick}
-              disabled={!connected || (!input.trim() && pendingImages.length === 0)}
-              size={iconButtonSize}
-              variant="solid"
-              title="Send message"
-              aria-label="Send message"
-            >
-              <PaperPlaneIcon />
-            </IconButton>
+        </Box>
+        {/* Transient "Sending…" ghost — the only sub-row, shown only in flight. */}
+        {pendingSendCount > 0 && (
+          <Flex align="center" justify="end" gap="1" mt="1" className="chat-sending-ghost" aria-live="polite">
+            <Spinner size="1" />
+            <Text size="1" color="gray">
+              Sending…
+            </Text>
           </Flex>
-        </Flex>
+        )}
       </Card>
+
+      {/* Transient flush self-narration pill. */}
+      {flushNarration && (
+        <Box flexShrink="0" mt="1" className="chat-narration-pill-wrap" aria-live="polite">
+          <Box className="chat-narration-pill">
+            <Text size="1">{flushNarration.text}</Text>
+          </Box>
+        </Box>
+      )}
+
+      {/* Reversible-until-committed undo snackbar (~5s). */}
+      {undoableAction && (
+        <Box flexShrink="0" mt="1" className="chat-undo-snackbar-wrap" aria-live="polite">
+          <Flex align="center" justify="between" gap="3" className="chat-undo-snackbar">
+            <Text size="1">
+              {undoableAction.messageIds.length > 1
+                ? `${undoableAction.messageIds.length} messages canceled`
+                : "Message canceled"}
+            </Text>
+            <Button size="1" variant="soft" onClick={() => undoLastAction?.()}>
+              Undo
+            </Button>
+          </Flex>
+        </Box>
+      )}
     </>
   );
 }

@@ -20,9 +20,19 @@ export function MentionAutocomplete({
   onSelect,
   onHighlight,
 }: MentionAutocompleteProps) {
-  // Portal + fixed positioning: the input lives inside several
-  // overflow-clipping surfaces (chat root, input card); rendering in-place
-  // gets the popover cut off at the message-box edge.
+  // Portal + fixed positioning: the input lives inside several overflow-clipping
+  // surfaces (the `container-type` chat root, the input card), so rendering
+  // in-place clips the popover. But portal into the chat's Radix `.radix-themes`
+  // root — NOT bare `document.body` — or the theme tokens this popover relies on
+  // (`--color-panel-solid`, `--gray-a6`, `--shadow-4`, `--accent-a4`) resolve to
+  // nothing and it renders as transparent, borderless rows over the transcript.
+  // The theme root is an ancestor of the container-type element, so it is outside
+  // the clip yet still carries the tokens.
+  const portalTarget =
+    typeof document === "undefined"
+      ? null
+      : (document.querySelector<HTMLElement>(".radix-themes") ?? document.body);
+  if (!portalTarget) return null;
   return createPortal(
     <Box
       style={{
@@ -74,6 +84,6 @@ export function MentionAutocomplete({
         </Flex>
       ))}
     </Box>,
-    document.body
+    portalTarget
   );
 }

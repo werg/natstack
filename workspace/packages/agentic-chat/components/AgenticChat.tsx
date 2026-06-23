@@ -2,6 +2,7 @@ import type { ChannelConfig } from "@workspace/pubsub";
 import { Theme } from "@radix-ui/themes";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { ChatLayout } from "./ChatLayout";
+import { ChatPaletteCommands } from "./ChatPaletteCommands";
 import { ChatProvider } from "../context/ChatProvider";
 import { useAgenticChat } from "../hooks/useAgenticChat";
 import type { ChatParticipantMetadata, ConnectionConfig, AgenticChatActions, ToolProvider, SandboxConfig } from "../types";
@@ -90,12 +91,17 @@ export function AgenticChat({
       {/* Theme is applied here (above ChatProvider) rather than in ChatLayout
           so that ChatLayout does NOT read from context. This prevents
           keystroke-driven context updates from re-rendering ChatLayout and
-          causing layout shifts that break autoscroll. */}
+          causing layout shifts that break autoscroll.
+
+          Appearance flows from the explicitly-passed `theme` prop OR, when
+          absent, the system / centralized appearance (resolved in useChatCore
+          via resolveSystemTheme) — NEVER a hardcoded "dark" literal. */}
       <Theme
-        appearance={contextValue.theme ?? "dark"}
+        appearance={contextValue.theme}
         style={{ minWidth: 0, width: "100%", height: "100%" }}
       >
         <ChatProvider value={contextValue} inputValue={inputContextValue}>
+          <ChatPaletteCommands />
           <ChatLayout />
         </ChatProvider>
       </Theme>

@@ -4,8 +4,11 @@ import React from "react";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { PubSubClient } from "@workspace/pubsub";
+import { Theme } from "@radix-ui/themes";
 import { MessageList } from "./MessageList.js";
+import { MessageCard } from "./MessageCard.js";
 import { channelParticipantId } from "../types.js";
+import type { ChatMessage } from "../types.js";
 import { useChannelMessages } from "../hooks/useChannelMessages.js";
 import {
   appendTrajectoryEventsAndBroadcast,
@@ -136,5 +139,77 @@ describe("transcript UX smoke", () => {
     });
 
     panel.close();
+  });
+});
+
+describe("transcript delivery markers", () => {
+  const SELF = channelParticipantId("panel:user");
+  const senderInfo = { name: "You", type: "panel" as const, handle: "user" };
+  const noop = () => {};
+
+  function renderCard(msg: ChatMessage, participants = {}) {
+    return render(
+      <Theme>
+        <MessageCard
+          msg={msg}
+          index={0}
+          selfId={SELF}
+          senderType="panel"
+          senderInfo={senderInfo}
+          participants={participants}
+          mentionLabels={[]}
+          isStreaming={false}
+          isCopied={false}
+          onInterrupt={noop}
+          onCopy={noop}
+          onClearCopied={noop}
+        />
+      </Theme>
+    );
+  }
+
+  it("shows a compact ack badge for self-authored non-retracted messages", () => {
+    renderCard(
+      {
+        id: "m1",
+        senderId: "panel:user",
+        content: "steer it",
+        kind: "message",
+        complete: true,
+        receipts: { byParticipant: { "agent:alice": "read" }, aggregate: "read" },
+      },
+      { "agent:alice": { id: "agent:alice", metadata: { name: "Alice", type: "agent", handle: "alice" } } }
+    );
+    // Agent recipients are framed as "taken into account".
+    expect(screen.getByLabelText(/Alice: taken into account/i)).toBeTruthy();
+  });
+
+  it("renders a slim tombstone for retracted messages with no content or badge", () => {
+    renderCard({
+      id: "m2",
+      senderId: "panel:user",
+      content: "secret that was canceled",
+      kind: "message",
+      complete: true,
+      retracted: true,
+      receipts: { byParticipant: { "agent:alice": "pending" }, aggregate: "pending" },
+    });
+    expect(screen.getByText("Message canceled")).toBeTruthy();
+    // No content and no badge on the tombstone.
+    expect(screen.queryByText("secret that was canceled")).toBeNull();
+    expect(screen.queryByLabelText(/Delivery|pending|received|read/i)).toBeNull();
+  });
+
+  it("shows a quiet 'edited' marker when revision/editedAt is present", () => {
+    renderCard({
+      id: "m3",
+      senderId: "panel:user",
+      content: "revised text",
+      kind: "message",
+      complete: true,
+      revision: 1,
+      editedAt: "2026-05-21T08:00:00.000Z",
+    });
+    expect(screen.getByText("edited")).toBeTruthy();
   });
 });

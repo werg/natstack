@@ -1,18 +1,21 @@
 import React, { useCallback, useState } from "react";
 import { Badge, Box, Button, Card, Code, Flex, IconButton, Text } from "@radix-ui/themes";
-import { CopyIcon, CheckIcon, ChatBubbleIcon, ReloadIcon } from "@radix-ui/react-icons";
+import { CopyIcon, CheckIcon, ChatBubbleIcon, ReloadIcon, Cross2Icon } from "@radix-ui/react-icons";
 import { CONTENT_TYPE_INLINE_UI, isClientParticipantType } from "@workspace/pubsub";
+import type { Participant } from "@workspace/pubsub";
 import { TypingIndicator } from "./TypingIndicator";
 import { MessageContent } from "./MessageContent";
 import { ImageGallery } from "./ImageGallery";
 import { InlineUiMessage, parseInlineUiData } from "./InlineUiMessage";
 import { AgentDisconnectedMessage } from "./AgentDisconnectedMessage";
 import { CustomMessageCard } from "./CustomMessage";
+import { AckBadge } from "./AckBadge";
 import ModelCredentialRequiredCard from "./ModelCredentialRequiredCard";
 import type {
   BrowserHandoffCaller,
   ChannelParticipantId,
   ChatMessage,
+  ChatParticipantMetadata,
   InlineUiComponentEntry,
   MessageTypeComponentEntry,
 } from "../types";
@@ -25,6 +28,8 @@ interface MessageCardProps {
   selfId: ChannelParticipantId | null;
   senderType: string;
   senderInfo: SenderInfo;
+  /** Roster used to resolve receipt participant keys → display name/type. */
+  participants?: Record<string, Participant<ChatParticipantMetadata>>;
   mentionLabels: string[];
   replyContext?: { id: string; senderName: string; snippet: string };
   isStreaming: boolean;
@@ -59,6 +64,7 @@ export const MessageCard = React.memo(function MessageCard({
   selfId,
   senderType,
   senderInfo,
+  participants,
   mentionLabels,
   replyContext,
   isStreaming,
@@ -345,6 +351,35 @@ export const MessageCard = React.memo(function MessageCard({
   const hasAttachments = msg.attachments && msg.attachments.length > 0;
   // Tier 2 (secondary salience) renders slighter — see styles.css. Absent ⇒ tier 1.
   const isSecondary = msg.tier === "secondary";
+  const isSelfAuthored = Boolean(selfId && msg.senderId === selfId);
+  const isEdited = msg.revision !== undefined || msg.editedAt !== undefined;
+  // Show a delivery badge for the user's own non-retracted real messages.
+  const showAckBadge = isSelfAuthored && !msg.retracted && !hasError && Boolean(msg.receipts);
+
+  // A retracted message collapses to a slim tombstone — no content, actions,
+  // or badge. The author canceled it before any recipient read it.
+  if (msg.retracted) {
+    return (
+      <Box
+        id={`message-${msg.id}`}
+        className={classNames(
+          "message-row",
+          isClient ? "message-row-client" : "message-row-agent"
+        )}
+      >
+        <Card className="message-card message-card-tombstone">
+          <Flex align="center" gap="2">
+            <Box className="message-tombstone-icon" aria-hidden="true">
+              <Cross2Icon />
+            </Box>
+            <Text size="1" color="gray">
+              Message canceled
+            </Text>
+          </Flex>
+        </Card>
+      </Box>
+    );
+  }
 
   return (
     <Box
@@ -363,32 +398,64 @@ export const MessageCard = React.memo(function MessageCard({
           hasError && "message-card-error",
           isSecondary && "message-card-tier2"
         )}
-        style={{
-          opacity: msg.pending ? 0.7 : 1,
-        }}
       >
         <Flex className="message-card-body" direction="column" gap="2">
           <Flex align="center" justify="between" gap="2">
-            <Box style={{ minWidth: 0 }}>
-              <Text size="1" weight="medium" truncate>
-                {senderInfo.name}
-              </Text>
-              <Text as="span" size="1" color="gray" style={{ marginLeft: 6 }}>
-                @{senderInfo.handle}
-              </Text>
-            </Box>
-            {onReply && hasContent && !isStreaming && (
-              <IconButton
-                className="copy-button"
-                size="1"
-                variant="ghost"
-                color="gray"
-                onClick={handleReply}
-                title="Reply"
-              >
-                <ChatBubbleIcon />
-              </IconButton>
-            )}
+            <Flex align="center" gap="1" style={{ minWidth: 0 }}>
+              <Box style={{ minWidth: 0 }}>
+                <Text size="1" weight="medium" truncate>
+                  {senderInfo.name}
+                </Text>
+                <Text as="span" size="1" color="gray" style={{ marginLeft: 6 }}>
+                  @{senderInfo.handle}
+                </Text>
+              </Box>
+              {/* Copy lives in the header (right after the handle) to keep the
+                  card bottom free for content + the delivery badge. */}
+              {hasContent && !isStreaming && (
+                <IconButton
+                  className="copy-button"
+                  size="1"
+                  variant="ghost"
+                  color="gray"
+                  style={{ flexShrink: 0 }}
+                  onClick={handleCopy}
+                  onBlur={handleClearCopied}
+                  onPointerLeave={handleClearCopied}
+                  title="Copy message"
+                >
+                  {isCopied ? <CheckIcon /> : <CopyIcon />}
+                </IconButton>
+              )}
+            </Flex>
+            {/* Top-bar right cluster: delivery status + edited marker + reply,
+                kept in the header to save a whole row at the card bottom. */}
+            <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+              {isEdited && !isStreaming && (
+                <Text size="1" color="gray" className="message-edited-marker">
+                  edited
+                </Text>
+              )}
+              {showAckBadge && !isStreaming && (
+                <AckBadge
+                  receipts={msg.receipts!}
+                  participants={participants ?? {}}
+                  mode="compact"
+                />
+              )}
+              {onReply && hasContent && !isStreaming && (
+                <IconButton
+                  className="copy-button"
+                  size="1"
+                  variant="ghost"
+                  color="gray"
+                  onClick={handleReply}
+                  title="Reply"
+                >
+                  <ChatBubbleIcon />
+                </IconButton>
+              )}
+            </Flex>
           </Flex>
           {replyContext && (
             <Box
@@ -436,25 +503,6 @@ export const MessageCard = React.memo(function MessageCard({
               showInterruptButton={true}
               onInterrupt={handleInterrupt}
             />
-          )}
-          {hasContent && !isStreaming && (
-            <IconButton
-              className="copy-button"
-              size="1"
-              variant="ghost"
-              color="gray"
-              style={{
-                position: "absolute",
-                bottom: 4,
-                right: 4,
-              }}
-              onClick={handleCopy}
-              onBlur={handleClearCopied}
-              onPointerLeave={handleClearCopied}
-              title="Copy message"
-            >
-              {isCopied ? <CheckIcon /> : <CopyIcon />}
-            </IconButton>
           )}
         </Flex>
       </Card>

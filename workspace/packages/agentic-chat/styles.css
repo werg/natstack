@@ -1,3 +1,7 @@
+/* Unified token layer (motion, semantic color, surface, "you" accent, the
+   centralized keyframes + reduced-motion block). Imported once here. */
+@import "@workspace/ui/tokens.css";
+
 /* Cursor blink animation for streaming messages */
 @keyframes cursor-blink {
   0%, 50% {
@@ -211,20 +215,47 @@
 }
 
 
-.chat-input-actions {
-  flex: 0 0 auto;
-  padding-block: 1px;
+/* Geometry of the default composer + its docked send control. The composer
+   defaults to two lines; the dock is a bottom-anchored band the height of that
+   default with the button centered in it — so the button sits vertically
+   centered (equal right/bottom gap) in the default view and then STAYS pinned
+   to the bottom band (no drift) as the textarea grows past two lines. */
+.chat-input-card {
+  --composer-min-h: 3.5rem; /* the default two-line composer height */
+  --send-dock-gap: 0.75rem; /* right gap, matched to the centered bottom gap */
 }
 
-/* Comfortable tap targets and no-zoom text entry on touch devices */
-@media (pointer: coarse) {
-  .chat-input-action-button {
-    inline-size: 40px;
-    block-size: 40px;
-  }
+.chat-input-send-dock {
+  position: absolute;
+  inset-inline-end: var(--send-dock-gap);
+  inset-block-end: 0;
+  block-size: var(--composer-min-h);
+  display: flex;
+  align-items: center; /* vertically center the button in the default band */
+  z-index: 1;
+}
 
+/* Reserve room so text never runs under the docked send control. Generous
+   slack over the measured group width (~64px primary+chevron + 12px gap) so a
+   long unbroken token never tucks under the button on a narrow split panel. */
+.chat-input-card textarea {
+  padding-inline-end: 5.5rem;
+}
+
+/* No-zoom text entry on touch + a taller default band + a real (≥44px) touch
+   target for the chevron (it's slimmed to 24px on pointer:fine, which is a
+   mis-tap hazard on touch — a missed "options" tap would hit primary send). */
+@media (pointer: coarse) {
+  .chat-input-card {
+    --composer-min-h: 4rem;
+  }
   .chat-input-card textarea {
     font-size: 16px;
+    padding-inline-end: 6.75rem;
+  }
+  .send-button-chevron {
+    inline-size: 2.75rem;
+    min-inline-size: 2.75rem;
   }
 }
 
@@ -253,37 +284,6 @@
   border-radius: 999px;
 }
 
-.chat-input-action-button {
-  position: relative;
-  inline-size: 32px;
-  block-size: 32px;
-  border-radius: var(--radius-3);
-}
-
-.chat-input-action-button svg {
-  inline-size: 15px;
-  block-size: 15px;
-}
-
-.chat-input-send-button:not(:disabled) {
-  box-shadow: 0 6px 18px var(--accent-a3);
-}
-
-.chat-input-attachment-count {
-  position: absolute;
-  inset-block-start: -7px;
-  inset-inline-end: -8px;
-  min-inline-size: 15px;
-  block-size: 15px;
-  padding-inline: 4px;
-  border-radius: 999px;
-  background: var(--accent-9);
-  color: white;
-  font-size: 10px;
-  line-height: 15px;
-  text-align: center;
-  box-shadow: 0 0 0 2px var(--color-panel-solid);
-}
 
 .chat-action-bar {
   flex: 0 0 auto;
@@ -721,4 +721,263 @@
 
 .ns-codeblock .hljs-strong {
   font-weight: 600;
+}
+
+/* ===========================================================================
+   Delivery model: ack badges, outbox, send button, narration, undo snackbar.
+   Built on the unified token layer (tokens.css). No hard-coded hex; the
+   "you/client" accent is iris via --you-*. Reduced-motion is centralized in
+   tokens.css and overrides all animations below.
+   =========================================================================== */
+
+/* --- Ack badge --------------------------------------------------------------*/
+.ack-icon {
+  display: inline-flex;
+  align-items: center;
+}
+/* State-change cross-fade via the centralized ack-pop keyframe. */
+.ack-pop-read .ack-icon,
+.ack-pop-received .ack-icon,
+.ack-pop-pending .ack-icon,
+.ack-aggregate-overlay {
+  animation: ack-pop var(--motion-base) var(--ease-emphasized);
+}
+.ack-badge-compact,
+.ack-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+/* Single-recipient badge is icon-only (e.g. a green check) — collapse the gap
+   and trim padding so it reads as just the glyph, not a wordy chip. */
+.ack-badge-icon-only {
+  gap: 0;
+  padding-inline: 3px;
+}
+.ack-avatar-stack {
+  display: inline-flex;
+  align-items: center;
+}
+.ack-avatar-stack-item {
+  border-radius: 9999px;
+  box-shadow: 0 0 0 2px var(--color-panel-solid, var(--gray-1));
+}
+.ack-badge-trigger {
+  display: inline-flex;
+  align-items: center;
+  border-radius: var(--radius-2);
+}
+.ack-badge-trigger:focus-visible {
+  outline: 2px solid var(--focus-8);
+  outline-offset: 2px;
+}
+.ack-detail-surface {
+  z-index: var(--z-popover);
+}
+
+/* --- Outbox -----------------------------------------------------------------*/
+.outbox-root {
+  position: relative;
+  min-width: 0;
+}
+/* Quiet tether between the typing indicator and the outbox. */
+.outbox-tether {
+  height: 8px;
+  width: 2px;
+  margin: 0 auto;
+  background: linear-gradient(var(--you-rail), transparent);
+  border-radius: 2px;
+}
+.outbox-tethered .outbox-panel {
+  box-shadow: inset 0 1px 0 var(--you-surface-strong);
+}
+.outbox-panel {
+  border: 1px solid var(--surface-border);
+  border-radius: var(--radius-3);
+  background: var(--surface-card);
+  padding: var(--space-2);
+}
+.outbox-panel-header {
+  padding-bottom: var(--space-1);
+}
+/* Radix ScrollArea (polished thin scrollbar, matching the transcript). Cap the
+   viewport height so the queue scrolls internally and the composer stays put. */
+.outbox-scroll,
+.outbox-scroll [data-radix-scroll-area-viewport] {
+  max-height: 38vh;
+}
+.outbox-scroll [data-radix-scroll-area-viewport],
+.outbox-scroll [data-radix-scroll-area-content] {
+  overflow-x: hidden;
+}
+.outbox-list {
+  min-width: 0;
+}
+.outbox-summary-bar {
+  width: 100%;
+  text-align: left;
+  border: 1px solid var(--surface-border);
+  border-left: 2px solid var(--you-rail);
+  border-radius: var(--radius-3);
+  background: var(--you-surface);
+  padding: var(--space-2);
+  cursor: pointer;
+  color: inherit;
+}
+
+/* --- Outbox item ------------------------------------------------------------*/
+.outbox-item {
+  border: 1px solid var(--surface-border);
+  border-left: 2px solid var(--you-rail);
+  border-radius: var(--radius-3);
+  background: var(--you-surface);
+  padding: var(--space-2);
+  transition:
+    opacity var(--motion-base) var(--ease-standard),
+    transform var(--motion-base) var(--ease-standard);
+}
+.outbox-item-after-turn {
+  background: var(--surface-card);
+  border-left-color: var(--gray-a7);
+  opacity: 0.92;
+}
+.outbox-item-failed {
+  border-color: var(--intent-error-border);
+}
+.outbox-item-dragging {
+  opacity: 0.6;
+}
+.outbox-drag-handle {
+  display: inline-flex;
+  align-items: center;
+  color: var(--gray-a9);
+  cursor: grab;
+}
+.outbox-drag-handle:active {
+  cursor: grabbing;
+}
+.outbox-item-clamp {
+  white-space: pre-wrap;
+}
+.outbox-editable-glyph {
+  display: inline-flex;
+  align-items: center;
+  color: var(--gray-11);
+  transition: color var(--motion-base) var(--ease-standard);
+}
+.outbox-editable-read,
+.outbox-editable-partial {
+  color: var(--grass-11);
+  animation: ack-pop var(--motion-base) var(--ease-emphasized);
+}
+.outbox-item-failed-banner {
+  color: var(--intent-error);
+}
+
+/* --- Send button ------------------------------------------------------------*/
+.send-button-group {
+  position: relative;
+}
+.send-button-primary {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+.send-button-chevron {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left: 1px solid var(--gray-a6);
+  /* Slimmer than the square primary half — it's just the disclosure affordance. */
+  inline-size: 1.5rem;
+  min-inline-size: 1.5rem;
+  padding-inline: 0;
+}
+.send-button-morph {
+  animation: ack-pop var(--motion-fast) var(--ease-standard);
+}
+.send-button-accent-dot {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 6px;
+  height: 6px;
+  border-radius: 9999px;
+  background: var(--accent-9);
+}
+.send-button-menu {
+  z-index: var(--z-popover);
+}
+.send-menu-row {
+  height: auto;
+  padding-top: var(--space-2);
+  padding-bottom: var(--space-2);
+}
+
+/* --- Composer narration pill, undo snackbar, sending ghost -----------------*/
+.chat-sending-ghost {
+  flex-shrink: 0;
+}
+.chat-narration-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--space-1) var(--space-3);
+  border-radius: 9999px;
+  background: var(--you-surface-strong);
+  color: var(--gray-12);
+  border: 1px solid var(--you-rail);
+  animation: pill-in var(--motion-base) var(--ease-emphasized);
+}
+.chat-undo-snackbar {
+  padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-3);
+  background: var(--surface-raised);
+  border: 1px solid var(--surface-border);
+  box-shadow: var(--elevation-2);
+  animation: pill-in var(--motion-base) var(--ease-emphasized);
+}
+
+/* --- Transcript markers / tombstone ----------------------------------------*/
+.message-card-tombstone {
+  opacity: 0.7;
+  background: var(--gray-a2);
+}
+.message-tombstone-icon {
+  display: inline-flex;
+  align-items: center;
+  color: var(--gray-a9);
+}
+.message-edited-marker {
+  font-style: italic;
+}
+
+/* Ambient turn rhythm: a soft shimmer on the typing row. */
+.typing-indicator-shimmer {
+  background-image: linear-gradient(
+    90deg,
+    transparent 0%,
+    var(--gray-a4) 50%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: ambient-shimmer 2.4s linear infinite;
+}
+
+/* Lifecycle rise: an outbox card landing in the transcript. */
+.message-row-lifecycle-rise {
+  animation: lifecycle-rise var(--motion-emphasized) var(--ease-decelerate);
+}
+
+/* Lightweight initials avatar used by the ack badge avatar stack. */
+.ack-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 9999px;
+  background: var(--gray-a4);
+  color: var(--gray-12);
+  flex-shrink: 0;
+}
+.ack-avatar-stack-item .ack-avatar {
+  box-shadow: 0 0 0 2px var(--color-panel-solid, var(--gray-1));
 }

@@ -50,6 +50,48 @@ function messageTypeRegistered(
   };
 }
 
+function messageReceived(
+  id: string,
+  actorId: string,
+  createdAt = "2026-05-21T08:00:10.000Z",
+): AgenticEvent<"message.received"> {
+  return {
+    kind: "message.received",
+    actor: { kind: "agent", id: actorId },
+    causality: { messageId: brandId<MessageId>(id) },
+    payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+    createdAt,
+  };
+}
+
+function messageRead(
+  id: string,
+  actorId: string,
+  createdAt = "2026-05-21T08:00:20.000Z",
+): AgenticEvent<"message.read"> {
+  return {
+    kind: "message.read",
+    actor: { kind: "agent", id: actorId },
+    causality: { messageId: brandId<MessageId>(id) },
+    payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+    createdAt,
+  };
+}
+
+function messageRetracted(
+  id: string,
+  actorId: string,
+  createdAt = "2026-05-21T08:00:30.000Z",
+): AgenticEvent<"message.retracted"> {
+  return {
+    kind: "message.retracted",
+    actor: { kind: "user", id: actorId },
+    causality: { messageId: brandId<MessageId>(id) },
+    payload: { protocol: AGENTIC_PROTOCOL_VERSION, by: { kind: "user", id: actorId } },
+    createdAt,
+  };
+}
+
 function messageDelta(
   id: string,
   text: string,
@@ -82,6 +124,10 @@ function pubsubAgenticEvent(seq: number, payload: AgenticEvent) {
   };
 }
 
+function livePubsubAgenticEvent(seq: number, payload: AgenticEvent) {
+  return { ...pubsubAgenticEvent(seq, payload), phase: "live" as const };
+}
+
 function rawReplayEvent(seq: number, payload: AgenticEvent) {
   return {
     id: seq,
@@ -106,6 +152,43 @@ function createClient(events: unknown[] = [], overrides: Partial<PubSubClient> =
     ...overrides,
   };
   return client as unknown as PubSubClient;
+}
+
+/**
+ * A controllable async-iterable event stream so a test can push successive live
+ * events into `client.events()` without the generator returning early.
+ */
+function createEventStream() {
+  const queue: IncomingEvent[] = [];
+  let resolveNext: ((value: IteratorResult<IncomingEvent>) => void) | null = null;
+  const iterator: AsyncIterableIterator<IncomingEvent> = {
+    [Symbol.asyncIterator]() {
+      return this;
+    },
+    next(): Promise<IteratorResult<IncomingEvent>> {
+      if (queue.length > 0) {
+        return Promise.resolve({ value: queue.shift()!, done: false });
+      }
+      return new Promise((resolve) => {
+        resolveNext = resolve;
+      });
+    },
+    return(): Promise<IteratorResult<IncomingEvent>> {
+      return Promise.resolve({ value: undefined as never, done: true });
+    },
+  };
+  return {
+    iterator,
+    push(event: IncomingEvent) {
+      if (resolveNext) {
+        const resolve = resolveNext;
+        resolveNext = null;
+        resolve({ value: event, done: false });
+      } else {
+        queue.push(event);
+      }
+    },
+  };
 }
 
 function Probe({
@@ -218,6 +301,65 @@ describe("useChannelMessages", () => {
       expect(latest!.messages.map((message) => message.id)).toEqual(["msg-1", "msg-2"]);
     });
     expect(latest!.messageTypes).toBe(registryProjection);
+  });
+
+  it("re-renders the projection when receipts / retract land (sameChatMessage gate)", async () => {
+    let latest: UseChannelMessagesResult | undefined;
+    const stream = createEventStream();
+    const completed = messageCompleted("m1", "steer the agent", "2026-05-21T08:00:00.000Z");
+    const received = messageReceived("m1", "agent:writer");
+    const read = messageRead("m1", "agent:writer");
+    const client = createClient([], { events: vi.fn(() => stream.iterator) });
+
+    render(<Probe client={client} onValue={(value) => { latest = value; }} />);
+
+    await act(async () => {
+      stream.push(livePubsubAgenticEvent(1, completed) as IncomingEvent);
+    });
+    await waitFor(() => {
+      expect(latest!.messages.map((m) => m.id)).toEqual(["m1"]);
+    });
+    // No receipts before any ack lands.
+    expect(latest!.messages[0]!.receipts).toBeUndefined();
+
+    await act(async () => {
+      stream.push(livePubsubAgenticEvent(2, received) as IncomingEvent);
+    });
+    await waitFor(() => {
+      expect(latest!.messages[0]!.receipts?.byParticipant["agent:agent:writer"]).toBe("received");
+      expect(latest!.messages[0]!.receipts?.aggregate).toBe("pending");
+    });
+
+    await act(async () => {
+      stream.push(livePubsubAgenticEvent(3, read) as IncomingEvent);
+    });
+    await waitFor(() => {
+      expect(latest!.messages[0]!.receipts?.byParticipant["agent:agent:writer"]).toBe("read");
+      expect(latest!.messages[0]!.receipts?.aggregate).toBe("read");
+    });
+  });
+
+  it("re-renders to a tombstone when an unread message is retracted", async () => {
+    let latest: UseChannelMessagesResult | undefined;
+    const stream = createEventStream();
+    const completed = messageCompleted("m2", "cancel me", "2026-05-21T08:00:00.000Z");
+    const retracted = messageRetracted("m2", "panel:user");
+    const client = createClient([], { events: vi.fn(() => stream.iterator) });
+
+    render(<Probe client={client} onValue={(value) => { latest = value; }} />);
+    await act(async () => {
+      stream.push(livePubsubAgenticEvent(1, completed) as IncomingEvent);
+    });
+    await waitFor(() => {
+      expect(latest!.messages[0]?.retracted).toBeFalsy();
+    });
+
+    await act(async () => {
+      stream.push(livePubsubAgenticEvent(2, retracted) as IncomingEvent);
+    });
+    await waitFor(() => {
+      expect(latest!.messages[0]?.retracted).toBe(true);
+    });
   });
 
   it("applies batched ephemeral message deltas from one signal event", async () => {

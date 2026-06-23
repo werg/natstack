@@ -218,7 +218,9 @@ export function useAgenticChat({
   metadata = { name: "Chat Panel", type: "panel", handle: "user" },
   tools,
   actions,
-  theme = "dark",
+  // No "dark" default — appearance flows from the explicit prop OR the system
+  // / centralized appearance (resolved in useChatCore via resolveSystemTheme).
+  theme,
   installedAgentInfos,
   initialPrompt,
   forceInitialPrompt,
@@ -1305,6 +1307,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
   const onRemoveAgent = actions?.onRemoveAgent ? handleRemoveAgent : undefined;
   const onFocusPanel = actions?.onFocusPanel;
   const onReloadPanel = actions?.onReloadPanel;
+  const onNewConversation = actions?.onNewConversation;
   // --- Assemble context values ---
   const contextValue: ChatContextValue = useMemo(
     () => ({
@@ -1339,7 +1342,21 @@ Use package imports available to inline_ui plus relative imports for local helpe
       dirtyRepoWarnings: core.dirtyRepoWarnings,
       pendingAgents: core.pendingAgents,
       activeFeedbacks: feedback.activeFeedbacks,
-      theme,
+      // Resolved appearance (explicit prop OR system) — never a "dark" literal.
+      theme: core.theme,
+      agentBusy: core.agentBusy,
+      hasOpenTurn: core.hasOpenTurn,
+      editPendingMessage: core.editPendingMessage,
+      cancelPendingMessage: core.cancelPendingMessage,
+      flushOutboxAndInterrupt: core.flushOutboxAndInterrupt,
+      primaryActionIntent: core.primaryActionIntent,
+      flushNarration: core.flushNarration,
+      undoableAction: core.undoableAction,
+      undoLastAction: core.undoLastAction,
+      pendingSendCount: core.pendingSendCount,
+      afterTurnMessageIds: core.afterTurnMessageIds,
+      failedSendMessageIds: core.failedSendMessageIds,
+      retrySend: core.retrySend,
       onLoadEarlierMessages: core.loadEarlierMessages,
       onInterrupt: core.handleInterruptAgent,
       onCancelInvocation: core.handleCancelInvocation,
@@ -1359,6 +1376,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
       onRemoveAgent,
       onFocusPanel,
       onReloadPanel,
+      onNewConversation,
       toolApproval: chatTools.toolApprovalValue,
     }),
     [
@@ -1392,7 +1410,20 @@ Use package imports available to inline_ui plus relative imports for local helpe
       core.dirtyRepoWarnings,
       core.pendingAgents,
       feedback.activeFeedbacks,
-      theme,
+      core.theme,
+      core.agentBusy,
+      core.hasOpenTurn,
+      core.editPendingMessage,
+      core.cancelPendingMessage,
+      core.flushOutboxAndInterrupt,
+      core.primaryActionIntent,
+      core.flushNarration,
+      core.undoableAction,
+      core.undoLastAction,
+      core.pendingSendCount,
+      core.afterTurnMessageIds,
+      core.failedSendMessageIds,
+      core.retrySend,
       core.loadEarlierMessages,
       core.handleInterruptAgent,
       core.handleCallMethod,
@@ -1411,6 +1442,7 @@ Use package imports available to inline_ui plus relative imports for local helpe
       onRemoveAgent,
       onFocusPanel,
       onReloadPanel,
+      onNewConversation,
       chatTools.toolApprovalValue,
     ]
   );

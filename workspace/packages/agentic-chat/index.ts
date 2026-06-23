@@ -17,6 +17,9 @@ export type {
   SandboxConfig,
   ChatContextValue,
   ChatInputContextValue,
+  PrimaryActionIntent,
+  FlushNarration,
+  UndoableAction,
   InlineUiComponentEntry,
   ActionBarData,
   ActionBarState,
@@ -63,6 +66,13 @@ export { ChatMessageArea } from "./components/ChatMessageArea";
 export type { ChatMessageAreaProps } from "./components/ChatMessageArea";
 export { ChatFeedbackArea } from "./components/ChatFeedbackArea";
 export { ChatInput } from "./components/ChatInput";
+export { Outbox } from "./components/Outbox";
+export { OutboxItem } from "./components/OutboxItem";
+export type { OutboxItemProps, OutboxLane } from "./components/OutboxItem";
+export { SendButton } from "./components/SendButton";
+export type { SendButtonProps } from "./components/SendButton";
+export { AckBadge } from "./components/AckBadge";
+export type { AckBadgeProps, ReceiptState, ReceiptAggregate } from "./components/AckBadge";
 export { ChatDirtyRepoWarnings } from "./components/ChatDirtyRepoWarnings";
 export { ChatDebugConsole } from "./components/ChatDebugConsole";
 export { ChatActionBar } from "./components/ChatActionBar";
