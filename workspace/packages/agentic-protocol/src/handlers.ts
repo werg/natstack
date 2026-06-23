@@ -4,7 +4,11 @@ import type {
   DiagnosticBlockMetadata,
   EventKind,
   MessageBlockInput,
+  MessageEditPayload,
+  MessageReceiptPayload,
+  MessageRetractPayload,
   ParticipantRef,
+  ParticipantSelector,
   SandboxSourcePayload,
   UsagePayload,
 } from "./events.js";
@@ -43,6 +47,23 @@ export interface ProjectedMessage {
   failureRecoverable?: boolean;
   updatedAt?: string;
   usage?: UsagePayload;
+  /** Explicit recipient selectors declared by the sender at send time. */
+  to?: ParticipantSelector[];
+  /** Recipients that accepted the message into inbound work, keyed by
+   *  `participantKey(actor)`. Monotone. */
+  receivedBy?: Record<string, { at: string }>;
+  /** Recipients that consumed the message into a model turn, keyed by
+   *  `participantKey(actor)`. Monotone; `read` implies `received`. */
+  readBy?: Record<string, { at: string; turnId?: string }>;
+  /** The original author canceled this (still-unread) message. */
+  retracted?: boolean;
+  retractedAt?: string;
+  /** Edit count — bumped by each applied `message.edited`. */
+  revision?: number;
+  editedAt?: string;
+  /** Envelope seq of the last content-bearing event (started/delta/completed/
+   *  edited). Drives the stale-edit guard. */
+  lastContentSeq?: number;
 }
 
 export interface ProjectedInvocation {
@@ -191,7 +212,10 @@ function upsertContentBlock(
 
 export function applyMessageEvent(
   messages: MessageMap,
-  event: AgenticEvent<Extract<EventKind, `message.${string}`>>
+  event: AgenticEvent<Extract<EventKind, `message.${string}`>>,
+  /** Envelope seq; drives `lastContentSeq` and the stale-edit guard. Absent for
+   *  ephemeral (signal) deltas, which never carry a seq. */
+  seq?: number
 ): MessageMap {
   const messageId = requireMessageId(event);
   const existing = messages[messageId] ?? {
@@ -201,6 +225,92 @@ export function applyMessageEvent(
     status: "started" as const,
   };
 
+  if (event.kind === "message.received") {
+    // A receipt for an already-retracted message is ignored — a tombstone can
+    // never gain receipts.
+    if (existing.retracted) return messages;
+    const key = participantKey(event.actor);
+    if (existing.receivedBy?.[key]) return messages; // monotone: no re-set
+    return {
+      ...messages,
+      [messageId]: {
+        ...existing,
+        receivedBy: { ...(existing.receivedBy ?? {}), [key]: { at: event.createdAt } },
+        updatedAt: event.createdAt,
+      },
+    };
+  }
+
+  if (event.kind === "message.read") {
+    // A racing read landing after a retract must not resurrect readBy on a
+    // tombstone (mirror the received-after-retract guard).
+    if (existing.retracted) return messages;
+    const key = participantKey(event.actor);
+    const payload = event.payload as MessageReceiptPayload;
+    const turnId = payload.turnId;
+    if (existing.readBy?.[key]) return messages; // monotone: read cannot downgrade
+    return {
+      ...messages,
+      [messageId]: {
+        ...existing,
+        // read implies received — backfill if the received ack never arrived.
+        receivedBy: {
+          ...(existing.receivedBy ?? {}),
+          [key]: existing.receivedBy?.[key] ?? { at: event.createdAt },
+        },
+        readBy: {
+          ...(existing.readBy ?? {}),
+          [key]: { at: event.createdAt, ...(turnId ? { turnId } : {}) },
+        },
+        updatedAt: event.createdAt,
+      },
+    };
+  }
+
+  if (event.kind === "message.edited") {
+    const payload = event.payload as MessageEditPayload;
+    // Author guard: payload.by must equal event.actor (the private-fold replay
+    // carries `by` even though its envelope actor is the agent).
+    if (participantKey(payload.by) !== participantKey(event.actor)) return messages;
+    // Only the original author may edit, and only before any read.
+    if (participantKey(existing.actor) !== participantKey(event.actor)) return messages;
+    if (existing.retracted) return messages;
+    if (existing.readBy && Object.keys(existing.readBy).length > 0) return messages;
+    // Stale-edit guard: drop an edit that precedes the last content event.
+    if (seq !== undefined && existing.lastContentSeq !== undefined && seq < existing.lastContentSeq) {
+      return messages;
+    }
+    return {
+      ...messages,
+      [messageId]: {
+        ...existing,
+        blocks: payload.blocks,
+        revision: (existing.revision ?? 0) + 1,
+        editedAt: event.createdAt,
+        updatedAt: event.createdAt,
+        ...(seq !== undefined ? { lastContentSeq: seq } : {}),
+      },
+    };
+  }
+
+  if (event.kind === "message.retracted") {
+    const payload = event.payload as MessageRetractPayload;
+    if (participantKey(payload.by) !== participantKey(event.actor)) return messages;
+    if (participantKey(existing.actor) !== participantKey(event.actor)) return messages;
+    if (existing.retracted) return messages; // idempotent
+    // Read wins: a message folded into a turn cannot be un-read.
+    if (existing.readBy && Object.keys(existing.readBy).length > 0) return messages;
+    return {
+      ...messages,
+      [messageId]: {
+        ...existing,
+        retracted: true,
+        retractedAt: event.createdAt,
+        updatedAt: event.createdAt,
+      },
+    };
+  }
+
   if (event.kind === "message.started") {
     const payload = event.payload;
     const role = ("role" in payload ? payload.role : undefined) ?? existing.role;
@@ -208,6 +318,7 @@ export function applyMessageEvent(
     const mentions = "mentions" in payload ? payload.mentions : existing.mentions;
     const replyTo = "replyTo" in payload ? payload.replyTo : existing.replyTo;
     const tier = "tier" in payload ? payload.tier : existing.tier;
+    const to = "to" in payload ? payload.to : existing.to;
     return {
       ...messages,
       [messageId]: {
@@ -219,9 +330,11 @@ export function applyMessageEvent(
         mentions,
         replyTo,
         tier,
+        ...(to !== undefined ? { to } : {}),
         status: "started",
         startedAt: event.createdAt,
         updatedAt: event.createdAt,
+        ...(seq !== undefined ? { lastContentSeq: seq } : {}),
       },
     };
   }
@@ -248,6 +361,7 @@ export function applyMessageEvent(
         blocks: upsertContentBlock(existing.blocks, blockId, type, text, replace),
         status: "streaming",
         updatedAt: event.createdAt,
+        ...(seq !== undefined ? { lastContentSeq: seq } : {}),
       },
     };
   }
@@ -270,6 +384,7 @@ export function applyMessageEvent(
     const mentions = "mentions" in payload ? payload.mentions : existing.mentions;
     const replyTo = "replyTo" in payload ? payload.replyTo : existing.replyTo;
     const tier = "tier" in payload ? payload.tier : existing.tier;
+    const to = "to" in payload ? payload.to : existing.to;
     return {
       ...messages,
       [messageId]: {
@@ -281,11 +396,13 @@ export function applyMessageEvent(
         mentions,
         replyTo,
         tier,
+        ...(to !== undefined ? { to } : {}),
         status: "completed",
         outcome,
         completedAt: event.createdAt,
         updatedAt: event.createdAt,
         usage: "usage" in payload ? payload.usage : existing.usage,
+        ...(seq !== undefined ? { lastContentSeq: seq } : {}),
       },
     };
   }
@@ -301,7 +418,9 @@ export function applyMessageEvent(
         existing.blocks,
         diagnosticBlock(
           `${messageId}:diagnostic:failed`,
-          "reason" in event.payload ? event.payload.reason : "Assistant message failed.",
+          "reason" in event.payload && typeof event.payload.reason === "string"
+            ? event.payload.reason
+            : "Assistant message failed.",
           {
             code: "message_failed",
             severity: "error",
@@ -577,4 +696,69 @@ export function participantKey(participant: ParticipantRef | ActorRef): string {
   return "participantId" in participant && participant.participantId
     ? participant.participantId
     : `${participant.kind}:${participant.id}`;
+}
+
+/** A roster entry as the intended-recipient resolver needs it. */
+export interface RecipientRosterEntry {
+  participant: ActorRef | ParticipantRef;
+  roles?: string[];
+}
+
+/**
+ * Resolve a message's intended recipients into a concrete set of participant
+ * keys AT SEND TIME, to be STORED as a snapshot (callers persist the result so
+ * a later join/leave never retroactively changes a message's recipient set).
+ *
+ * Precedence: explicit `to` selectors → mentions that resolve to roster
+ * participants → all agent participants in the roster. The sender is always
+ * excluded.
+ */
+export function resolveIntendedRecipients(opts: {
+  to?: ParticipantSelector[];
+  mentions?: string[];
+  roster: RecipientRosterEntry[];
+  senderKey: string;
+}): string[] {
+  const { to, mentions, roster, senderKey } = opts;
+  const result = new Set<string>();
+  const add = (key: string) => {
+    if (key && key !== senderKey) result.add(key);
+  };
+
+  if (to && to.length > 0) {
+    for (const selector of to) {
+      if (selector.kind === "all") {
+        for (const entry of roster) add(participantKey(entry.participant));
+      } else if (selector.kind === "role" && selector.role) {
+        for (const entry of roster) {
+          if ((entry.roles ?? []).includes(selector.role)) add(participantKey(entry.participant));
+        }
+      } else if (selector.kind === "participant" && selector.participantId) {
+        add(selector.participantId);
+      }
+    }
+    return [...result];
+  }
+
+  if (mentions && mentions.length > 0) {
+    for (const mention of mentions) {
+      const handle = mention.startsWith("@") ? mention.slice(1) : mention;
+      for (const entry of roster) {
+        const participant = entry.participant;
+        if (
+          participant.id === handle ||
+          ("participantId" in participant && participant.participantId === handle) ||
+          participant.displayName === handle
+        ) {
+          add(participantKey(participant));
+        }
+      }
+    }
+    if (result.size > 0) return [...result];
+  }
+
+  for (const entry of roster) {
+    if (entry.participant.kind === "agent") add(participantKey(entry.participant));
+  }
+  return [...result];
 }

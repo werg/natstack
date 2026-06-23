@@ -95,6 +95,7 @@ const messageStartedPayloadSchema = z
     replyTo: idSchema.optional(),
     to: z.array(participantSelectorSchema).optional(),
     tier: z.enum(MESSAGE_TIERS).optional(),
+    metadata: z.record(z.unknown()).optional(),
   })
   .strict();
 
@@ -119,6 +120,30 @@ const messageCompletedPayloadSchema = z
     replyTo: idSchema.optional(),
     to: z.array(participantSelectorSchema).optional(),
     tier: z.enum(MESSAGE_TIERS).optional(),
+    metadata: z.record(z.unknown()).optional(),
+  })
+  .strict();
+
+const messageReceiptPayloadSchema = z
+  .object({
+    protocol: protocolSchema,
+    turnId: idSchema.optional(),
+  })
+  .strict();
+
+const messageEditPayloadSchema = z
+  .object({
+    protocol: protocolSchema,
+    by: participantRefSchema,
+    blocks: z.array(messageBlockInputSchema),
+  })
+  .strict();
+
+const messageRetractPayloadSchema = z
+  .object({
+    protocol: protocolSchema,
+    by: participantRefSchema,
+    reason: z.string().optional(),
   })
   .strict();
 
@@ -516,6 +541,10 @@ export const eventKindSchemas = {
   "message.delta": eventSchema("message.delta", messageDeltaPayloadSchema),
   "message.completed": eventSchema("message.completed", messageCompletedPayloadSchema),
   "message.failed": eventSchema("message.failed", failurePayloadSchema),
+  "message.received": eventSchema("message.received", messageReceiptPayloadSchema),
+  "message.read": eventSchema("message.read", messageReceiptPayloadSchema),
+  "message.edited": eventSchema("message.edited", messageEditPayloadSchema),
+  "message.retracted": eventSchema("message.retracted", messageRetractPayloadSchema),
   "invocation.started": eventSchema("invocation.started", invocationStartedPayloadSchema),
   "invocation.progress": eventSchema("invocation.progress", invocationProgressPayloadSchema),
   "invocation.output": eventSchema("invocation.output", invocationOutputPayloadSchema),
@@ -777,6 +806,29 @@ export const storedAgenticEventSchema = z
         "outcome",
         (value) => MESSAGE_OUTCOMES.includes(value as never),
         "message.completed requires payload.outcome"
+      );
+    } else if (event.kind === "message.edited") {
+      requireStoredPayloadField(
+        payload,
+        ctx,
+        "blocks",
+        (value) => Array.isArray(value),
+        "message.edited requires payload.blocks"
+      );
+      requireStoredPayloadField(
+        payload,
+        ctx,
+        "by",
+        (value) => actorRefSchema.safeParse(value).success,
+        "message.edited requires payload.by"
+      );
+    } else if (event.kind === "message.retracted") {
+      requireStoredPayloadField(
+        payload,
+        ctx,
+        "by",
+        (value) => actorRefSchema.safeParse(value).success,
+        "message.retracted requires payload.by"
       );
     } else if (event.kind === "invocation.started") {
       requireStoredPayloadField(

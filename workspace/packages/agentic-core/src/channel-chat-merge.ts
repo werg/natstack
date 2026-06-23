@@ -51,7 +51,7 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
       .map((turn) => turn.turnId as string)
   );
   const messages = Object.values(state.messages).flatMap((message) =>
-    projectedMessageToChatMessages(message)
+    projectedMessageToChatMessages(message, state.intendedRecipientsByMessage?.[message.messageId] ?? [])
   );
   const invocations = Object.values(state.invocations).map(projectedInvocationToChatMessage);
   const approvals = Object.values(state.approvals).map(projectedApprovalToChatMessage);
@@ -353,7 +353,52 @@ function assistantMessageIsIntermediate(message: ProjectedMessage): boolean {
   });
 }
 
-function projectedMessageToChatMessages(message: ProjectedMessage): ChatMessage[] {
+/**
+ * Per-recipient delivery state from the intended-recipient snapshot plus the
+ * received/read ack maps. Tracked set = snapshot ∪ actual ackers, so an ack
+ * always shows even when the roster was empty at send time, while the snapshot
+ * keeps unacked recipients visible (aggregate stays `partial`/`pending` instead
+ * of prematurely `read`).
+ */
+function computeReceipts(
+  message: ProjectedMessage,
+  intendedRecipients: string[]
+): ChatMessage["receipts"] | undefined {
+  const receivedBy = message.receivedBy ?? {};
+  const readBy = message.readBy ?? {};
+  const tracked = new Set<string>([
+    ...intendedRecipients,
+    ...Object.keys(receivedBy),
+    ...Object.keys(readBy),
+  ]);
+  if (tracked.size === 0) return undefined;
+  const byParticipant: Record<string, "pending" | "received" | "read"> = {};
+  for (const key of tracked) {
+    byParticipant[key] = readBy[key] ? "read" : receivedBy[key] ? "received" : "pending";
+  }
+  const states = Object.values(byParticipant);
+  const readCount = states.filter((state) => state === "read").length;
+  const aggregate = readCount === 0 ? "pending" : readCount === states.length ? "read" : "partial";
+  return { byParticipant, aggregate };
+}
+
+function deliveryFields(
+  message: ProjectedMessage,
+  intendedRecipients: string[]
+): Partial<ChatMessage> {
+  const receipts = computeReceipts(message, intendedRecipients);
+  return {
+    ...(receipts ? { receipts } : {}),
+    ...(message.retracted ? { retracted: true } : {}),
+    ...(message.revision !== undefined ? { revision: message.revision } : {}),
+    ...(message.editedAt !== undefined ? { editedAt: message.editedAt } : {}),
+  };
+}
+
+function projectedMessageToChatMessages(
+  message: ProjectedMessage,
+  intendedRecipients: string[] = []
+): ChatMessage[] {
   const sortTime =
     Date.parse(message.updatedAt ?? message.completedAt ?? message.startedAt ?? "") || 0;
   const lifecycle = lifecycleNoticeFromMessage(message);
@@ -439,6 +484,7 @@ function projectedMessageToChatMessages(message: ProjectedMessage): ChatMessage[
           : message.outcome === "interrupted"
             ? "Interrupted"
             : undefined,
+      ...deliveryFields(message, intendedRecipients),
       senderMetadata,
       sortTime,
     } as ChatMessage & { sortTime: number },

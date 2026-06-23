@@ -1254,3 +1254,153 @@ describe("@workspace/agentic-protocol hash helpers", () => {
     expect(result.errors.join("\n")).toContain("eventHash mismatch");
   });
 });
+
+describe("@workspace/agentic-protocol message delivery events", () => {
+  const target = brandId<MessageId>("msg-deliver");
+  const receipt = (
+    kind: "message.received" | "message.read",
+    actor = agentParticipant,
+    extra: Record<string, unknown> = {}
+  ): AgenticEvent =>
+    ({
+      kind,
+      actor,
+      causality: { messageId: target },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, ...extra },
+      createdAt: "2026-05-20T12:00:05.000Z",
+    }) as AgenticEvent;
+  type AnyParticipant = { kind: "user" | "agent"; id: string; participantId: string };
+  const edited = (
+    by: AnyParticipant = userParticipant,
+    actor: AnyParticipant = userParticipant
+  ): AgenticEvent =>
+    ({
+      kind: "message.edited",
+      actor,
+      causality: { messageId: target },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        by,
+        blocks: [{ type: "text", content: "edited body" }],
+      },
+      createdAt: "2026-05-20T12:00:06.000Z",
+    }) as AgenticEvent;
+  const retracted = (
+    by: AnyParticipant = userParticipant,
+    actor: AnyParticipant = userParticipant
+  ): AgenticEvent =>
+    ({
+      kind: "message.retracted",
+      actor,
+      causality: { messageId: target },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, by },
+      createdAt: "2026-05-20T12:00:06.000Z",
+    }) as AgenticEvent;
+  const sent = () =>
+    messageEvent({
+      actor: userParticipant,
+      causality: { messageId: target },
+      payload: { ...textCompletedPayload(target, "user", "hello"), to: undefined },
+    });
+
+  it("accepts received/read/edited/retracted events", () => {
+    expect(agenticEventSchema.parse(receipt("message.received")).kind).toBe("message.received");
+    expect(agenticEventSchema.parse(receipt("message.read", agentParticipant, { turnId: "t-1" })).kind).toBe(
+      "message.read"
+    );
+    expect(agenticEventSchema.parse(edited()).kind).toBe("message.edited");
+    expect(agenticEventSchema.parse(retracted()).kind).toBe("message.retracted");
+  });
+
+  it("rejects message delivery events without a messageId", () => {
+    expect(agenticEventSchema.safeParse({ ...receipt("message.read"), causality: undefined }).success).toBe(
+      false
+    );
+  });
+
+  it("rejects edited events without blocks", () => {
+    const bad = {
+      kind: "message.edited" as const,
+      actor: userParticipant,
+      causality: { messageId: target },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, by: userParticipant },
+      createdAt: "2026-05-20T12:00:06.000Z",
+    };
+    expect(agenticEventSchema.safeParse(bad).success).toBe(false);
+  });
+
+  it("accepts payload metadata on message.started and message.completed", () => {
+    expect(
+      agenticEventSchema.parse({
+        kind: "message.completed",
+        actor: userParticipant,
+        causality: { messageId: target },
+        payload: {
+          ...textCompletedPayload(target, "user", "later"),
+          metadata: { deliverAfterTurn: true },
+        },
+        createdAt: "2026-05-20T12:00:00.000Z",
+      }).kind
+    ).toBe("message.completed");
+  });
+
+  it("projects completed → received → read into per-participant receipts", () => {
+    const state = [sent(), receipt("message.received"), receipt("message.read", agentParticipant, { turnId: "t-9" })]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+    const message = state.messages[target];
+    expect(message?.receivedBy?.["participant-agent-1"]).toBeDefined();
+    expect(message?.readBy?.["participant-agent-1"]?.turnId).toBe("t-9");
+  });
+
+  it("projects payload.to and snapshots intended recipients at send time", () => {
+    const withTo = messageEvent({
+      actor: userParticipant,
+      causality: { messageId: target },
+      payload: {
+        ...textCompletedPayload(target, "user", "hi"),
+        to: [{ kind: "participant", participantId: "participant-agent-1" }],
+      },
+    });
+    const state = [withTo].map((event, index) => envelope(event, index + 1)).reduce(
+      reduceChannelView,
+      createInitialChannelViewState()
+    );
+    expect(state.messages[target]?.to).toEqual([{ kind: "participant", participantId: "participant-agent-1" }]);
+    expect(state.intendedRecipientsByMessage[target]).toContain("participant-agent-1");
+  });
+
+  it("applies an edit before read and increments revision", () => {
+    const state = [sent(), edited()]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+    expect(messageDisplayText(state.messages[target]?.blocks)).toBe("edited body");
+    expect(state.messages[target]?.revision).toBe(1);
+    expect(state.messages[target]?.editedAt).toBeDefined();
+  });
+
+  it("ignores edit/retract after a read", () => {
+    const state = [sent(), receipt("message.read"), edited(), retracted()]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+    expect(messageDisplayText(state.messages[target]?.blocks)).toBe("hello");
+    expect(state.messages[target]?.revision).toBeUndefined();
+    expect(state.messages[target]?.retracted).toBeUndefined();
+  });
+
+  it("ignores edit/retract from a non-author", () => {
+    const state = [sent(), edited(agentParticipant, agentParticipant), retracted(agentParticipant, agentParticipant)]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+    expect(messageDisplayText(state.messages[target]?.blocks)).toBe("hello");
+    expect(state.messages[target]?.retracted).toBeUndefined();
+  });
+
+  it("ignores a read that races in after a retract (no readBy on a tombstone)", () => {
+    const state = [sent(), retracted(), receipt("message.read")]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+    expect(state.messages[target]?.retracted).toBe(true);
+    expect(state.messages[target]?.readBy).toBeUndefined();
+  });
+});

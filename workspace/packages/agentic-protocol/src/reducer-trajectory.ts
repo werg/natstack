@@ -72,7 +72,7 @@ export function reduceTrajectory(
   };
 
   if (event.kind.startsWith("message.")) {
-    next = { ...next, messages: applyMessageEvent(next.messages, event as never) };
+    next = { ...next, messages: applyMessageEvent(next.messages, event as never, event.seq) };
   } else if (event.kind.startsWith("invocation.")) {
     next = { ...next, invocations: applyInvocationEvent(next.invocations, event as never) };
   } else if (event.kind.startsWith("approval.")) {

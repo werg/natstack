@@ -211,4 +211,20 @@ export interface ChatMessage {
   credentialRequest?: CredentialRequestCardPayload;
   lifecycle?: LifecycleNotice;
   diagnostic?: DiagnosticNotice;
+  /**
+   * Per-recipient delivery state for this message, resolved against the
+   * intended-recipient snapshot plus the received/read ack maps. Present when
+   * the message has at least one tracked recipient. `read` means an agent
+   * recipient folded the message into a model turn ("taken into account"), not
+   * a social read receipt.
+   */
+  receipts?: {
+    byParticipant: Record<string, "pending" | "received" | "read">;
+    aggregate: "pending" | "partial" | "read";
+  };
+  /** The author canceled this (still-unread) message; UI renders a tombstone. */
+  retracted?: boolean;
+  /** Edit count; presence (or `editedAt`) drives the "edited" marker. */
+  revision?: number;
+  editedAt?: string;
 }

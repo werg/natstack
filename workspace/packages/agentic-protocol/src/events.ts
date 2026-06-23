@@ -38,6 +38,10 @@ export type EventKind =
   | "message.delta"
   | "message.completed"
   | "message.failed"
+  | "message.received"
+  | "message.read"
+  | "message.edited"
+  | "message.retracted"
   | "invocation.started"
   | "invocation.progress"
   | "invocation.output"
@@ -119,6 +123,9 @@ export type MessagePayload =
       to?: ParticipantSelector[];
       /** Salience tier; absent ⇒ "primary". See MessageTier. */
       tier?: MessageTier;
+      /** Free-form send intent (e.g. `deliverAfterTurn`). The loop lifts this
+       *  into its queue entries via `metadataFromPayload`. */
+      metadata?: Record<string, unknown>;
     }
   | {
       // Streaming content update. Deltas stream incremental text/thinking content
@@ -143,6 +150,10 @@ export type MessagePayload =
       to?: ParticipantSelector[];
       /** Salience tier; absent ⇒ "primary". See MessageTier. */
       tier?: MessageTier;
+      /** Free-form send intent (e.g. `deliverAfterTurn`). User messages are
+       *  published as `message.completed`, so this is where the client's send
+       *  metadata rides; the loop lifts it via `metadataFromPayload`. */
+      metadata?: Record<string, unknown>;
     }
   | {
       protocol: "agentic.trajectory.v1";
@@ -152,6 +163,38 @@ export type MessagePayload =
       resetAt?: string;
       retryAfterMs?: number;
     };
+
+/**
+ * A delivery receipt — a recipient telling the channel it accepted
+ * (`message.received`) or consumed into a model turn (`message.read`) a
+ * message. The target message is `event.causality.messageId`; the acking
+ * recipient is `event.actor`. Acks are monotone (read implies received).
+ */
+export interface MessageReceiptPayload {
+  protocol: "agentic.trajectory.v1";
+  /** The turn that folded the message in, for `message.read`. */
+  turnId?: TurnId;
+}
+
+/**
+ * The original author revising an unread message's blocks. `by` exists because
+ * the agent fold replays this from a PRIVATE trajectory whose envelope actor is
+ * the agent, not the original sender; the channel reducer additionally requires
+ * `by` to match `event.actor`.
+ */
+export interface MessageEditPayload {
+  protocol: "agentic.trajectory.v1";
+  by: ParticipantRef;
+  blocks: MessageBlockInput[];
+}
+
+/** The original author canceling an unread message. See `MessageEditPayload`
+ *  for why `by` is carried. */
+export interface MessageRetractPayload {
+  protocol: "agentic.trajectory.v1";
+  by: ParticipantRef;
+  reason?: string;
+}
 
 export type MessageBlockType =
   | "text"
@@ -593,7 +636,13 @@ export type InvocationPayloadFor<K extends EventKind> = K extends "invocation.co
         ? InvocationAbandonedPayload
         : InvocationPayload;
 
-export type PayloadFor<K extends EventKind> = K extends `message.${string}`
+export type PayloadFor<K extends EventKind> = K extends "message.received" | "message.read"
+  ? MessageReceiptPayload
+  : K extends "message.edited"
+    ? MessageEditPayload
+    : K extends "message.retracted"
+      ? MessageRetractPayload
+      : K extends `message.${string}`
   ? MessagePayload
   : K extends `invocation.${string}`
     ? InvocationPayloadFor<K>

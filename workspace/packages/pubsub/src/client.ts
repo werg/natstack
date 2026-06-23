@@ -159,6 +159,25 @@ export interface PubSubClient<T extends ParticipantMetadata = ParticipantMetadat
   ): Promise<{ messageId: string; pubsubId: number | undefined }>;
 
   /**
+   * Revise an unread message's blocks (publishes `message.edited`). The channel
+   * reducer applies it only while the message is unread and authored by you.
+   */
+  editMessage(
+    messageId: string,
+    blocks: import("@workspace/agentic-protocol").MessageBlockInput[],
+    options?: { idempotencyKey?: string; revision?: number }
+  ): Promise<{ pubsubId: number | undefined }>;
+
+  /**
+   * Cancel an unread message (publishes `message.retracted`). A no-op once any
+   * recipient has read it.
+   */
+  retractMessage(
+    messageId: string,
+    options?: { reason?: string; idempotencyKey?: string }
+  ): Promise<{ pubsubId: number | undefined }>;
+
+  /**
    * Publish an error for a message. Convenience wrapper around publish("error", ...).
    */
   error(id: string, error: string, code?: string): Promise<number | undefined>;

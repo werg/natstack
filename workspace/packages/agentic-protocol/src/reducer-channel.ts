@@ -24,6 +24,7 @@ import {
   applyMessageEvent,
   applyUiEvent,
   participantKey,
+  resolveIntendedRecipients,
 } from "./handlers.js";
 import { agenticEventEnvelopeSchema } from "./schemas.js";
 import { assertNoStoredValueRefs } from "./stored-values.js";
@@ -98,6 +99,11 @@ export interface ChannelViewState {
   messageTypes: Record<string, ProjectedMessageTypeDefinition>;
   customMessages: Record<string, ProjectedCustomMessage>;
   turns: TurnMap;
+  /** Intended-recipient snapshot per message, resolved against the roster AT
+   *  the moment the message was first projected (send time) and never
+   *  recomputed — a later join/leave must not change a message's recipients.
+   *  Keyed by messageId; values are participant keys. */
+  intendedRecipientsByMessage: Record<string, string[]>;
   roster: Record<string, ChannelRosterEntry>;
   timeline: ChannelTimelineEntry[];
   seenEnvelopeIds: Record<string, true>;
@@ -116,6 +122,7 @@ export function createInitialChannelViewState(): ChannelViewState {
     messageTypes: {},
     customMessages: {},
     turns: {},
+    intendedRecipientsByMessage: {},
     roster: {},
     timeline: [],
     seenEnvelopeIds: {},
@@ -218,7 +225,30 @@ export function reduceChannelView(
   };
 
   if (event.kind.startsWith("message.")) {
-    next = { ...next, messages: applyMessageEvent(next.messages, event as never) };
+    next = { ...next, messages: applyMessageEvent(next.messages, event as never, parsed.seq) };
+    // Snapshot intended recipients the first time a message is projected (send
+    // time). Stored once; never recomputed against a later roster.
+    const messageId = event.causality?.messageId;
+    if (
+      messageId &&
+      (event.kind === "message.started" || event.kind === "message.completed") &&
+      next.intendedRecipientsByMessage[messageId] === undefined
+    ) {
+      const projected = next.messages[messageId];
+      const payload = event.payload as { mentions?: string[] };
+      next = {
+        ...next,
+        intendedRecipientsByMessage: {
+          ...next.intendedRecipientsByMessage,
+          [messageId]: resolveIntendedRecipients({
+            to: projected?.to,
+            mentions: projected?.mentions ?? payload.mentions,
+            roster: Object.values(next.roster),
+            senderKey: participantKey(event.actor),
+          }),
+        },
+      };
+    }
   } else if (event.kind.startsWith("invocation.")) {
     next = {
       ...next,

@@ -1887,4 +1887,62 @@ describe("chatMessagesFromChannelView", () => {
       )
     ).toThrow(/contains unresolved stored value refs/);
   });
+
+  it("projects multi-recipient receipts and aggregates partial when only some read", () => {
+    const user = { kind: "user" as const, id: "user-1", participantId: "participant-user-1" };
+    const agentA = { kind: "agent" as const, id: "a", participantId: "pa" };
+    const agentB = { kind: "agent" as const, id: "b", participantId: "pb" };
+    const id = brandId<MessageId>("u-receipts");
+    const make = (kind: AgenticEvent["kind"], actor: typeof user | typeof agentA, extra = {}) =>
+      ({
+        kind,
+        actor,
+        causality: { messageId: id },
+        payload: { protocol: AGENTIC_PROTOCOL_VERSION, ...extra },
+        createdAt: "2026-05-20T12:00:05.000Z",
+      }) as AgenticEvent;
+    const sent: AgenticEvent<"message.completed"> = {
+      kind: "message.completed",
+      actor: user,
+      causality: { messageId: id },
+      payload: textPayload(id, "user", "hello team"),
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const events = [
+      sent,
+      make("message.received", agentA),
+      make("message.received", agentB),
+      make("message.read", agentA, { turnId: "t-1" }),
+    ];
+    const state = events
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+    const chat = chatMessagesFromChannelView(state).find((message) => message.id === id);
+    expect(chat?.receipts?.aggregate).toBe("partial");
+    expect(chat?.receipts?.byParticipant).toMatchObject({ pa: "read", pb: "received" });
+  });
+
+  it("marks a retracted message and drops it from no further ack", () => {
+    const user = { kind: "user" as const, id: "user-1", participantId: "participant-user-1" };
+    const id = brandId<MessageId>("u-retract");
+    const sent: AgenticEvent<"message.completed"> = {
+      kind: "message.completed",
+      actor: user,
+      causality: { messageId: id },
+      payload: textPayload(id, "user", "oops"),
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const retract = {
+      kind: "message.retracted" as const,
+      actor: user,
+      causality: { messageId: id },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, by: user },
+      createdAt: "2026-05-20T12:00:01.000Z",
+    } as AgenticEvent;
+    const state = [sent, retract]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+    const chat = chatMessagesFromChannelView(state).find((message) => message.id === id);
+    expect(chat?.retracted).toBe(true);
+  });
 });

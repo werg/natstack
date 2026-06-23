@@ -48,6 +48,7 @@ import {
   CREDENTIAL_CONNECT_PAYLOAD_KIND,
   hydrateStoredValueRefs,
   type AgenticEvent,
+  type MessageBlockInput,
   type MessageId,
   type MessageTier,
 } from "@workspace/agentic-protocol";
@@ -1550,6 +1551,9 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
         replyTo: sendOptions?.replyTo as never,
         to: sendOptions?.to,
         ...(sendOptions?.tier ? { tier: sendOptions.tier } : {}),
+        // Send intent (e.g. deliverAfterTurn) rides on payload.metadata; the
+        // agent loop lifts it into its queue entries via metadataFromPayload.
+        ...(sendOptions?.metadata ? { metadata: sendOptions.metadata } : {}),
       },
       createdAt: new Date().toISOString(),
     };
@@ -1558,6 +1562,61 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
       idempotencyKey: sendOptions?.idempotencyKey,
     });
     return { messageId: id, pubsubId };
+  }
+
+  /** The author's participant ref — actor and `payload.by` for mutations. */
+  function selfActor(): AgenticEvent["actor"] {
+    return {
+      kind: "user",
+      id: pid,
+      displayName: typeof subscribeMetadata["name"] === "string" ? subscribeMetadata["name"] : pid,
+      metadata: subscribeMetadata,
+    };
+  }
+
+  /** Revise an unread message's blocks (publishes `message.edited`). The
+   *  channel reducer enforces the author guard and the read-wins cutoff. */
+  async function editMessage(
+    messageId: string,
+    blocks: MessageBlockInput[],
+    options?: { idempotencyKey?: string; revision?: number }
+  ): Promise<{ pubsubId: number | undefined }> {
+    const by = selfActor();
+    const event: AgenticEvent = {
+      kind: "message.edited",
+      actor: by,
+      causality: { messageId: messageId as never },
+      payload: { protocol: "agentic.trajectory.v1", by, blocks },
+      createdAt: new Date().toISOString(),
+    };
+    const pubsubId = await publish(AGENTIC_EVENT_PAYLOAD_KIND, event, {
+      idempotencyKey: options?.idempotencyKey ?? `edit:${messageId}:${options?.revision ?? 0}`,
+    });
+    return { pubsubId };
+  }
+
+  /** Cancel an unread message (publishes `message.retracted`). No-op after a
+   *  recipient has read it. */
+  async function retractMessage(
+    messageId: string,
+    options?: { reason?: string; idempotencyKey?: string }
+  ): Promise<{ pubsubId: number | undefined }> {
+    const by = selfActor();
+    const event: AgenticEvent = {
+      kind: "message.retracted",
+      actor: by,
+      causality: { messageId: messageId as never },
+      payload: {
+        protocol: "agentic.trajectory.v1",
+        by,
+        ...(options?.reason ? { reason: options.reason } : {}),
+      },
+      createdAt: new Date().toISOString(),
+    };
+    const pubsubId = await publish(AGENTIC_EVENT_PAYLOAD_KIND, event, {
+      idempotencyKey: options?.idempotencyKey ?? `retract:${messageId}`,
+    });
+    return { pubsubId };
   }
 
   async function errorMessage(
@@ -1884,6 +1943,8 @@ export function connectViaRpc<T extends ParticipantMetadata = ParticipantMetadat
     sendRaw,
     events,
     send: sendMessage,
+    editMessage,
+    retractMessage,
     error: errorMessage,
     callMethod,
     cancelMethodCall,
