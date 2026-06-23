@@ -80,6 +80,9 @@ export default defineConfig({
       "workspace/.contexts",
       "apps/mobile/**",
       "workspace/apps/mobile/**",
+      // Browser-mode tests (opened Radix overlays that can't render in jsdom)
+      // run under vitest.browser.config.ts in a real browser instead.
+      "**/*.browser.test.tsx",
     ],
     setupFiles: ["tests/setup/vitest.setup.ts"],
     server: {

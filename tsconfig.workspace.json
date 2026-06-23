@@ -193,11 +193,17 @@
       "@workspace/agentic-chat/types": [
         "workspace/packages/agentic-chat/types.ts"
       ],
-      "@workspace/agentic-components": [
-        "workspace/packages/agentic-components/index.ts"
+      "@workspace/ui": [
+        "workspace/packages/ui/src/index.ts"
       ],
-      "@workspace/agentic-components/types": [
-        "workspace/packages/agentic-components/types.ts"
+      "@workspace/ui/panel": [
+        "workspace/packages/ui/src/panel.ts"
+      ],
+      "@workspace/ui/theme.config": [
+        "workspace/packages/ui/src/theme.config.ts"
+      ],
+      "@workspace/ui/tokens.css": [
+        "workspace/packages/ui/src/tokens.css"
       ],
       "@workspace/agentic-do": [
         "workspace/packages/agentic-do/src/index.ts"
