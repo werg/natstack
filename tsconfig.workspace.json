@@ -103,6 +103,9 @@
       "@workspace-about/keyboard-shortcuts": [
         "workspace/about/keyboard-shortcuts/index.tsx"
       ],
+      "@workspace-about/credentials": [
+        "workspace/about/credentials/index.tsx"
+      ],
       "@workspace-about/model-provider-config": [
         "workspace/about/model-provider-config/index.tsx"
       ],
