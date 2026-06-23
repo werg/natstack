@@ -9,6 +9,7 @@ function serializeMethod(method: MethodSchema) {
   return {
     ...(method.description ? { description: method.description } : {}),
     ...(method.policy ? { policy: method.policy } : {}),
+    ...(method.access ? { access: method.access } : {}),
     argsSchema: convertZodToJsonSchema(method.args, { target: "openApi3" }) as Record<
       string,
       unknown

@@ -22,7 +22,10 @@ describe("vcsEditOpSchema — ergonomic shorthand coercion", () => {
   it("preserves explicit strict forms unchanged", () => {
     const strict = { kind: "write", path: "a", content: { kind: "text", text: "y" }, mode: 0o644 };
     expect(vcsEditOpSchema.parse(strict)).toEqual(strict);
-    expect(vcsEditOpSchema.parse({ kind: "delete", path: "a" })).toEqual({ kind: "delete", path: "a" });
+    expect(vcsEditOpSchema.parse({ kind: "delete", path: "a" })).toEqual({
+      kind: "delete",
+      path: "a",
+    });
   });
 
   it("still rejects a genuinely malformed edit (no kind, no content)", () => {

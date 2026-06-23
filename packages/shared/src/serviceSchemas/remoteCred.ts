@@ -4,23 +4,55 @@
 
 import { z } from "zod";
 import { CreatePairingInviteArgsSchema } from "./auth.js";
+import type { MethodAccessDescriptor } from "../servicePolicy.js";
 import { defineServiceMethods } from "../typedServiceClient.js";
 import type { DiscoveredServer } from "../tailscaleDiscovery.js";
 
+// Access descriptors shared across the remoteCred method groups. These manage
+// the Electron-side remote-server credential store, so reads are 'read' and the
+// mutators that persist credentials / pair / relaunch are 'admin'.
+const REMOTE_CRED_READ_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "read",
+};
+const REMOTE_CRED_SAVE_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "admin",
+};
+const REMOTE_CRED_PAIR_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "admin",
+};
+const REMOTE_CRED_INVITE_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "admin",
+};
+const REMOTE_CRED_REVOKE_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "admin",
+};
+const REMOTE_CRED_CLEAR_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "admin",
+};
+const REMOTE_CRED_RELAUNCH_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "admin",
+};
+
 export const RemoteCredSaveArgsSchema = z.object({
-  url: z.string(),
-  token: z.string(),
-  caPath: z.string().optional(),
-  fingerprint: z.string().optional(),
+  url: z.string().describe("Selected-workspace server URL (http/https) to connect to."),
+  token: z.string().describe("Admin token used to authenticate against the remote server."),
+  caPath: z.string().optional().describe("Path to a CA certificate PEM for TLS verification."),
+  fingerprint: z
+    .string()
+    .optional()
+    .describe("Expected SHA-256 certificate fingerprint to pin (trust-on-first-use)."),
 });
 export type RemoteCredSaveArgs = z.infer<typeof RemoteCredSaveArgsSchema>;
 
 export const RemoteCredPairingCodeArgsSchema = z.object({
-  url: z.string(),
-  code: z.string(),
-  caPath: z.string().optional(),
-  fingerprint: z.string().optional(),
-  label: z.string().optional(),
+  url: z.string().describe("Server URL the pairing code was issued for."),
+  code: z.string().describe("One-time pairing code to redeem for a device credential."),
+  caPath: z.string().optional().describe("Path to a CA certificate PEM for TLS verification."),
+  fingerprint: z
+    .string()
+    .optional()
+    .describe("Expected SHA-256 certificate fingerprint to pin (trust-on-first-use)."),
+  label: z.string().optional().describe("Human-readable label for the new device credential."),
 });
 export type RemoteCredPairingCodeArgs = z.infer<typeof RemoteCredPairingCodeArgsSchema>;
 
@@ -40,7 +72,9 @@ export type RemoteCredCurrent = z.infer<typeof RemoteCredCurrentSchema>;
 
 export const RemoteCredTestConnectionResultSchema = z.object({
   ok: z.boolean(),
-  error: z.enum(["invalid-url", "unreachable", "tls-mismatch", "unauthorized", "unknown"]).optional(),
+  error: z
+    .enum(["invalid-url", "unreachable", "tls-mismatch", "unauthorized", "unknown"])
+    .optional(),
   message: z.string().optional(),
   observedFingerprint: z.string().optional(),
   serverVersion: z.string().optional(),
@@ -81,31 +115,87 @@ export const RemoteCredDiscoveredServerSchema = z.custom<DiscoveredServer>();
 const OkResultSchema = z.object({ ok: z.boolean() });
 
 export const remoteCredMethods = defineServiceMethods({
-  getCurrent: { args: z.tuple([]), returns: RemoteCredCurrentSchema },
-  save: { args: z.tuple([RemoteCredSaveArgsSchema]), returns: OkResultSchema },
+  getCurrent: {
+    description:
+      "Report the locally stored remote-server credential: whether it's configured/active, bootstrap kind, URL, workspace, and a masked token preview.",
+    args: z.tuple([]),
+    returns: RemoteCredCurrentSchema,
+    access: REMOTE_CRED_READ_ACCESS,
+  },
+  save: {
+    description:
+      "Persist an admin-token credential for the selected remote workspace URL (replaces any existing stored credential).",
+    args: z.tuple([RemoteCredSaveArgsSchema]),
+    returns: OkResultSchema,
+    access: REMOTE_CRED_SAVE_ACCESS,
+    examples: [{ args: [{ url: "https://hub.example/ws/main", token: "admin-secret" }] }],
+  },
   testConnection: {
+    description:
+      "Probe the remote server's TLS trust and admin-token auth without saving anything; reports reachability, fingerprint, and server identity.",
     args: z.tuple([RemoteCredSaveArgsSchema]),
     returns: RemoteCredTestConnectionResultSchema,
+    access: REMOTE_CRED_READ_ACCESS,
   },
   exchangePairingCode: {
+    description:
+      "Redeem a pairing code at the given server for a device credential and persist it locally (trust-on-first-use against caPath/fingerprint).",
     args: z.tuple([RemoteCredPairingCodeArgsSchema]),
     returns: RemoteCredTestConnectionResultSchema,
+    access: REMOTE_CRED_PAIR_ACCESS,
   },
   discoverServers: {
+    description: "Discover NatStack servers reachable on the local Tailnet via Tailscale.",
     args: z.tuple([]),
     returns: z.array(RemoteCredDiscoveredServerSchema),
+    access: REMOTE_CRED_READ_ACCESS,
   },
   createPairingInvite: {
+    description:
+      "Create a device-pairing invite on the connected remote server (only available while running in remote mode).",
     args: z.tuple([CreatePairingInviteArgsSchema.optional()]),
     returns: RemoteCredPairingInviteSchema,
+    access: REMOTE_CRED_INVITE_ACCESS,
+    examples: [{ args: [{ ttlMs: 300_000 }] }],
   },
-  listDevices: { args: z.tuple([]), returns: z.array(RemoteCredDeviceRecordSchema) },
+  listDevices: {
+    description:
+      "List devices paired with the connected remote server; returns an empty list when not in remote mode.",
+    args: z.tuple([]),
+    returns: z.array(RemoteCredDeviceRecordSchema),
+    access: REMOTE_CRED_READ_ACCESS,
+  },
   revokeDevice: {
+    description:
+      "Revoke a paired device on the remote server; if it is this client's own device the local credential is cleared and the app relaunches.",
     args: z.tuple([z.string()]),
     returns: z.object({ revoked: z.boolean() }),
+    access: REMOTE_CRED_REVOKE_ACCESS,
   },
-  fetchPeerFingerprint: { args: z.tuple([z.string()]), returns: z.string() },
-  pickCaFile: { args: z.tuple([]), returns: z.string().nullable() },
-  clear: { args: z.tuple([]), returns: OkResultSchema },
-  relaunch: { args: z.tuple([]), returns: OkResultSchema },
+  fetchPeerFingerprint: {
+    description:
+      "Open a TLS probe to an https:// URL and return the server certificate's SHA-256 fingerprint (for trust-on-first-use confirmation).",
+    args: z.tuple([z.string()]),
+    returns: z.string(),
+    access: REMOTE_CRED_READ_ACCESS,
+  },
+  pickCaFile: {
+    description:
+      "Open a native file dialog to choose a CA certificate (PEM); returns the selected path, or null if cancelled.",
+    args: z.tuple([]),
+    returns: z.string().nullable(),
+    access: REMOTE_CRED_READ_ACCESS,
+  },
+  clear: {
+    description: "Delete the locally stored remote-server credential.",
+    args: z.tuple([]),
+    returns: OkResultSchema,
+    access: REMOTE_CRED_CLEAR_ACCESS,
+  },
+  relaunch: {
+    description: "Relaunch the Electron app (e.g. to apply a changed remote credential).",
+    args: z.tuple([]),
+    returns: OkResultSchema,
+    access: REMOTE_CRED_RELAUNCH_ACCESS,
+  },
 });

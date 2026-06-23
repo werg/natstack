@@ -39,6 +39,9 @@ export const evalRunArgsSchema = z
     runId: z.string().optional(),
     /** Opt-in deadline in ms; the run is aborted after this long. Absent ⇒ unbounded. */
     timeoutMs: z.number().int().positive().optional(),
+    /** Read-only containment: every service call this run makes is dispatched with
+     *  `ctx.readOnly`, so the server refuses any method not declared `sensitivity:"read"`. */
+    readOnly: z.boolean().optional(),
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -134,34 +137,41 @@ export const evalMethods = defineServiceMethods({
     returns: evalRunResultSchema,
     description:
       "Run TypeScript/JS in the caller's per-owner EvalDO sandbox (persistent REPL scope + synchronous in-DO SQLite `db`). Owner is the verified caller; fs is scoped to the owner's context.",
+    access: { sensitivity: "write" },
   },
   reset: {
     args: z.tuple([evalResetArgsSchema]),
     returns: z.object({ ok: z.boolean() }).strict(),
     description:
       "Reset the eval context: wipe the persistent scope + the user `db` tables (a fresh scope), preserving the kernel's own state. The owner's existing data is cleared.",
+    access: { sensitivity: "destructive" },
   },
   startRun: {
     args: z.tuple([evalRunArgsSchema]),
     returns: z.object({ runId: z.string() }).strict(),
     description:
       "Start an eval run for a caller that cannot hold a connection (an agent DO): returns a runId at once; the eval runs server-held in the EvalDO and the result is delivered out-of-band (onEvalComplete) and/or polled via getRun. Connection-holding callers (panels/CLI) should use `run` for a one-request result.",
+    access: { sensitivity: "write" },
   },
   getRun: {
     args: z.tuple([evalGetRunArgsSchema]),
     returns: evalRunStatusSchema,
-    description: "Poll an async run started with startRun: returns its status and (when done) result.",
+    description:
+      "Poll an async run started with startRun: returns its status and (when done) result.",
+    access: { sensitivity: "read" },
   },
   cancel: {
     args: z.tuple([evalCancelArgsSchema]),
     returns: z.object({ ok: z.boolean() }).strict(),
     description:
       "Cancel a single in-flight or pending run by runId (CAS to cancelled, then abort its outbound calls so a run wedged on an rpc.call unwinds). Other runs and the persistent scope are untouched. A no-op if the run is already terminal.",
+    access: { sensitivity: "write" },
   },
   forceReset: {
     args: z.tuple([evalResetArgsSchema]),
     returns: z.object({ ok: z.boolean() }).strict(),
     description:
       "Forced recovery for a wedged eval DO: cancel every non-terminal run, abort all in-flight runs, and reset the eval context (wipe scope + user db) IMMEDIATELY without waiting on the stuck run chain. Use when `reset` itself would hang behind a wedged run.",
+    access: { sensitivity: "destructive" },
   },
 });

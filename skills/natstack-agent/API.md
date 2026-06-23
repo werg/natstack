@@ -39,11 +39,11 @@ Allowed callers: `server`, `shell`
 
 | Method | Description |
 |--------|-------------|
-| `auth.grantConnection` |  |
-| `auth.getConnectionInfo` |  |
-| `auth.createPairingInvite` |  |
-| `auth.listDevices` |  |
-| `auth.revokeDevice` |  |
+| `auth.grantConnection` | Mint a short-lived connection token for a panel/app caller (requires the panel-hosting capability), granting it access to the gateway. |
+| `auth.getConnectionInfo` | Report how clients should reach this gateway: server/connect URLs, protocol, server identity, and current workspace. |
+| `auth.createPairingInvite` | Create a one-time device-pairing invite (code + deep link) for this server; requires the connection-management capability and is audit-logged. |
+| `auth.listDevices` | List paired devices for this server (refresh-token secrets stripped). |
+| `auth.revokeDevice` | Revoke a paired device by id, invalidating its shell token and retiring any mobile-app principal; audit-logged. Returns whether a device was revoked. |
 
 ## `blobstore`
 
@@ -53,18 +53,18 @@ Allowed callers: `panel`, `app`, `worker`, `do`, `shell`, `server`
 
 | Method | Description |
 |--------|-------------|
-| `blobstore.has` |  |
-| `blobstore.stat` |  |
-| `blobstore.putText` |  |
-| `blobstore.getText` |  |
-| `blobstore.getRange` |  |
-| `blobstore.getRangeBytes` |  |
-| `blobstore.grep` |  |
-| `blobstore.putBase64` |  |
-| `blobstore.getBase64` |  |
-| `blobstore.delete` |  |
-| `blobstore.list` |  |
-| `blobstore.pruneUnreferenced` |  |
+| `blobstore.has` | Whether a blob with this content digest exists in the workspace store. |
+| `blobstore.stat` | Size (bytes) and last-modified time of a blob, or null if it does not exist. |
+| `blobstore.putText` | Store a UTF-8 string; returns its content digest + byte size. Content-addressed, so identical text always yields the same digest (idempotent). |
+| `blobstore.getText` | Full UTF-8 text of a blob, or null if absent. |
+| `blobstore.getRange` | UTF-8 text slice. offset/length are BYTES (so they compose with stat.size); the returned string is UTF-8-decoded, so partial codepoints at slice boundaries become U+FFFD replacement chars. Use getRangeBytes for a raw binary slice. |
+| `blobstore.getRangeBytes` | Raw byte slice, base64-encoded on the wire so binary blobs (PDFs, images) round-trip intact. Decode with Buffer.from(result.bytesBase64, 'base64'). |
+| `blobstore.grep` | Search a blob's text for a regex pattern; returns matching lines with optional surrounding context, or null if the blob is absent. |
+| `blobstore.putBase64` | Store raw bytes from a base64 payload; returns content digest + byte size (idempotent by content). |
+| `blobstore.getBase64` | Full blob contents as a base64 string, or null if absent. |
+| `blobstore.delete` | Delete a blob by digest; returns true if it existed. Destructive, admin-only. |
+| `blobstore.list` | List blob digests, optionally filtered by hex prefix and capped by limit. Admin-only. |
+| `blobstore.pruneUnreferenced` | Garbage-collect blobs not in the `referenced` set (optionally only those older than olderThanMs). Pass dryRun:true to preview without deleting. Destructive, admin-only. |
 
 ## `build`
 
@@ -74,18 +74,18 @@ Allowed callers: `panel`, `app`, `shell`, `server`, `worker`, `do`, `extension`
 
 | Method | Description |
 |--------|-------------|
-| `build.getBuild` |  |
-| `build.getBuildNpm` |  |
-| `build.getBuildMetadata` |  |
-| `build.getEffectiveVersion` |  |
-| `build.inspectBuildProvenance` | Resolve a workspace build unit and report its effective version, immutable build keys, and cached artifact metadata. |
+| `build.getBuild` | Build a panel/worker/extension unit (or a library bundle) and return its artifacts. The optional ref selects the workspace state to build from: omitted = main HEAD, a head name (e.g. 'ctx:abc'), or an immutable 'state:…' hash. Results are cached by content-derived build key, so rebuilding an unchanged unit reuses the cache. |
+| `build.getBuildNpm` | Build an npm package as a CJS library bundle for sandbox use, leaving the given externals unbundled. |
+| `build.getBuildMetadata` | Cached build metadata for an immutable build key, or null if it is not cached. |
+| `build.getEffectiveVersion` | Effective version (content-derived identity) of a workspace unit, or null if unknown. |
+| `build.inspectBuildProvenance` | Resolve a workspace build unit (by name, relative path, or basename) and report its effective version, immutable build keys, and cached artifact metadata. Reports ambiguity when a basename matches multiple units. |
 | `build.listRecentBuildEvents` | List recent state-triggered build lifecycle events and failures, optionally filtered by unit name or workspace-relative path. |
 | `build.doctorExtension` | Inspect an extension manifest, dependency routing, cached metadata, and smoke/build status. |
-| `build.recompute` |  |
-| `build.gc` |  |
-| `build.getAboutPages` |  |
-| `build.hasUnit` |  |
-| `build.getPanelMetadata` |  |
+| `build.recompute` | Rediscover the package graph, recompute every unit's effective version, rebuild any changed buildable units, and return the set of changed/added/removed units. |
+| `build.gc` | Garbage-collect cached build artifacts not referenced by the given active units; returns the number of artifacts freed. |
+| `build.getAboutPages` | List available about pages for the launcher UI. |
+| `build.hasUnit` | Whether a build unit with this name exists in the workspace graph. |
+| `build.getPanelMetadata` | Launcher metadata (source path, title, description, launcher visibility) for a panel unit, or null if the name is absent or not a panel. |
 | `build.listSkills` | List available workspace skill packages that can be loaded via the eval imports parameter. |
 
 ## `credentials`
@@ -96,21 +96,21 @@ Allowed callers: `shell`, `app`, `panel`, `server`, `worker`, `do`, `extension`
 
 | Method | Description |
 |--------|-------------|
-| `credentials.storeCredential` |  |
-| `credentials.connect` |  |
-| `credentials.configureClient` |  |
-| `credentials.requestCredentialInput` |  |
-| `credentials.getClientConfigStatus` |  |
-| `credentials.deleteClientConfig` |  |
-| `credentials.forwardOAuthCallback` |  |
-| `credentials.listStoredCredentials` |  |
-| `credentials.inspectStoredCredentials` |  |
-| `credentials.revokeCredential` |  |
-| `credentials.grantCredential` |  |
-| `credentials.resolveCredential` |  |
-| `credentials.proxyFetch` |  |
-| `credentials.proxyGitHttp` |  |
-| `credentials.audit` |  |
+| `credentials.storeCredential` | Persist a URL-bound credential (label, audience, injection, secret material); userland callers are prompted to approve it before it is stored, and the returned summary never echoes the secret. |
+| `credentials.connect` | Run a connection flow (OAuth2/OAuth1a/API-key/SSH/browser-session) to obtain and store a credential; interactive flows open a browser sign-in and may return a DeferredResult for hibernatable DO callers. |
+| `credentials.configureClient` | Store (versioned) OAuth client configuration — authorize/token URLs and client fields such as client id/secret; userland callers are prompted to submit the material, and secrets are never returned in the status. |
+| `credentials.requestCredentialInput` | Prompt the user to enter exactly one secret field, then store the resulting credential; the submitted secret is never returned in the summary. |
+| `credentials.getClientConfigStatus` | Return the configured status of an OAuth client config (which fields are set, URLs, status) without revealing secret values; rejects callers outside the config's trust scope. |
+| `credentials.deleteClientConfig` | Disable a client config (marks it deleted so it is no longer used for new connections or refreshes); userland callers are prompted to confirm and only the config's owner may delete it. |
+| `credentials.forwardOAuthCallback` | Deliver an inbound OAuth provider callback (code/state, or a full callback URL) to its pending connection transaction, validating the caller against the transaction's redirect strategy. |
+| `credentials.listStoredCredentials` | List summaries of stored URL-bound credentials visible to the caller; secret material is never included. |
+| `credentials.inspectStoredCredentials` | List administrator-facing credential summaries with runtime usage metadata; secret material is never included. |
+| `credentials.revokeCredential` | Revoke a stored credential by id (marks it revoked and best-effort revokes the upstream provider token); only an authorized administrator of the credential may call it. |
+| `credentials.grantCredential` | Deprecated no-op: scoped approval grants replaced explicit caller grants, so this always throws after a shell/server gate. |
+| `credentials.resolveCredential` | Locate a stored credential by url/provider/id and authorize its use for the caller, returning a summary, null when nothing matches, or a DeferredResult while a use-approval prompt is awaited. |
+| `credentials.proxyFetch` | Forward an outbound HTTP request through the egress proxy, injecting the resolved credential; returns status, ordered header pairs, final URL, and a base64 body. |
+| `credentials.proxyGitHttp` | Forward a Git smart-HTTP request through the egress proxy with credential injection; the request/response bodies are base64-encoded. |
+| `credentials.audit` | Query the credential egress audit log (optionally filtered by provider/connection/caller/since, paged by limit/after). |
 
 ## `eval`
 
@@ -135,7 +135,7 @@ Allowed callers: `shell`, `server`, `panel`, `app`, `worker`, `do`, `extension`
 
 | Method | Description |
 |--------|-------------|
-| `externalOpen.openExternal` |  |
+| `externalOpen.openExternal` | Open an http(s) or mailto URL in the host OS browser; approval-gated for code callers, returning the persisted approval decision when one was made. |
 
 ## `fs`
 
@@ -145,33 +145,33 @@ Allowed callers: `panel`, `app`, `server`, `worker`, `do`, `extension`, `shell`
 
 | Method | Description |
 |--------|-------------|
-| `fs.readFile` |  |
-| `fs.writeFile` |  |
-| `fs.appendFile` |  |
-| `fs.readdir` |  |
-| `fs.mkdir` |  |
-| `fs.rmdir` |  |
-| `fs.rm` |  |
-| `fs.stat` |  |
-| `fs.lstat` |  |
-| `fs.exists` |  |
-| `fs.access` |  |
-| `fs.unlink` |  |
-| `fs.copyFile` |  |
-| `fs.rename` |  |
-| `fs.realpath` |  |
-| `fs.truncate` |  |
-| `fs.readlink` |  |
-| `fs.chmod` |  |
-| `fs.utimes` |  |
-| `fs.grep` |  |
-| `fs.glob` |  |
-| `fs.open` |  |
-| `fs.handleRead` |  |
-| `fs.handleWrite` |  |
-| `fs.handleClose` |  |
-| `fs.handleStat` |  |
-| `fs.mktemp` |  |
+| `fs.readFile` | Read a file's contents. Overloaded: with an `encoding` argument the bytes are decoded and returned as a string; without one, raw bytes are returned base64-encoded in a binary envelope. (Server/shell callers prepend a contextId as the first argument.) |
+| `fs.writeFile` | Write data to a file, replacing existing contents (creating it if absent); data may be a UTF-8 string or a base64 binary envelope. GAD-tracked context paths commit through the VCS rather than the worktree. |
+| `fs.appendFile` | Append data to the end of a file (creating it if absent); data may be a UTF-8 string or a base64 binary envelope. |
+| `fs.readdir` | List the entries of a directory; returns bare name strings, or Dirent-shaped objects with type flags when `withFileTypes` is set, optionally recursing into subdirectories. |
+| `fs.mkdir` | Create a directory; with `recursive` it creates missing parents and returns the first-created path (relative to the context root), otherwise returns undefined. |
+| `fs.rmdir` | Remove an empty directory; throws if the directory is not empty. |
+| `fs.rm` | Remove a file or directory; `recursive` deletes a directory's contents and `force` suppresses errors for missing paths. |
+| `fs.stat` | Return metadata (type flags, size, mtime/ctime, mode) for a path, following symlinks to their target. |
+| `fs.lstat` | Like stat, but reports on the symlink itself rather than following it to its target. |
+| `fs.exists` | Return whether a path exists and is accessible to the caller. |
+| `fs.access` | Test a path's accessibility against the given fs.constants mode bits; resolves on success, throws on failure. |
+| `fs.unlink` | Delete a single file (not a directory). |
+| `fs.copyFile` | Copy a file from a source path to a destination path, overwriting the destination. |
+| `fs.rename` | Move or rename a file or directory from a source path to a destination path (also the atomic-write commit step for temp files moved into tracked paths). |
+| `fs.realpath` | Resolve a path to its canonical form, returning it relative to the context root (sandboxed callers) or as an absolute host path (unrestricted callers). |
+| `fs.truncate` | Truncate (or zero-extend) a file to the given byte length (default 0). |
+| `fs.readlink` | Read a symlink's target; absolute targets are relativized to the context root to avoid leaking host paths. |
+| `fs.chmod` | Change a path's Unix permission bits (mode). |
+| `fs.utimes` | Set a path's access and modification timestamps (seconds since the epoch). |
+| `fs.grep` | Search file contents under the context root for a regex pattern (the first argument), returning matching lines with optional context; uses ripgrep when available with a pure-JS fallback, skipping .git, node_modules, symlinks, and binary files. |
+| `fs.glob` | Find files whose path matches a glob pattern (the first argument) under the context root, returned newest-first by mtime; skips .git, node_modules, and symlinks. |
+| `fs.open` | Open a file with the given flags (default 'r') and optional mode, returning a server-tracked handleId for subsequent handleRead/handleWrite/handleStat/handleClose calls; handles are caller-scoped and auto-close after 5 minutes idle. |
+| `fs.handleRead` | Read up to `length` bytes from an open handle at the given position (null reads from the current offset), returning the bytes base64-encoded plus the count actually read. |
+| `fs.handleWrite` | Write data (UTF-8 string or base64 binary envelope) to an open handle at the given position (null appends at the current offset), returning the byte count written. |
+| `fs.handleClose` | Close an open file handle and release its server-side resources; a no-op if the handle is already gone. |
+| `fs.handleStat` | Return metadata (type flags, size, mtime/ctime, mode) for the file behind an open handle. |
+| `fs.mktemp` | Create the context's `.tmp/` directory if needed and return a fresh, unused root-relative path under it (for the write-to-temp-then-rename atomic-write pattern); the file itself is not created and the prefix is sanitized. |
 
 ## `gitInterop`
 
@@ -181,22 +181,10 @@ Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`
 
 | Method | Description |
 |--------|-------------|
-| `gitInterop.setSharedRemote` |  |
-| `gitInterop.removeSharedRemote` |  |
-| `gitInterop.importProject` |  |
-| `gitInterop.completeWorkspaceDependencies` |  |
-
-## `meta`
-
-Runtime introspection for services and eval runtime surfaces.
-
-Allowed callers: `panel`, `app`, `worker`, `do`, `extension`, `server`, `shell`
-
-| Method | Description |
-|--------|-------------|
-| `meta.listServices` | List all registered RPC services and their method metadata. |
-| `meta.describeService` | Describe one registered RPC service by name. |
-| `meta.getRuntimeSurface` | Return the live eval runtime surface manifest for the requested target. |
+| `gitInterop.setSharedRemote` | Declare or update the external Git remote shared across workspace contexts for a unit, persisting it to meta/natstack.yml and syncing it into the repo's git config; may prompt for capability approval. |
+| `gitInterop.removeSharedRemote` | Remove a named shared Git remote declaration for a workspace unit from meta/natstack.yml and sync the repo's git config; may prompt for capability approval. |
+| `gitInterop.importProject` | Clone an external Git project into the workspace at the requested path and record its remote in meta/natstack.yml; clones over the network and may prompt for config-write approval. |
+| `gitInterop.completeWorkspaceDependencies` | Clone every remote declared in meta/natstack.yml whose unit is not yet present in the workspace, skipping already-present or unsupported paths; returns per-unit imported/skipped/failed results. |
 
 ## `notification`
 
@@ -206,9 +194,9 @@ Allowed callers: `shell`, `app`, `panel`, `worker`, `do`, `extension`, `server`
 
 | Method | Description |
 |--------|-------------|
-| `notification.show` |  |
-| `notification.dismiss` |  |
-| `notification.reportAction` |  |
+| `notification.show` | Show a notification in the shell chrome; returns its id (auto-generated when not supplied). |
+| `notification.dismiss` | Dismiss the notification with the given id, rejecting any pending waitForAction for it. |
+| `notification.reportAction` | Report that the user took an action on a notification, emitting an event and resolving any pending waitForAction. |
 
 ## `panelCdp`
 
@@ -234,7 +222,7 @@ Allowed callers: `shell`, `server`
 
 | Method | Description |
 |--------|-------------|
-| `panelLog.append` |  |
+| `panelLog.append` | Forward a batch of panel console/lifecycle records (max 200) from the Electron shell into the server's runtime-diagnostics store. |
 
 ## `panelRuntime`
 
@@ -244,12 +232,12 @@ Allowed callers: `shell`, `app`, `server`
 
 | Method | Description |
 |--------|-------------|
-| `panelRuntime.registerClient` |  |
-| `panelRuntime.unregisterClient` |  |
-| `panelRuntime.getSnapshot` |  |
-| `panelRuntime.acquire` |  |
-| `panelRuntime.takeOver` |  |
-| `panelRuntime.release` |  |
+| `panelRuntime.registerClient` | Register (or refresh) a panel-hosting client session so it can be assigned runtime leases. |
+| `panelRuntime.unregisterClient` | Unregister a client session by id, releasing any leases it held and reassigning default CDP hosts as needed. |
+| `panelRuntime.getSnapshot` | Get the current lease snapshot (version + all active panel runtime leases). |
+| `panelRuntime.acquire` | Acquire the runtime lease for a panel entity. Succeeds for the current holder or an unleased entity; otherwise returns acquired:false with the existing lease. |
+| `panelRuntime.takeOver` | Forcibly take over a panel entity's runtime lease, revoking and closing any conflicting holder's connection. |
+| `panelRuntime.release` | Release the lease for a panel entity held by the given connection id. No-op unless the connection matches the current holder. |
 
 ## `panelTree`
 
@@ -259,34 +247,34 @@ Allowed callers: `panel`, `worker`, `do`, `shell`, `server`, `app`
 
 | Method | Description |
 |--------|-------------|
-| `panelTree.list` |  |
-| `panelTree.roots` |  |
-| `panelTree.getTreeSnapshot` |  |
-| `panelTree.getFocusedPanelId` |  |
-| `panelTree.create` |  |
-| `panelTree.ensureLoaded` |  |
-| `panelTree.focus` |  |
-| `panelTree.getRuntimeLease` |  |
-| `panelTree.getStateArgs` |  |
-| `panelTree.setStateArgs` |  |
-| `panelTree.reload` |  |
-| `panelTree.close` |  |
-| `panelTree.archive` |  |
-| `panelTree.unload` |  |
-| `panelTree.movePanel` |  |
-| `panelTree.navigate` |  |
-| `panelTree.navigateHistory` |  |
-| `panelTree.takeOver` |  |
-| `panelTree.openDevTools` |  |
-| `panelTree.rebuildPanel` |  |
-| `panelTree.rebuildAndReload` |  |
-| `panelTree.updatePanelState` |  |
-| `panelTree.snapshot` |  |
-| `panelTree.callAgent` |  |
-| `panelTree.metadata` |  |
-| `panelTree.getCollapsedIds` |  |
-| `panelTree.setCollapsed` |  |
-| `panelTree.expandIds` |  |
+| `panelTree.list` | List the children of a panel (or the root panels when the parent id is null/omitted). |
+| `panelTree.roots` | List all root-level panels in the tree. |
+| `panelTree.getTreeSnapshot` | Return a full snapshot of the panel tree (revision plus root panels). |
+| `panelTree.getFocusedPanelId` | Return the id of the currently focused panel, or null if none is focused. |
+| `panelTree.create` | Create a new panel from a workspace source path, optionally nested under a parent and focused. |
+| `panelTree.ensureLoaded` | Ensure the panel's runtime is loaded (building/restoring it if needed) without changing focus. |
+| `panelTree.focus` | Focus a panel, loading its runtime first if it is not already loaded. |
+| `panelTree.getRuntimeLease` | Return the current runtime lease held on a panel (which host/connection owns it), or null if unleased. |
+| `panelTree.getStateArgs` | Return the validated state-args currently bound to a panel. |
+| `panelTree.setStateArgs` | Replace a panel's state-args; returns the resulting validated state-args. |
+| `panelTree.reload` | Reload a panel's view in place, keeping its current snapshot. |
+| `panelTree.close` | Close a panel, removing it (and its subtree) from the tree. |
+| `panelTree.archive` | Archive a panel, removing it from the active tree while preserving its history. |
+| `panelTree.unload` | Unload a panel's runtime/view to free resources while keeping the panel in the tree. |
+| `panelTree.movePanel` | Reparent and/or reposition a panel among its siblings (drag-and-drop move). |
+| `panelTree.navigate` | Navigate an existing panel to a new source path (optionally changing ref/context), returning the new panel descriptor or null. |
+| `panelTree.navigateHistory` | Move a panel backward (-1) or forward (1) through its navigation history, returning the resulting panel descriptor or null. |
+| `panelTree.takeOver` | Take over a panel's runtime lease for the calling client, focusing it on this host. |
+| `panelTree.openDevTools` | Open developer tools for a panel, optionally docked to a side or detached. |
+| `panelTree.rebuildPanel` | Rebuild a panel's runtime artifacts from source without reloading its view. |
+| `panelTree.rebuildAndReload` | Rebuild a panel's runtime artifacts from source and then reload its view. |
+| `panelTree.updatePanelState` | Update a panel's live navigation state (url, page title, loading/back/forward flags) from the rendering surface. |
+| `panelTree.snapshot` | Return the current snapshot/configuration of a single panel. |
+| `panelTree.callAgent` | Invoke a panel's in-process agent method (e.g. _agent.snapshot/_agent.tree/_agent.setMode) with optional arguments. |
+| `panelTree.metadata` | Return the full Panel metadata for a panel id, or null if it does not exist. |
+| `panelTree.getCollapsedIds` | Return the ids of panels that are currently collapsed in the tree UI. |
+| `panelTree.setCollapsed` | Set whether a panel is collapsed in the tree UI. |
+| `panelTree.expandIds` | Expand (un-collapse) a set of panels in the tree UI. |
 
 ## `presence`
 
@@ -308,8 +296,8 @@ Allowed callers: `shell`, `app`, `server`
 
 | Method | Description |
 |--------|-------------|
-| `push.register` |  |
-| `push.unregister` |  |
+| `push.register` | Register a device's push token for a client id, persisting it so it survives server restarts. |
+| `push.unregister` | Remove the persisted push registration for a client id; returns whether one existed. |
 
 ## `runtime`
 
@@ -319,7 +307,7 @@ Allowed callers: `panel`, `app`, `shell`, `server`, `worker`, `do`
 
 | Method | Description |
 |--------|-------------|
-| `runtime.createEntity` | Create a runtime entity (panel, worker, or DO). |
+| `runtime.createEntity` | Create a runtime entity (panel, app, worker, DO, or session) and commit its durable identity. Reuses/reactivates an existing row for the same canonical key. Returns the entity handle (id + runtime targetId). |
 | `runtime.retireEntity` | Retire a single entity, firing cleanup hooks. With removeContext, also delete the context folder when no other live entity shares the context. |
 | `runtime.listEntities` | List live entities (id, kind, source, contextId, title, createdAt). |
 | `runtime.resolveContext` | Return the contextId for an entity (or null if unknown). Cached read; falls back to DO. |
@@ -332,12 +320,12 @@ Allowed callers: `shell`, `app`, `server`
 
 | Method | Description |
 |--------|-------------|
-| `shellApproval.resolve` |  |
-| `shellApproval.resolveBootstrap` |  |
-| `shellApproval.resolveUserland` |  |
-| `shellApproval.submitClientConfig` |  |
-| `shellApproval.submitCredentialInput` |  |
-| `shellApproval.listPending` |  |
+| `shellApproval.resolve` | Record the user's decision (once/session/version/repo/deny/dismiss) on a pending approval, resolving its queued request. |
+| `shellApproval.resolveBootstrap` | Resolve a pending startup-app (bootstrap unit) approval with an allow-once or deny decision; rejects if the id is not a pending bootstrap approval. |
+| `shellApproval.resolveUserland` | Resolve a pending userland approval by selecting one of the presented option values (or 'dismiss'); rejects if the choice was not offered to the user. |
+| `shellApproval.submitClientConfig` | Submit the user-entered client-configuration field values for a pending approval, fulfilling its config request. |
+| `shellApproval.submitCredentialInput` | Submit the user-entered credential/secret field values for a pending approval, fulfilling its credential-input request. |
+| `shellApproval.listPending` | List the approvals currently awaiting a decision, used to rehydrate the consent approval bar on mount. |
 
 ## `shellPresence`
 
@@ -357,11 +345,11 @@ Allowed callers: `server`, `shell`
 
 | Method | Description |
 |--------|-------------|
-| `tokens.create` |  |
-| `tokens.ensure` |  |
-| `tokens.revoke` |  |
-| `tokens.get` |  |
-| `tokens.rotateAdmin` |  |
+| `tokens.create` | Mint a fresh bearer token for a non-panel caller id with the given caller kind, replacing any existing token for that id. |
+| `tokens.ensure` | Return the existing bearer token for a caller id, minting one with the given caller kind only if none exists yet (idempotent). |
+| `tokens.revoke` | Revoke the bearer token for a caller id; a no-op if no token is registered for it. |
+| `tokens.get` | Look up the current bearer token for a caller id, or null if none is registered. |
+| `tokens.rotateAdmin` | Generate a new random admin token, persist it (when persistence is configured) before swapping it in, and return the new value. |
 
 ## `vcs`
 
@@ -371,21 +359,21 @@ Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`
 
 | Method | Description |
 |--------|-------------|
-| `vcs.applyEdits` |  |
-| `vcs.readFile` |  |
-| `vcs.listFiles` |  |
-| `vcs.revert` |  |
-| `vcs.status` |  |
-| `vcs.unitStatus` |  |
-| `vcs.log` |  |
-| `vcs.diff` |  |
-| `vcs.resolveHead` |  |
-| `vcs.merge` |  |
-| `vcs.abortMerge` |  |
-| `vcs.pendingMerge` |  |
-| `vcs.publishStatus` |  |
-| `vcs.publish` |  |
-| `vcs.recall` |  |
+| `vcs.applyEdits` | Apply a batch of file edits as one atomic GAD commit onto the caller's head, advancing it; returns the new head state plus any merge conflicts and the changed paths. |
+| `vcs.readFile` | Read one file's content (text or base64 bytes) at a VCS ref, with its state/content hashes and mode; returns null if the path is absent. Empty ref ⇒ the caller's current head. |
+| `vcs.listFiles` | List every file (path, content hash, mode) at a VCS ref; omit the ref for the caller's current head. |
+| `vcs.revert` | Undo a prior change by forward-applying its inverse patch onto the caller's head, advancing it; target the change by state hash or event id. |
+| `vcs.status` | Unpublished changes on a head relative to its publish baseline (main): the added/removed/changed paths plus the head state and whether it is ahead of main. Not a filesystem scan. Omit the head for the caller's current context head. |
+| `vcs.unitStatus` | Status scoped to a single workspace unit (repo path): the unit's head, state hash, dirty flag, and per-file changes. Omit the head for the caller's current context head. |
+| `vcs.log` | Commit log for a head, most recent first, capped by limit (default 50). Omit the head for the caller's current context head. |
+| `vcs.diff` | Diff two GAD states by their `state:…` hashes, returning the added/removed/changed files between them. |
+| `vcs.resolveHead` | Resolve a ref to its head name and current `state:…` hash. Omit the ref for the caller's current context head; pass "main"/"ctx:…" for an explicit ref. |
+| `vcs.merge` | Merge a source head into a target head (default: the caller's own head), advancing the target; returns up-to-date/merged/conflicted plus any conflicts. The target is a head write. |
+| `vcs.abortMerge` | Abort a pending (conflicted) merge on a head, restoring its pre-merge tree; this is itself a head write. Omit the head for the caller's current context head. |
+| `vcs.pendingMerge` | Inspect a head's in-progress merge, if any: the source head being merged and its unresolved conflicts; null when no merge is pending. Omit the head for the caller's current context head. |
+| `vcs.publishStatus` | How far a head is ahead of main: the unpublished commit count and the per-file changes that a publish would carry. Omit the head for the caller's current context head. |
+| `vcs.publish` | Publish the caller's own context head into main by merging it (the one sanctioned ctx→main escalation; autonomous agents are user-approval gated). Returns merged/conflicted; a conflicted publish is rolled back, leaving main untouched. |
+| `vcs.recall` | Semantic recall over the workspace's VCS memory (log summaries, file snippets) matching a query; returns ranked snippets with their head/event/path anchors. |
 
 ## `webhookIngress`
 
@@ -419,7 +407,7 @@ Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`
 
 | Method | Description |
 |--------|-------------|
-| `workerLog.write` |  |
+| `workerLog.write` | Forward one DO console line (level + message, plus optional source) to the server terminal and the workspace-unit log stream. |
 
 ## `workers`
 
@@ -442,45 +430,45 @@ Allowed callers: `shell`, `app`, `panel`, `worker`, `do`, `extension`, `server`
 
 | Method | Description |
 |--------|-------------|
-| `workspace.getInfo` |  |
-| `workspace.list` |  |
-| `workspace.getActive` |  |
-| `workspace.getActiveEntry` |  |
-| `workspace.getConfig` |  |
-| `workspace.create` |  |
-| `workspace.delete` |  |
-| `workspace.select` |  |
-| `workspace.setInitPanels` |  |
-| `workspace.setConfigField` |  |
-| `workspace.getAgentsMd` |  |
-| `workspace.listSkills` |  |
-| `workspace.readSkill` |  |
-| `workspace.sourceTree` |  |
-| `workspace.findUnitForPath` |  |
-| `workspace.units.list` |  |
-| `workspace.units.inspector` |  |
-| `workspace.units.restart` |  |
-| `workspace.units.logs` |  |
-| `workspace.units.diagnostics` |  |
-| `workspace.units.versions` |  |
-| `workspace.units.rollback` |  |
-| `workspace.units.bakeAppDist` |  |
-| `workspace.recurring.list` |  |
-| `workspace.heartbeats.list` |  |
-| `workspace.heartbeats.runNow` |  |
-| `workspace.heartbeats.pause` |  |
-| `workspace.heartbeats.resume` |  |
-| `workspace.hostTargets.list` |  |
-| `workspace.hostTargets.getSelection` |  |
-| `workspace.hostTargets.setSelection` |  |
-| `workspace.hostTargets.clearSelection` |  |
-| `workspace.hostTargets.versions` |  |
-| `workspace.hostTargets.preparePinnedRef` |  |
-| `workspace.hostTargets.launch` |  |
-| `workspace.hostTargets.beginLaunch` |  |
-| `workspace.hostTargets.getLaunchSession` |  |
-| `workspace.hostTargets.resolveLaunchSessionApproval` |  |
-| `workspace.hostTargets.cancelLaunchSession` |  |
+| `workspace.getInfo` | Filesystem paths (source, state, contexts) and resolved config for the active workspace. |
+| `workspace.list` | List all known workspaces in the catalog with their last-opened timestamps. |
+| `workspace.getActive` | Name (id) of the currently active workspace. |
+| `workspace.getActiveEntry` | Catalog entry (name + last-opened) for the currently active workspace. |
+| `workspace.getConfig` | The active workspace's resolved config (meta/natstack.yml). |
+| `workspace.create` | Create and register a new workspace on disk, optionally forking from an existing one; userland callers are approval-gated. |
+| `workspace.delete` | Permanently delete a workspace directory and remove it from the catalog; refuses to delete the active workspace and is approval-gated for userland. |
+| `workspace.select` | Switch the active workspace, touching the catalog and signalling the host to relaunch into it; disruptive and approval-gated for userland. |
+| `workspace.setInitPanels` | Replace the set of panels opened when this workspace starts; approval-gated for userland. |
+| `workspace.setConfigField` | Write an arbitrary field into the workspace config (meta/natstack.yml); approval-gated for userland. |
+| `workspace.getAgentsMd` | Read the workspace-level meta/AGENTS.md, returning an empty string if it is absent. |
+| `workspace.listSkills` | List skills under <workspace>/skills/* with name + description parsed from each SKILL.md frontmatter. |
+| `workspace.readSkill` | Return the raw SKILL.md contents for a single skill by name (single-segment names only; path traversal is rejected). |
+| `workspace.sourceTree` | Return the workspace source tree, annotating units, launchables, and skills. |
+| `workspace.findUnitForPath` | Resolve a workspace-relative path to its owning unit and the path relative to that unit, or null if no unit owns it. |
+| `workspace.units.list` | List operational status rows for all workspace units (panels, workers, extensions, apps), including build/health state. |
+| `workspace.units.inspector` | Return the devtools inspector URL for a unit by name or source, or null if it has none. |
+| `workspace.units.restart` | Restart a workspace unit through its owning manager. |
+| `workspace.units.logs` | Query retained log records for a unit, optionally filtered by time/sequence cursor, level, and limit. |
+| `workspace.units.diagnostics` | Return combined diagnostics for a unit: current status, recent logs, errors, build events, and buffer capacity. |
+| `workspace.units.versions` | List the active build and rollback-capable previous versions for an app unit; userland is restricted to managing its own app. |
+| `workspace.units.rollback` | Roll an app unit back to a previous active build (or a specific build key); userland is restricted to managing its own app. |
+| `workspace.units.bakeAppDist` | Bake an app unit's active approved build into a packaging payload directory; trusted-chrome callers only. |
+| `workspace.recurring.list` | List declarative scheduled jobs from meta/natstack.yml with their durable run state (next/last run, failures, backoff). |
+| `workspace.heartbeats.list` | List registered heartbeats with their schedule, channel binding, and run state. |
+| `workspace.heartbeats.runNow` | Trigger a heartbeat tick immediately for the selected heartbeat. |
+| `workspace.heartbeats.pause` | Pause the selected heartbeat so it stops ticking until resumed. |
+| `workspace.heartbeats.resume` | Resume a paused heartbeat so it resumes its schedule. |
+| `workspace.hostTargets.list` | List app candidates selectable as the active app for a host target. |
+| `workspace.hostTargets.getSelection` | Read the active per-workspace selection for a host target along with whether it is still valid. |
+| `workspace.hostTargets.setSelection` | Persist the per-workspace app selection for a host target. |
+| `workspace.hostTargets.clearSelection` | Clear the persisted per-workspace app selection for a host target. |
+| `workspace.hostTargets.versions` | List retained versions for a specific host-target candidate. |
+| `workspace.hostTargets.preparePinnedRef` | Materialize a retained build for a specific ref of a host-target candidate through the build system. |
+| `workspace.hostTargets.launch` | Launch or reload the selected target app in this host, returning a ready/preparing/approval-required/unavailable status. |
+| `workspace.hostTargets.beginLaunch` | Begin an asynchronous launch session for a host target, returning the initial session snapshot. |
+| `workspace.hostTargets.getLaunchSession` | Fetch the current snapshot of a launch session by id, or null if it is unknown. |
+| `workspace.hostTargets.resolveLaunchSessionApproval` | Resolve a pending approval on a launch session by allowing it once or denying it, returning the updated snapshot. |
+| `workspace.hostTargets.cancelLaunchSession` | Cancel an in-flight launch session by id. |
 
 ## `workspace-state`
 

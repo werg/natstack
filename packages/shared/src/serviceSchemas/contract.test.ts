@@ -96,7 +96,10 @@ describe("service schema contracts", () => {
 
   it("declares args and approved return schemas for every method", () => {
     for (const { service, methods } of serviceTables) {
-      expect(Object.keys(methods).length, `${service} should declare at least one method`).toBeGreaterThan(0);
+      expect(
+        Object.keys(methods).length,
+        `${service} should declare at least one method`
+      ).toBeGreaterThan(0);
       for (const [method, schema] of Object.entries(methods)) {
         expect(
           typeof schema.args.safeParse,
@@ -113,9 +116,45 @@ describe("service schema contracts", () => {
 
   it("builds typed clients without dotted-method collisions", () => {
     for (const { service, methods } of serviceTables) {
-      expect(() =>
-        createTypedServiceClient(service, methods, async () => undefined)
-      ).not.toThrow();
+      expect(() => createTypedServiceClient(service, methods, async () => undefined)).not.toThrow();
     }
+  });
+
+  // Doc-coverage gate (replaces the deleted check:*-docs staleness gates).
+  // The literate-docs migration (Workstream F) is complete, so this now ENFORCES
+  // that every public method carries a non-empty `description` — new methods must
+  // be documented at the definition site (it flows to agents via the catalog).
+  it("documents every method (non-empty description at the definition site)", () => {
+    const undocumented: string[] = [];
+    for (const { service, methods } of serviceTables) {
+      for (const [method, schema] of Object.entries(methods)) {
+        if (!schema.description || schema.description.trim().length === 0) {
+          undocumented.push(`${service}.${method}`);
+        }
+      }
+    }
+    expect(
+      undocumented,
+      `Undocumented methods (add a \`description\`): ${undocumented.join(", ")}`
+    ).toEqual([]);
+  });
+
+  // Sensitivity-coverage gate: `access.sensitivity` is no longer enforced (the
+  // caller gate lives in `policy`), but it stays agent-facing documentation
+  // (rendered in docs_open) and the read-only dry-run key — so every public
+  // method must declare it (read | write | admin | destructive).
+  it("declares access.sensitivity on every method", () => {
+    const missing: string[] = [];
+    for (const { service, methods } of serviceTables) {
+      for (const [method, schema] of Object.entries(methods)) {
+        if (!schema.access?.sensitivity) {
+          missing.push(`${service}.${method}`);
+        }
+      }
+    }
+    expect(
+      missing,
+      `Methods missing \`access.sensitivity\` (add read|write|admin|destructive): ${missing.join(", ")}`
+    ).toEqual([]);
   });
 });

@@ -1,7 +1,23 @@
 import { z } from "zod";
+import type { MethodAccessDescriptor } from "../servicePolicy.js";
 import { defineServiceMethods } from "../typedServiceClient.js";
 
 const nullableString = z.string().nullable();
+
+// Access descriptors shared across the read/write method groups. The legacy
+// caller-kind gate stays on the service `policy` (allowed: shell/panel/app/
+// server/worker/do/extension), so these carry only doc/safety metadata
+// (sensitivity) and deliberately OMIT `callers`.
+//
+// Reads are pure projections of committed GAD state (status/log/diff/readFile/
+// resolveHead/recall). Writes commit through GAD and advance a head
+// (applyEdits/revert/merge/abortMerge/publish).
+const READ_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "read",
+};
+const WRITE_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "write",
+};
 
 export const vcsFileStatusSchema = z.object({
   path: z.string(),
@@ -96,9 +112,23 @@ export const vcsEditOpSchema = z.preprocess(normalizeVcsEditOp, vcsEditOpStrictS
 export type VcsEditOp = z.infer<typeof vcsEditOpStrictSchema>;
 
 export const vcsApplyEditsInputSchema = z.object({
-  baseStateHash: z.string().optional(),
-  edits: z.array(vcsEditOpSchema),
-  head: z.string().optional(),
+  baseStateHash: z
+    .string()
+    .optional()
+    .describe(
+      "Optimistic-concurrency base: the head state the edits were computed against (a `state:…` hash). Omit to apply against the head's current state."
+    ),
+  edits: z
+    .array(vcsEditOpSchema)
+    .describe(
+      'Ordered edit ops applied as one atomic commit. Each op is discriminated by `kind` (replace/write/create/delete/chmod); `{ path, content: "…" }` is accepted shorthand for a write.'
+    ),
+  head: z
+    .string()
+    .optional()
+    .describe(
+      "Head to commit onto. Omit for the caller's own context head; entity callers may only write their own `ctx:…` head."
+    ),
 });
 export type VcsApplyEditsInput = z.infer<typeof vcsApplyEditsInputSchema>;
 
@@ -239,9 +269,20 @@ export const vcsHeadAdvanceSchema = z.object({
 export type VcsHeadAdvance = z.infer<typeof vcsHeadAdvanceSchema>;
 
 export const vcsRecallInputSchema = z.object({
-  query: z.string(),
-  kinds: z.array(z.string()).optional(),
-  limit: z.number().int().positive().max(50).optional(),
+  query: z
+    .string()
+    .describe("Free-text query matched against indexed VCS memory (log summaries, file snippets)."),
+  kinds: z
+    .array(z.string())
+    .optional()
+    .describe("Restrict results to these memory entry kinds; omit to search across all kinds."),
+  limit: z
+    .number()
+    .int()
+    .positive()
+    .max(50)
+    .optional()
+    .describe("Maximum number of results to return (1–50, default applied server-side)."),
 });
 export type VcsRecallInput = z.infer<typeof vcsRecallInputSchema>;
 
@@ -266,72 +307,144 @@ export type VcsRecallResult = z.infer<typeof vcsRecallResultSchema>;
 
 export const vcsMethods = defineServiceMethods({
   applyEdits: {
+    description:
+      "Apply a batch of file edits as one atomic GAD commit onto the caller's head, advancing it; returns the new head state plus any merge conflicts and the changed paths.",
     args: z.tuple([vcsApplyEditsInputSchema]),
     returns: vcsApplyEditsResultSchema,
+    access: WRITE_ACCESS,
+    examples: [
+      {
+        args: [
+          {
+            edits: [
+              { kind: "write", path: "notes.md", content: { kind: "text", text: "# Notes\n" } },
+            ],
+          },
+        ],
+      },
+    ],
   },
   readFile: {
+    description:
+      "Read one file's content (text or base64 bytes) at a VCS ref, with its state/content hashes and mode; returns null if the path is absent. Empty ref ⇒ the caller's current head.",
     args: z.tuple([z.string(), z.string()]),
     returns: vcsFileContentSchema.nullable(),
+    access: READ_ACCESS,
+    examples: [{ args: ["", "notes.md"] }],
   },
   listFiles: {
+    description:
+      "List every file (path, content hash, mode) at a VCS ref; omit the ref for the caller's current head.",
     args: z.tuple([z.string().optional()]),
     returns: z.array(vcsFileListEntrySchema),
+    access: READ_ACCESS,
   },
   revert: {
+    description:
+      "Undo a prior change by forward-applying its inverse patch onto the caller's head, advancing it; target the change by state hash or event id.",
     args: z.tuple([
       z.object({
-        stateHash: z.string().optional(),
-        eventId: z.string().optional(),
-        head: z.string().optional(),
+        stateHash: z
+          .string()
+          .optional()
+          .describe("Target the change that produced this `state:…` hash."),
+        eventId: z
+          .string()
+          .optional()
+          .describe("Target the change by its log event id instead of a state hash."),
+        head: z
+          .string()
+          .optional()
+          .describe(
+            "Head to revert on. Omit for the caller's own context head; entity callers may only write their own `ctx:…` head."
+          ),
       }),
     ]),
     returns: vcsApplyEditsResultSchema,
+    access: { ...WRITE_ACCESS, sensitivity: "destructive" },
+    examples: [{ args: [{ eventId: "evt-123" }] }],
   },
   status: {
+    description:
+      "Unpublished changes on a head relative to its publish baseline (main): the added/removed/changed paths plus the head state and whether it is ahead of main. Not a filesystem scan. Omit the head for the caller's current context head.",
     args: z.tuple([z.string().optional()]),
     returns: vcsStatusResultSchema,
+    access: READ_ACCESS,
   },
   unitStatus: {
+    description:
+      "Status scoped to a single workspace unit (repo path): the unit's head, state hash, dirty flag, and per-file changes. Omit the head for the caller's current context head.",
     args: z.tuple([z.string(), z.string().optional()]),
     returns: VcsUnitStatusSchema,
+    access: READ_ACCESS,
+    examples: [{ args: ["panels/spectrolite"] }],
   },
   log: {
+    description:
+      "Commit log for a head, most recent first, capped by limit (default 50). Omit the head for the caller's current context head.",
     args: z.tuple([z.number().optional(), z.string().optional()]),
     returns: z.array(vcsLogEntrySchema),
+    access: READ_ACCESS,
+    examples: [{ args: [10] }],
   },
   diff: {
+    description:
+      "Diff two GAD states by their `state:…` hashes, returning the added/removed/changed files between them.",
     args: z.tuple([z.string(), z.string()]),
     returns: vcsDiffResultSchema,
+    access: READ_ACCESS,
   },
   resolveHead: {
-    // Head is optional: omitted ⇒ the caller's current context head (consistent with
-    // status/publishStatus/applyEdits). Pass "main"/"ctx:…" to resolve an explicit ref.
+    description:
+      'Resolve a ref to its head name and current `state:…` hash. Omit the ref for the caller\'s current context head; pass "main"/"ctx:…" for an explicit ref.',
     args: z.tuple([z.string().optional()]),
     returns: vcsResolveHeadResultSchema,
+    access: READ_ACCESS,
+    examples: [{ args: ["main"] }],
   },
   merge: {
+    description:
+      "Merge a source head into a target head (default: the caller's own head), advancing the target; returns up-to-date/merged/conflicted plus any conflicts. The target is a head write.",
     args: z.tuple([z.string(), z.string().optional()]),
     returns: vcsMergeResultSchema,
+    access: { ...WRITE_ACCESS },
+    examples: [{ args: ["main"] }],
   },
   abortMerge: {
+    description:
+      "Abort a pending (conflicted) merge on a head, restoring its pre-merge tree; this is itself a head write. Omit the head for the caller's current context head.",
     args: z.tuple([z.string().optional()]),
     returns: z.object({ aborted: z.boolean() }),
+    access: { ...WRITE_ACCESS },
   },
   pendingMerge: {
+    description:
+      "Inspect a head's in-progress merge, if any: the source head being merged and its unresolved conflicts; null when no merge is pending. Omit the head for the caller's current context head.",
     args: z.tuple([z.string().optional()]),
     returns: vcsPendingMergeSchema,
+    access: READ_ACCESS,
   },
   publishStatus: {
+    description:
+      "How far a head is ahead of main: the unpublished commit count and the per-file changes that a publish would carry. Omit the head for the caller's current context head.",
     args: z.tuple([z.string().optional()]),
     returns: vcsPublishStatusSchema,
+    access: READ_ACCESS,
   },
   publish: {
+    description:
+      "Publish the caller's own context head into main by merging it (the one sanctioned ctx→main escalation; autonomous agents are user-approval gated). Returns merged/conflicted; a conflicted publish is rolled back, leaving main untouched.",
     args: z.tuple([z.string().optional()]),
     returns: vcsMergeResultSchema,
+    access: { ...WRITE_ACCESS, sensitivity: "admin" },
   },
   recall: {
+    description:
+      "Semantic recall over the workspace's VCS memory (log summaries, file snippets) matching a query; returns ranked snippets with their head/event/path anchors.",
     args: z.tuple([vcsRecallInputSchema]),
     returns: vcsRecallResultSchema,
+    access: READ_ACCESS,
+    examples: [{ args: [{ query: "auth flow refactor", limit: 5 }] }],
   },
 });
 export type VcsMethods = typeof vcsMethods;

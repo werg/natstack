@@ -12,6 +12,7 @@
  */
 
 import { z } from "zod";
+import type { MethodAccessDescriptor } from "../servicePolicy.js";
 import { defineServiceMethods } from "../typedServiceClient.js";
 import type {
   HostTarget,
@@ -23,6 +24,19 @@ import type {
 } from "../hostTargets.js";
 import type { WorkspaceConfig } from "../workspace/types.js";
 import type { WorkspaceNode } from "../types.js";
+
+// ─── Access descriptors ───────────────────────────────────────────────────────
+// Mirrors the blobstore idiom of a shared `*_ACCESS` constant for the pure-read
+// methods (which all share identical access metadata). `callers` are
+// deliberately omitted (the legacy per-method `policy` remains the enforced gate
+// during migration); this carries the sensitivity doc metadata only. Mutators
+// declare a method-specific `access.sensitivity` inline rather than sharing a
+// generic constant.
+
+/** Pure read: no writes, safe to retry. */
+const READ_ACCESS: MethodAccessDescriptor = {
+  sensitivity: "read",
+};
 
 // ─── Host target schemas ──────────────────────────────────────────────────────
 // Structural shapes live in `../hostTargets.js`; these zod wrappers bind the
@@ -313,177 +327,399 @@ const UnitLogsOptionsSchema = z.object({
 export const workspaceMethods = defineServiceMethods({
   // Read methods
   getInfo: {
+    description:
+      "Filesystem paths (source, state, contexts) and resolved config for the active workspace.",
     args: z.tuple([]),
     returns: z.object({
-      path: z.string(),
-      statePath: z.string(),
-      contextsPath: z.string(),
-      config: WorkspaceConfigSchema,
+      path: z.string().describe("Absolute path to the workspace source tree."),
+      statePath: z.string().describe("Absolute path to the workspace's persisted state directory."),
+      contextsPath: z.string().describe("Absolute path to the workspace's `.contexts` directory."),
+      config: WorkspaceConfigSchema.describe("The resolved workspace config (meta/natstack.yml)."),
     }),
+    access: READ_ACCESS,
   },
-  list: { args: z.tuple([]), returns: z.array(WorkspaceEntrySchema) },
-  getActive: { args: z.tuple([]), returns: z.string() },
-  getActiveEntry: { args: z.tuple([]), returns: WorkspaceEntrySchema },
-  getConfig: { args: z.tuple([]), returns: WorkspaceConfigSchema },
+  list: {
+    description: "List all known workspaces in the catalog with their last-opened timestamps.",
+    args: z.tuple([]),
+    returns: z.array(WorkspaceEntrySchema),
+    access: READ_ACCESS,
+  },
+  getActive: {
+    description: "Name (id) of the currently active workspace.",
+    args: z.tuple([]),
+    returns: z.string(),
+    access: READ_ACCESS,
+  },
+  getActiveEntry: {
+    description: "Catalog entry (name + last-opened) for the currently active workspace.",
+    args: z.tuple([]),
+    returns: WorkspaceEntrySchema,
+    access: READ_ACCESS,
+  },
+  getConfig: {
+    description: "The active workspace's resolved config (meta/natstack.yml).",
+    args: z.tuple([]),
+    returns: WorkspaceConfigSchema,
+    access: READ_ACCESS,
+  },
   // Catalog-dependent write methods — the server omits these at registration
   // time when no workspace catalog is available (see module docs above).
   create: {
-    args: z.tuple([z.string(), z.object({ forkFrom: z.string().optional() }).optional()]),
+    description:
+      "Create and register a new workspace on disk, optionally forking from an existing one; userland callers are approval-gated.",
+    args: z.tuple([
+      z.string().describe("Name (id) of the new workspace."),
+      z
+        .object({
+          forkFrom: z
+            .string()
+            .optional()
+            .describe("Name of an existing workspace to fork the new one from."),
+        })
+        .optional()
+        .describe("Optional creation options."),
+    ]),
     returns: WorkspaceEntrySchema,
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: ["my-new-ws"] }, { args: ["fork-ws", { forkFrom: "main" }] }],
   },
   delete: {
-    args: z.tuple([z.string()]),
+    description:
+      "Permanently delete a workspace directory and remove it from the catalog; refuses to delete the active workspace and is approval-gated for userland.",
+    args: z.tuple([z.string().describe("Name (id) of the workspace to delete.")]),
     returns: z.void(),
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: { sensitivity: "destructive" },
+    examples: [{ args: ["old-ws"] }],
   },
   // SECURITY (#33, T2 in audit summary): `select` triggers an
   // app.relaunch() — disruptive and reachable only via shell UI.
   select: {
-    args: z.tuple([z.string()]),
+    description:
+      "Switch the active workspace, touching the catalog and signalling the host to relaunch into it; disruptive and approval-gated for userland.",
+    args: z.tuple([z.string().describe("Name (id) of the workspace to switch to.")]),
     returns: z.void(),
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: { sensitivity: "admin" },
+    examples: [{ args: ["other-ws"] }],
   },
   setInitPanels: {
+    description:
+      "Replace the set of panels opened when this workspace starts; approval-gated for userland.",
     args: z.tuple([
-      z.array(
-        z.object({
-          source: z.string(),
-          stateArgs: z.record(z.unknown()).optional(),
-        })
-      ),
+      z
+        .array(
+          z.object({
+            source: z.string().describe("Panel source path (e.g. `panels/chat`)."),
+            stateArgs: z
+              .record(z.unknown())
+              .optional()
+              .describe("Optional initial state args passed to the panel on launch."),
+          })
+        )
+        .describe("Ordered list of init-panel descriptors."),
     ]),
     returns: z.void(),
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: [[{ source: "panels/chat" }]] }],
   },
   // SECURITY: arbitrary config-field writes — server-internal use
   // by default, but userland can request a one-shot approval.
   setConfigField: {
-    args: z.tuple([z.string(), z.unknown()]),
+    description:
+      "Write an arbitrary field into the workspace config (meta/natstack.yml); approval-gated for userland.",
+    args: z.tuple([
+      z.string().describe("Config field key to write."),
+      z.unknown().describe("New value for the field."),
+    ]),
     returns: z.void(),
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: ["title", "My Workspace"] }],
   },
   // Agent resource loading — read AGENTS.md and skill definitions directly
   // from the workspace source tree. Kept server-side because they touch
   // the filesystem; panels/workers call these over the RPC transport.
-  getAgentsMd: { args: z.tuple([]), returns: z.string() },
-  listSkills: { args: z.tuple([]), returns: z.array(SkillEntrySchema) },
-  readSkill: { args: z.tuple([z.string()]), returns: z.string() },
-  sourceTree: { args: z.tuple([]), returns: WorkspaceTreeSchema },
+  getAgentsMd: {
+    description:
+      "Read the workspace-level meta/AGENTS.md, returning an empty string if it is absent.",
+    args: z.tuple([]),
+    returns: z.string(),
+    access: READ_ACCESS,
+  },
+  listSkills: {
+    description:
+      "List skills under <workspace>/skills/* with name + description parsed from each SKILL.md frontmatter.",
+    args: z.tuple([]),
+    returns: z.array(SkillEntrySchema),
+    access: READ_ACCESS,
+  },
+  readSkill: {
+    description:
+      "Return the raw SKILL.md contents for a single skill by name (single-segment names only; path traversal is rejected).",
+    args: z.tuple([
+      z.string().describe("Skill directory name under skills/ (e.g. `code-review`)."),
+    ]),
+    returns: z.string(),
+    access: READ_ACCESS,
+    examples: [{ args: ["code-review"] }],
+  },
+  sourceTree: {
+    description: "Return the workspace source tree, annotating units, launchables, and skills.",
+    args: z.tuple([]),
+    returns: WorkspaceTreeSchema,
+    access: READ_ACCESS,
+  },
   findUnitForPath: {
-    args: z.tuple([z.string()]),
+    description:
+      "Resolve a workspace-relative path to its owning unit and the path relative to that unit, or null if no unit owns it.",
+    args: z.tuple([z.string().describe("Workspace-relative path to locate within the unit tree.")]),
     returns: WorkspaceFindUnitForPathResultSchema,
+    access: READ_ACCESS,
+    examples: [{ args: ["panels/chat/index.tsx"] }],
   },
-  "units.list": { args: z.tuple([]), returns: z.array(WorkspaceUnitStatusSchema) },
+  "units.list": {
+    description:
+      "List operational status rows for all workspace units (panels, workers, extensions, apps), including build/health state.",
+    args: z.tuple([]),
+    returns: z.array(WorkspaceUnitStatusSchema),
+    access: READ_ACCESS,
+  },
   "units.inspector": {
-    args: z.tuple([z.string()]),
-    returns: z.object({ url: z.string() }).nullable(),
+    description:
+      "Return the devtools inspector URL for a unit by name or source, or null if it has none.",
+    args: z.tuple([z.string().describe("Unit name or source path.")]),
+    returns: z.object({ url: z.string().describe("Inspector websocket URL.") }).nullable(),
+    access: READ_ACCESS,
+    examples: [{ args: ["extensions/git-tools"] }],
   },
-  "units.restart": { args: z.tuple([z.string()]), returns: z.void() },
+  "units.restart": {
+    description: "Restart a workspace unit through its owning manager.",
+    args: z.tuple([z.string().describe("Unit name or source path to restart.")]),
+    returns: z.void(),
+    access: { sensitivity: "write" },
+    examples: [{ args: ["extensions/git-tools"] }],
+  },
   "units.logs": {
-    args: z.tuple([z.string(), UnitLogsOptionsSchema.optional()]),
+    description:
+      "Query retained log records for a unit, optionally filtered by time/sequence cursor, level, and limit.",
+    args: z.tuple([
+      z.string().describe("Unit name or source path."),
+      UnitLogsOptionsSchema.optional(),
+    ]),
     returns: z.array(WorkspaceUnitLogRecordSchema),
+    access: READ_ACCESS,
+    examples: [{ args: ["extensions/git-tools", { level: "error", limit: 50 }] }],
   },
   "units.diagnostics": {
+    description:
+      "Return combined diagnostics for a unit: current status, recent logs, errors, build events, and buffer capacity.",
     args: z.tuple([
-      z.string(),
+      z.string().describe("Unit name or source path."),
       UnitLogsOptionsSchema.extend({
-        errorLimit: z.number().int().positive().max(500).optional(),
+        errorLimit: z
+          .number()
+          .int()
+          .positive()
+          .max(500)
+          .optional()
+          .describe("Max number of error records to include."),
       }).optional(),
     ]),
     returns: WorkspaceUnitDiagnosticsSchema,
+    access: READ_ACCESS,
   },
   "units.versions": {
-    args: z.tuple([z.string()]),
+    description:
+      "List the active build and rollback-capable previous versions for an app unit; userland is restricted to managing its own app.",
+    args: z.tuple([z.string().describe("App unit name or source path.")]),
     returns: WorkspaceAppVersionsSchema,
+    access: READ_ACCESS,
+    examples: [{ args: ["apps/shell"] }],
   },
   "units.rollback": {
-    args: z.tuple([z.string(), z.object({ buildKey: z.string().optional() }).optional()]),
+    description:
+      "Roll an app unit back to a previous active build (or a specific build key); userland is restricted to managing its own app.",
+    args: z.tuple([
+      z.string().describe("App unit name or source path."),
+      z
+        .object({
+          buildKey: z
+            .string()
+            .optional()
+            .describe("Specific build to roll back to; omit for the previous active build."),
+        })
+        .optional(),
+    ]),
     returns: z.unknown(),
+    access: { sensitivity: "write" },
+    examples: [{ args: ["apps/shell"] }],
   },
   "units.bakeAppDist": {
-    args: z.tuple([z.string(), z.object({ outDir: z.string().optional() }).optional()]),
+    description:
+      "Bake an app unit's active approved build into a packaging payload directory; trusted-chrome callers only.",
+    args: z.tuple([
+      z.string().describe("App unit name or source path."),
+      z
+        .object({
+          outDir: z.string().optional().describe("Output directory for the baked dist payload."),
+        })
+        .optional(),
+    ]),
     returns: z.unknown(),
     policy: { allowed: ["shell", "server"] },
+    access: { sensitivity: "write" },
   },
   "recurring.list": {
+    description:
+      "List declarative scheduled jobs from meta/natstack.yml with their durable run state (next/last run, failures, backoff).",
     args: z.tuple([]),
     returns: z.array(WorkspaceRecurringJobStatusSchema),
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: READ_ACCESS,
   },
   "heartbeats.list": {
+    description: "List registered heartbeats with their schedule, channel binding, and run state.",
     args: z.tuple([]),
     returns: z.array(WorkspaceHeartbeatStatusSchema),
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: READ_ACCESS,
   },
   "heartbeats.runNow": {
-    args: z.tuple([WorkspaceHeartbeatSelectorSchema]),
+    description: "Trigger a heartbeat tick immediately for the selected heartbeat.",
+    args: z.tuple([
+      WorkspaceHeartbeatSelectorSchema.describe("Heartbeat name or a selector object."),
+    ]),
     returns: HeartbeatTickResultSchema,
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: ["news-briefing"] }],
   },
   "heartbeats.pause": {
-    args: z.tuple([WorkspaceHeartbeatSelectorSchema]),
+    description: "Pause the selected heartbeat so it stops ticking until resumed.",
+    args: z.tuple([
+      WorkspaceHeartbeatSelectorSchema.describe("Heartbeat name or a selector object."),
+    ]),
     returns: z.object({ ok: z.literal(true) }),
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: ["news-briefing"] }],
   },
   "heartbeats.resume": {
-    args: z.tuple([WorkspaceHeartbeatSelectorSchema]),
+    description: "Resume a paused heartbeat so it resumes its schedule.",
+    args: z.tuple([
+      WorkspaceHeartbeatSelectorSchema.describe("Heartbeat name or a selector object."),
+    ]),
     returns: z.object({ ok: z.literal(true) }),
     policy: { allowed: ["shell", "app", "panel", "worker", "do", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: ["news-briefing"] }],
   },
   "hostTargets.list": {
-    args: z.tuple([HostTargetSchema]),
+    description: "List app candidates selectable as the active app for a host target.",
+    args: z.tuple([HostTargetSchema.describe("Host target to list candidates for.")]),
     returns: z.array(HostTargetCandidateSchema),
     policy: { allowed: ["shell", "server"] },
+    access: READ_ACCESS,
+    examples: [{ args: ["electron"] }],
   },
   "hostTargets.getSelection": {
-    args: z.tuple([HostTargetSchema]),
+    description:
+      "Read the active per-workspace selection for a host target along with whether it is still valid.",
+    args: z.tuple([HostTargetSchema.describe("Host target to read the selection for.")]),
     returns: HostTargetSelectionStatusSchema,
     policy: { allowed: ["shell", "server"] },
+    access: READ_ACCESS,
+    examples: [{ args: ["electron"] }],
   },
   "hostTargets.setSelection": {
-    args: z.tuple([HostTargetSchema, HostTargetSelectionInputSchema]),
+    description: "Persist the per-workspace app selection for a host target.",
+    args: z.tuple([
+      HostTargetSchema.describe("Host target to set the selection for."),
+      HostTargetSelectionInputSchema.describe("Selection input (source, mode, ref/buildKey)."),
+    ]),
     returns: HostTargetSelectionSchema,
     policy: { allowed: ["shell", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: ["electron", { source: "apps/shell" }] }],
   },
   "hostTargets.clearSelection": {
-    args: z.tuple([HostTargetSchema]),
+    description: "Clear the persisted per-workspace app selection for a host target.",
+    args: z.tuple([HostTargetSchema.describe("Host target to clear the selection for.")]),
     returns: z.void(),
     policy: { allowed: ["shell", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: ["electron"] }],
   },
   "hostTargets.versions": {
-    args: z.tuple([HostTargetSchema, z.string()]),
+    description: "List retained versions for a specific host-target candidate.",
+    args: z.tuple([
+      HostTargetSchema.describe("Host target the candidate belongs to."),
+      z.string().describe("Candidate app source or name."),
+    ]),
     returns: WorkspaceAppVersionsSchema,
     policy: { allowed: ["shell", "server"] },
+    access: READ_ACCESS,
+    examples: [{ args: ["electron", "apps/shell"] }],
   },
   "hostTargets.preparePinnedRef": {
-    args: z.tuple([HostTargetSchema, z.string(), z.string()]),
+    description:
+      "Materialize a retained build for a specific ref of a host-target candidate through the build system.",
+    args: z.tuple([
+      HostTargetSchema.describe("Host target the candidate belongs to."),
+      z.string().describe("Candidate app source or name."),
+      z.string().describe("Git ref (branch/tag/sha) to materialize a build for."),
+    ]),
     returns: z.unknown(),
     policy: { allowed: ["shell", "server"] },
+    access: { sensitivity: "write" },
   },
   "hostTargets.launch": {
-    args: z.tuple([HostTargetSchema]),
+    description:
+      "Launch or reload the selected target app in this host, returning a ready/preparing/approval-required/unavailable status.",
+    args: z.tuple([HostTargetSchema.describe("Host target to launch.")]),
     returns: HostTargetLaunchResultSchema,
     policy: { allowed: ["shell", "app", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: ["electron"] }],
   },
   "hostTargets.beginLaunch": {
-    args: z.tuple([HostTargetSchema]),
+    description:
+      "Begin an asynchronous launch session for a host target, returning the initial session snapshot.",
+    args: z.tuple([HostTargetSchema.describe("Host target to begin launching.")]),
     returns: HostTargetLaunchSessionSnapshotSchema,
     policy: { allowed: ["shell", "app", "server"] },
+    access: { sensitivity: "write" },
+    examples: [{ args: ["electron"] }],
   },
   "hostTargets.getLaunchSession": {
-    args: z.tuple([z.string()]),
+    description: "Fetch the current snapshot of a launch session by id, or null if it is unknown.",
+    args: z.tuple([z.string().describe("Launch session id.")]),
     returns: HostTargetLaunchSessionSnapshotSchema.nullable(),
     policy: { allowed: ["shell", "app", "server"] },
+    access: READ_ACCESS,
   },
   "hostTargets.resolveLaunchSessionApproval": {
-    args: z.tuple([z.string(), z.enum(["once", "deny"])]),
+    description:
+      "Resolve a pending approval on a launch session by allowing it once or denying it, returning the updated snapshot.",
+    args: z.tuple([
+      z.string().describe("Launch session id."),
+      z.enum(["once", "deny"]).describe("Approval decision for the pending launch."),
+    ]),
     returns: HostTargetLaunchSessionSnapshotSchema,
     policy: { allowed: ["shell", "app", "server"] },
+    access: {
+      sensitivity: "write",
+    },
+    examples: [{ args: ["session-123", "once"] }],
   },
   "hostTargets.cancelLaunchSession": {
-    args: z.tuple([z.string()]),
+    description: "Cancel an in-flight launch session by id.",
+    args: z.tuple([z.string().describe("Launch session id to cancel.")]),
     returns: z.void(),
     policy: { allowed: ["shell", "app", "server"] },
+    access: { sensitivity: "write" },
   },
 });
