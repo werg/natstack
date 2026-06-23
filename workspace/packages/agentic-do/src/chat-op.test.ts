@@ -463,6 +463,40 @@ describe("AgentVesselBase.onEvalComplete (deferred-eval resume)", () => {
     expect(deliverSpy).toHaveBeenCalledTimes(2);
   });
 
+  it("credentialConnected reports whether it actually resumed a pending credential wait", async () => {
+    const vessel = await makeVessel();
+    const deliverSpy = vi.fn(async () => true);
+    const wakeSpy = vi.fn(async () => {});
+    (vessel as unknown as { _driver: unknown })._driver = {
+      deliverEffectOutcome: deliverSpy,
+      wake: wakeSpy,
+      connectSpecProvider: undefined,
+    };
+    vessel.callerKindForTest = "do";
+    vessel.callerIdForTest = "do:workers/pubsub-channel:PubSubChannel:chan-1";
+
+    await expect(
+      vessel.onMethodCall(CHANNEL, "call-1", "credentialConnected", {
+        providerId: "openai-codex",
+      })
+    ).resolves.toEqual({ result: { resumed: true } });
+    expect(deliverSpy).toHaveBeenCalledWith(
+      ids.credentialWaitEffect(ids.credKey(CHANNEL, "openai-codex")),
+      { kind: "credential", resolved: true },
+      { channelId: CHANNEL }
+    );
+    expect(wakeSpy).toHaveBeenCalledWith(CHANNEL);
+
+    deliverSpy.mockResolvedValueOnce(false);
+    wakeSpy.mockClear();
+    await expect(
+      vessel.onMethodCall(CHANNEL, "call-2", "credentialConnected", {
+        providerId: "openai-codex",
+      })
+    ).resolves.toEqual({ result: { resumed: false } });
+    expect(wakeSpy).not.toHaveBeenCalled();
+  });
+
   it("onDeferredResult refuses a non-server caller", async () => {
     const vessel = await makeVessel();
     vessel.callerKindForTest = "panel";

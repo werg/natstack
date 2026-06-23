@@ -61,7 +61,7 @@ function prompt(s: Scenario, envelopeId = "env-1", content = "hello"): void {
   });
 }
 
-const turn1 = ids.turnId("chan-1", "env-1");
+const turn1 = ids.turnId("chan-1", "env-1", "agent:self");
 const msg0 = ids.messageId(turn1, 0);
 
 describe("agent-loop core lifecycle", () => {

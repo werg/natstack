@@ -1361,7 +1361,17 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     // Invalidate the cached participant roster on any presence change, in the one sink both the
     // live stream and subscription-replay paths funnel through — so neither path serves a stale
     // roster to shouldRespond / maybeRefreshRoster.
-    if (event.type === "presence") this.participantCache.delete(channelId);
+    if (event.type === "presence") {
+      this.participantCache.delete(channelId);
+      // A participant joined/left/updated mid-session: refresh the roster
+      // snapshot AND rebuild the model's tool artifact (journaling the snapshot
+      // alone does NOT rebuild it). Only recompose when the roster actually
+      // changed (maybeRefreshRoster is fingerprint-deduped). Best-effort; the
+      // refreshed tools land on the agent's next model request.
+      if (await this.maybeRefreshRoster(channelId)) {
+        await this.ensurePromptArtifacts(channelId).catch(() => undefined);
+      }
+    }
     if (await this.onChannelEvent(channelId, event)) return;
     if (event.type !== AGENTIC_EVENT_PAYLOAD_KIND) return;
     const maybeFeedback = event.payload as AgenticEvent | null;
@@ -1751,8 +1761,9 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     };
   }
 
-  /** Roster changes enter the log as events (nondeterministic I/O → journal). */
-  private async maybeRefreshRoster(channelId: string): Promise<void> {
+  /** Roster changes enter the log as events (nondeterministic I/O → journal).
+   *  Returns true when a fresh snapshot was appended (roster actually changed). */
+  private async maybeRefreshRoster(channelId: string): Promise<boolean> {
     try {
       const participants = await this.getCachedParticipants(channelId);
       const roster: RosterEntry[] = participants
@@ -1787,7 +1798,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
             : [],
         }));
       const fingerprint = JSON.stringify(roster);
-      if (this.getStateValue(`agent:roster:${channelId}`) === fingerprint) return;
+      if (this.getStateValue(`agent:roster:${channelId}`) === fingerprint) return false;
       const loop = await this.driver.loop(channelId);
       const envelope = await this.appendRosterSnapshot(loop.state, channelId, roster);
       await this.driver.handleIncoming(channelId, {
@@ -1795,8 +1806,10 @@ export abstract class AgentVesselBase extends DurableObjectBase {
         envelope: envelope as never,
       });
       this.setStateValue(`agent:roster:${channelId}`, fingerprint);
+      return true;
     } catch {
       /* roster refresh is best-effort */
+      return false;
     }
   }
 
@@ -2004,7 +2017,7 @@ export abstract class AgentVesselBase extends DurableObjectBase {
         const providerId = input.providerId ?? "";
         const effectId = ids.credentialWaitEffect(ids.credKey(channelId, providerId));
         // This is the only reconnect success path that resumes the waiting loop.
-        await this.driver.deliverEffectOutcome(
+        const resumed = await this.driver.deliverEffectOutcome(
           effectId,
           {
             kind: "credential",
@@ -2012,8 +2025,8 @@ export abstract class AgentVesselBase extends DurableObjectBase {
           } satisfies EffectOutcome,
           { channelId }
         );
-        await this.driver.wake(channelId);
-        return { result: { resumed: true } };
+        if (resumed) await this.driver.wake(channelId);
+        return { result: { resumed } };
       }
       case "setModel": {
         const model = (args as { model?: unknown } | null)?.model;

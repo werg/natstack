@@ -10,8 +10,13 @@ export const ids = {
     return `branch:channel:${channelId}`;
   },
 
-  turnId(channelId: string, triggerEnvelopeId: string): string {
-    return `t:${channelId}:${triggerEnvelopeId}`;
+  turnId(channelId: string, triggerEnvelopeId: string, actorId: string): string {
+    // Actor-scoped: the responding agent's participant id is part of the turn
+    // identity, so two agents reacting to the SAME trigger in the SAME channel
+    // derive distinct turnIds (and thus distinct message/effect ids) instead of
+    // colliding on the shared per-channel log. Stable per (channel, trigger,
+    // actor) ⇒ deterministic replay is preserved per agent.
+    return `t:${channelId}:${triggerEnvelopeId}:${actorId}`;
   },
 
   messageId(turnId: string, modelCallCount: number): string {

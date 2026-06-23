@@ -375,7 +375,7 @@ describe("AgentLoopDriver", () => {
   });
 
   it("applies policy filters to executor-side ephemeral signals", async () => {
-    const messageId = ids.messageId(ids.turnId(CHANNEL, "env-1"), 1);
+    const messageId = ids.messageId(ids.turnId(CHANNEL, "env-1", "agent:self"), 1);
     const dropEphemeral: StepPolicy = {
       name: "drop-ephemeral",
       intercept: ({ output }) => output,
@@ -437,7 +437,7 @@ describe("AgentLoopDriver", () => {
     expect(harness.broadcasts.length).toBeGreaterThan(0);
     expect(harness.broadcasts.every((item) => item.channelId === CHANNEL)).toBe(true);
     expect(harness.broadcasts.flatMap((item) => item.envelopeIds)).toContain(
-      `pub:${ids.messageTerminal(ids.messageId(ids.turnId(CHANNEL, "env-1"), 1))}:${CHANNEL}`
+      `pub:${ids.messageTerminal(ids.messageId(ids.turnId(CHANNEL, "env-1", "agent:self"), 1))}:${CHANNEL}`
     );
   });
 
@@ -512,12 +512,16 @@ describe("AgentLoopDriver", () => {
       result: { protocolContent: [{ type: "text", text: "ok" }], details: {} },
       isError: false,
     };
-    await harness.driver.deliverEffectOutcome(ids.invocationEffect("tc-1"), outcome, { channelId: CHANNEL });
+    await expect(
+      harness.driver.deliverEffectOutcome(ids.invocationEffect("tc-1"), outcome, { channelId: CHANNEL })
+    ).resolves.toBe(true);
     await settle(harness.driver);
     const kindsAfterFirst = await logKinds(harness.gad);
 
     // Second delivery (the getRun poll backstop racing the onEvalComplete push) — idempotent no-op.
-    await harness.driver.deliverEffectOutcome(ids.invocationEffect("tc-1"), outcome, { channelId: CHANNEL });
+    await expect(
+      harness.driver.deliverEffectOutcome(ids.invocationEffect("tc-1"), outcome, { channelId: CHANNEL })
+    ).resolves.toBe(false);
     await settle(harness.driver);
     expect(await logKinds(harness.gad)).toEqual(kindsAfterFirst);
   });
@@ -615,8 +619,24 @@ describe("AgentLoopDriver", () => {
     expect(harness.driver.outbox.all()).toEqual([
       expect.objectContaining({ kind: "credential_wait" }),
     ]);
+    const effectId = ids.credentialWaitEffect(ids.credKey(CHANNEL, "openai-codex"));
+    await expect(
+      harness.driver.deliverEffectOutcome(
+        effectId,
+        { kind: "credential", resolved: true },
+        { channelId: CHANNEL }
+      )
+    ).resolves.toBe(true);
+    await expect(
+      harness.driver.deliverEffectOutcome(
+        effectId,
+        { kind: "credential", resolved: true },
+        { channelId: CHANNEL }
+      )
+    ).resolves.toBe(false);
     const loop = await harness.driver.loop(CHANNEL);
-    expect(loop.state.inFlightModelCall).toBeNull();
+    expect(loop.state.pendingCredentialWaits).toEqual({});
+    expect(loop.state.inFlightModelCall).not.toBeNull();
   });
 
   it("parks model auth failures behind a credential reconnect card", async () => {
@@ -850,7 +870,7 @@ describe("AgentLoopDriver", () => {
       resetAt: "2026-06-15T18:35:01.000Z",
     });
 
-    const messageId = ids.messageId(ids.turnId(CHANNEL, "env-1"), 0);
+    const messageId = ids.messageId(ids.turnId(CHANNEL, "env-1", "agent:self"), 0);
     await expect(
       harness.driver.scheduleResumeAtReset(CHANNEL, {
         messageId,
@@ -1155,9 +1175,9 @@ describe("AgentLoopDriver", () => {
     await driver.handleIncoming(CHANNEL, promptIncoming()).catch(() => {});
     await driver.alarm().catch(() => {});
     const effectId = ids.invocationEffect("tc-1");
-    await driver.deliverEffectOutcome(effectId, toolOk);
+    await expect(driver.deliverEffectOutcome(effectId, toolOk)).resolves.toBe(true);
     const kindsAfterFirst = await logKinds(harness.gad);
-    await driver.deliverEffectOutcome(effectId, toolOk); // duplicate
+    await expect(driver.deliverEffectOutcome(effectId, toolOk)).resolves.toBe(false); // duplicate
     expect(await logKinds(harness.gad)).toEqual(kindsAfterFirst);
     const terminals = await harness.gad.call<{ rows: Array<{ cnt: number }> }>(
       "query",

@@ -226,6 +226,10 @@ export type SessionEntry =
       kind: "assistant";
       seq: number;
       messageId: string;
+      /** Author. When it differs from the loop's `selfId` (another agent in the channel),
+       *  the context builder presents this as an attributed `user` message, NOT as this
+       *  agent's own `assistant` turn — so the model doesn't read it as its own voice. */
+      senderRef?: ParticipantRef;
       blocks: unknown[];
       outcome?: string;
     }
@@ -250,6 +254,11 @@ export interface AgentState {
   /** fork boundary of this head (0 for root logs); pendings with
    *  startedAtSeq ≤ forkSeq are pre-cut (fork policy). */
   forkSeq: number;
+  /** This agent's own participant/actor id for this channel's loop. Turn/message
+   *  lifecycle events authored by ANOTHER participant are NOT folded into loop state
+   *  (the fold filters by this), so the agent never adopts another agent's open turn
+   *  from the shared channel replay. Undefined ⇒ no filtering (legacy/test folds). */
+  selfId?: string;
 
   config: AgentLoopConfig;
   entries: SessionEntry[];
@@ -276,6 +285,8 @@ export interface InitialStateInput {
   forkSeq?: number;
   lastSeq?: number;
   lastHash?: string;
+  /** The agent's own participant/actor id (see AgentState.selfId). */
+  selfId?: string;
 }
 
 export function initialAgentState(input: InitialStateInput): AgentState {
@@ -297,6 +308,7 @@ export function initialAgentState(input: InitialStateInput): AgentState {
     steeringQueue: [],
     pendingPrompt: null,
     deferredPostTurnQueue: [],
+    ...(input.selfId ? { selfId: input.selfId } : {}),
   };
 }
 

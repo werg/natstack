@@ -78,6 +78,9 @@ export class FoldCache {
     head: string;
     channelId: string;
     config: AgentLoopConfig;
+    /** This agent's participant/actor id — folded into state so the fold filters out
+     *  foreign-authored turn lifecycle events (see AgentState.selfId). */
+    selfId?: string;
   }): Promise<AgentState> {
     const remote = await this.gad.call<{
       seq: number;
@@ -95,6 +98,7 @@ export class FoldCache {
         config: input.config,
         forkSeq,
         lastSeq: forkSeq,
+        ...(input.selfId ? { selfId: input.selfId } : {}),
         ...(remote?.forkHash ? { lastHash: remote.forkHash } : {}),
       });
 
@@ -105,7 +109,12 @@ export class FoldCache {
       // Input settings overlay, but fold-owned config (roster) is preserved —
       // input.config carries an empty sentinel roster, so a naive overlay
       // would wipe the folded roster and silently break channel tools.
-      return { ...cached, forkSeq, config: overlayInputConfig(cached.config, input.config) };
+      return {
+        ...cached,
+        forkSeq,
+        ...(input.selfId ? { selfId: input.selfId } : {}),
+        config: overlayInputConfig(cached.config, input.config),
+      };
     }
 
     let state: AgentState;
@@ -115,7 +124,12 @@ export class FoldCache {
       if (tail.length > 0 && tail[0]!.prevHash !== cached.lastHash) {
         state = await this.coldRefold(empty(), input.logId, input.head, forkSeq);
       } else {
-        state = { ...cached, forkSeq, config: overlayInputConfig(cached.config, input.config) };
+        state = {
+          ...cached,
+          forkSeq,
+          ...(input.selfId ? { selfId: input.selfId } : {}),
+          config: overlayInputConfig(cached.config, input.config),
+        };
         // a forked head's inherited prefix may begin BELOW the cached seq of a
         // pre-fork cache — the prevHash check above catches that mismatch
         for (const envelope of tail) state = applyEvent(state, envelope);

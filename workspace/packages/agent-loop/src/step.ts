@@ -248,7 +248,7 @@ function promotePendingPrompt(
   precedingAppend: AppendItem[]
 ): StepOutput {
   const prompt = state.pendingPrompt!;
-  const turnId = ids.turnId(state.channelId, prompt.envelopeId);
+  const turnId = ids.turnId(state.channelId, prompt.envelopeId, ctx.selfRef.id);
   const opened = turnOpenedItem(turnId, prompt.metadata);
   const afterOpened: AgentState = {
     ...state,
@@ -281,7 +281,7 @@ function promotePendingPrompt(
  */
 function promoteSteersAsTurn(state: AgentState, ctx: StepContext): StepOutput {
   const head = state.steeringQueue[0]!;
-  const turnId = ids.turnId(state.channelId, head.envelopeId);
+  const turnId = ids.turnId(state.channelId, head.envelopeId, ctx.selfRef.id);
   const opened = turnOpenedItem(turnId, head.metadata);
   const afterOpened: AgentState = {
     ...state,
@@ -511,6 +511,7 @@ function expandToolCalls(
 export function projectAppend(state: AgentState, append: AppendItem[], now: string): AgentState {
   let next = state;
   let seq = state.lastSeq;
+  const actor = { kind: "agent" as const, id: state.selfId ?? "self" };
   for (const item of append) {
     seq += 1;
     const envelope = {
@@ -518,7 +519,7 @@ export function projectAppend(state: AgentState, append: AppendItem[], now: stri
       head: state.head,
       seq,
       envelopeId: item.envelopeId,
-      actor: { kind: "agent", id: "self" },
+      actor,
       payloadKind: item.payloadKind,
       payload: item.payload,
       causality: item.causality,
@@ -744,7 +745,7 @@ function commandStep(state: AgentState, command: Command, ctx: StepContext): Ste
         return commandStep(state, { ...command, kind: "steer" }, ctx);
       }
       const recv = recvItem(command);
-      const turnId = ids.turnId(command.channelId, command.source.envelopeId);
+      const turnId = ids.turnId(command.channelId, command.source.envelopeId, ctx.selfRef.id);
       const opened = turnOpenedItem(turnId, turnMetadata(command));
       const afterOpened = {
         ...state,

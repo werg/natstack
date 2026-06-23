@@ -458,7 +458,7 @@ describe("GmailAgentWorker", () => {
     const driver = worker.driverForTest();
     const deliverEffectOutcome = vi
       .spyOn(driver, "deliverEffectOutcome")
-      .mockResolvedValue(undefined);
+      .mockResolvedValue(true);
     const wake = vi.spyOn(driver, "wake").mockResolvedValue(undefined);
 
     await expect(

@@ -243,6 +243,9 @@ export class AgentLoopDriver {
       head: logId,
       channelId,
       config: this.deps.configFor(channelId),
+      // Fold filters out other participants' turn lifecycle so this agent never adopts
+      // another agent's open turn from the shared channel log.
+      selfId: this.selfRef(channelId).id,
     });
     const instance: LoopInstance = {
       channelId,
@@ -1187,10 +1190,11 @@ export class AgentLoopDriver {
     effectId: string,
     outcome: EffectOutcome,
     address: OutcomeAddress = {}
-  ): Promise<void> {
+  ): Promise<boolean> {
     const row = this.outcomeRow(effectId, address);
-    if (!row) return; // already settled — deterministic ids make this a no-op
+    if (!row) return false; // already settled — deterministic ids make this a no-op
     await this.applyOutcome(row, outcome);
+    return true;
   }
 
   async deliverDeferredResult(
