@@ -730,6 +730,57 @@ describe("AgentLoopDriver", () => {
     ]);
   });
 
+  it("does not mark an unexpired leased model call failed after restart", async () => {
+    const gad = await createTestDO(GadWorkspaceDO, { __objectKey: "gad" });
+    const host = await createTestDO(GadWorkspaceDO, { __objectKey: "driver-host" });
+    const started = deferred<void>();
+    const first = await makeHarness({
+      script: { model: [], tool: [] },
+      gad,
+      driverSql: host,
+      runBackground: (fn) => {
+        void fn();
+      },
+      executorOverride: (descriptor) =>
+        descriptor.kind === "model_call"
+          ? ({
+              kind: "model_call",
+              async execute() {
+                started.resolve();
+                return new Promise<EffectOutcome>(() => {});
+              },
+            } as EffectExecutor)
+          : null,
+    });
+
+    await first.driver.handleIncoming(CHANNEL, promptIncoming());
+    await first.driver.alarm();
+    await started.promise;
+    const leasedRow = first.driver.outbox.all()[0];
+    expect(leasedRow).toEqual(
+      expect.objectContaining({ kind: "model_call", leaseExpiresAt: expect.any(Number) })
+    );
+
+    const recovered = await makeHarness({
+      script: { model: [], tool: [] },
+      gad,
+      driverSql: host,
+    });
+    await recovered.driver.wake(CHANNEL);
+
+    expect(await logKinds(gad)).toEqual([
+      "message.completed",
+      "turn.opened",
+      "message.started",
+    ]);
+    expect(recovered.driver.outbox.all()[0]).toEqual(
+      expect.objectContaining({
+        kind: "model_call",
+        leaseExpiresAt: leasedRow?.leaseExpiresAt,
+      })
+    );
+  });
+
   it("closes a completed assistant turn when replay missed the terminal cascade", async () => {
     const gad = await createTestDO(GadWorkspaceDO, { __objectKey: "gad" });
     const host = await createTestDO(GadWorkspaceDO, { __objectKey: "driver-host" });

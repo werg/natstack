@@ -947,6 +947,57 @@ describe("chatMessagesFromChannelView", () => {
     });
   });
 
+  it("suppresses recoverable restart cleanup failures while the retry remains active", () => {
+    const turnId = brandId<TurnId>("turn-restart-retry-active");
+    const opened: AgenticEvent<"turn.opened"> = {
+      kind: "turn.opened",
+      actor: agent,
+      turnId,
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION },
+      createdAt: "2026-05-20T12:00:00.000Z",
+    };
+    const started: AgenticEvent<"message.started"> = {
+      kind: "message.started",
+      actor: agent,
+      turnId,
+      causality: { messageId: brandId<MessageId>("msg-before-restart") },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, role: "assistant" },
+      createdAt: "2026-05-20T12:00:01.000Z",
+    };
+    const failed: AgenticEvent<"message.failed"> = {
+      kind: "message.failed",
+      actor: agent,
+      turnId,
+      causality: { messageId: brandId<MessageId>("msg-before-restart") },
+      payload: {
+        protocol: AGENTIC_PROTOCOL_VERSION,
+        reason: "interrupted by restart",
+        recoverable: true,
+      },
+      createdAt: "2026-05-20T12:00:02.000Z",
+    };
+    const retryStarted: AgenticEvent<"message.started"> = {
+      kind: "message.started",
+      actor: agent,
+      turnId,
+      causality: { messageId: brandId<MessageId>("msg-after-restart") },
+      payload: { protocol: AGENTIC_PROTOCOL_VERSION, role: "assistant" },
+      createdAt: "2026-05-20T12:00:03.000Z",
+    };
+
+    const state = [opened, started, failed, retryStarted]
+      .map((event, index) => envelope(event, index + 1))
+      .reduce(reduceChannelView, createInitialChannelViewState());
+
+    const messages = chatMessagesFromChannelView(state);
+    expect(messages.map((message) => message.id)).toEqual(["turn:turn-restart-retry-active"]);
+    expect(messages[0]).toMatchObject({
+      contentType: "typing",
+      complete: false,
+    });
+    expect(messages[0]?.error).toBeUndefined();
+  });
+
   it("surfaces completed turns whose only assistant message is empty", () => {
     const turnId = brandId<TurnId>("turn-empty-assistant");
     const messageId = brandId<MessageId>("msg-empty-assistant");

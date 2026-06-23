@@ -61,7 +61,8 @@ export function chatMessagesFromChannelView(state: ChannelViewState): ChatMessag
         (message) =>
           message.turnId &&
           (message.role === "assistant" || message.actor.kind === "agent") &&
-          (message.status === "completed" || message.status === "failed")
+          (message.status === "completed" ||
+            (message.status === "failed" && !isSuppressedAssistantFailure(message)))
       )
       .map((message) => message.turnId as string)
   );
@@ -429,7 +430,7 @@ function projectedMessageToChatMessages(
     ];
   });
   const failureReason = message.status === "failed" ? message.failureReason : undefined;
-  if (isCredentialSuspensionReason(failureReason)) return thinking;
+  if (isSuppressedAssistantFailure(message)) return thinking;
   const content = messageDisplayText(message.blocks);
   const diagnostic = diagnosticNoticeFromMessage(message);
   if (diagnostic) {
@@ -503,6 +504,20 @@ function messageShouldRenderStandalone(message: ProjectedMessage): boolean {
 
 function isCredentialSuspensionReason(reason: string | undefined): boolean {
   return reason === "model_credential_required" || reason === "model_credential_reconnect_required";
+}
+
+function isRecoverableRestartCleanup(message: ProjectedMessage): boolean {
+  return (
+    message.status === "failed" &&
+    message.failureRecoverable === true &&
+    message.failureReason === "interrupted by restart" &&
+    (message.role === "assistant" || message.actor.kind === "agent")
+  );
+}
+
+function isSuppressedAssistantFailure(message: ProjectedMessage): boolean {
+  const failureReason = message.status === "failed" ? message.failureReason : undefined;
+  return isCredentialSuspensionReason(failureReason) || isRecoverableRestartCleanup(message);
 }
 
 function diagnosticNoticeFromMessage(message: ProjectedMessage): DiagnosticNotice | null {

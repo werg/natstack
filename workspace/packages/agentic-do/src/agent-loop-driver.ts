@@ -283,8 +283,11 @@ export class AgentLoopDriver {
     if (!row) return false;
     // A queued/backing-off row is not an orphan; let the pump dispatch/retry it.
     if (row.leaseExpiresAt === null) return true;
-    // A leased row with a live AbortController is running in this isolate. This
-    // covers model fetches parked behind credential-use approval prompts.
+    // A leased row that has not expired is still owned by the outbox lease. This
+    // covers the restart window after credential-use approval is deferred but
+    // before deferRedrive parks the row with a backstop.
+    if (row.leaseExpiresAt > this.deps.now()) return true;
+    // A leased row with a live AbortController is running in this isolate.
     return this.aborts.has(this.rowKey(row));
   }
 
