@@ -1060,7 +1060,7 @@ describe("PubSubChannel", () => {
         invocationId: "invocation-lost-record",
         transportCallId: "transport-lost-record",
       },
-      payload: { result: 42 },
+      payload: { result: 42, terminalOutcome: "success" },
     });
 
     // The synthetic `started` root was appended too (fold invariant: every
@@ -1131,6 +1131,7 @@ describe("PubSubChannel", () => {
     expect(JSON.parse(terminal[0]!["payload_ref_json"] as string)).toMatchObject({
       kind: "invocation.failed",
       causality: { invocationId: "invocation-lost-error" },
+      payload: { terminalOutcome: "tool_error" },
     });
   });
 

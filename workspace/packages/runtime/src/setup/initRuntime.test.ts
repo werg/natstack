@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EnvelopeRpcTransport, RpcEnvelope } from "@natstack/rpc";
 import { initRuntime } from "./initRuntime.js";
 import { setStateArgs } from "../panel/stateArgs.js";
+import { DEFAULT_THEME_CONFIG } from "../types.js";
 
 const g = globalThis as typeof globalThis & {
   __natstackEntityId?: string;
@@ -27,6 +28,14 @@ function createTransport(options?: {
   let messageHandler: ((envelope: RpcEnvelope) => void) | null = null;
   return {
     send: vi.fn(async (envelope) => {
+      if (
+        envelope.target === "main" &&
+        envelope.message.type === "request" &&
+        envelope.message.method === "panel.getThemeConfig"
+      ) {
+        messageHandler?.(responseFor(envelope, DEFAULT_THEME_CONFIG));
+        return;
+      }
       await options?.onSend?.(envelope, (inboundEnvelope) => {
         messageHandler?.(inboundEnvelope);
       });
