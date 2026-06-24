@@ -21,9 +21,39 @@
       body {
         margin: 0;
         min-height: 100vh;
+        box-sizing: border-box;
+        padding-top: 36px;
         display: grid;
         place-items: center;
         background: linear-gradient(180deg, #15191d 0%, #101214 100%);
+      }
+      .bootstrap-titlebar {
+        position: fixed;
+        top: 0;
+        right: 0;
+        left: 0;
+        z-index: 10;
+        height: 36px;
+        box-sizing: border-box;
+        display: flex;
+        align-items: center;
+        padding: 0 14px 0 78px;
+        border-bottom: 1px solid rgb(255 255 255 / 7%);
+        background: rgb(17 19 21 / 78%);
+        color: #7f8a90;
+        font-size: 12px;
+        font-weight: 650;
+        user-select: none;
+        app-region: drag;
+        -webkit-app-region: drag;
+      }
+      main,
+      button,
+      input,
+      label,
+      summary {
+        app-region: no-drag;
+        -webkit-app-region: no-drag;
       }
       main {
         width: min(680px, calc(100vw - 40px));
@@ -351,7 +381,11 @@
       @media (max-width: 760px) {
         body {
           place-items: start center;
-          padding: 28px 0;
+          padding: 54px 0 28px;
+        }
+        .bootstrap-titlebar {
+          height: 34px;
+          padding-left: 72px;
         }
         main,
         main[data-bootstrap-mode="connection"] {
@@ -380,6 +414,7 @@
     </style>
   </head>
   <body>
+    <div class="bootstrap-titlebar">NatStack</div>
     <main data-bootstrap-launch-gate="true" data-bootstrap-mode="approval">
       <section class="launch-header">
         <div class="launch-mark">N</div>

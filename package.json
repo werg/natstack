@@ -1,6 +1,7 @@
 {
   "type": "module",
   "name": "natstack",
+  "productName": "NatStack",
   "version": "0.1.0",
   "private": true,
   "description": "A horizontally stacked panel app built with Electron and TypeScript",

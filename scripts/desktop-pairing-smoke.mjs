@@ -12,17 +12,13 @@ import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { _electron as electron } from "@playwright/test";
-import {
-  createServerInvocation,
-  serverEntryArg,
-} from "./cli/lib/server-entry.mjs";
+import { createServerInvocation, serverEntryArg } from "./cli/lib/server-entry.mjs";
 import { createConnectDeepLink, pickMobileHost } from "./cli/lib/connect-utils.mjs";
+import { resolveElectronExecutableForNatStack } from "./branded-electron.mjs";
 
-const require = createRequire(import.meta.url);
-const electronBinary = require("electron");
+const electronBinary = resolveElectronExecutableForNatStack();
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mainPath = path.join(repoRoot, "dist", "main.cjs");

@@ -1,9 +1,8 @@
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import process from "node:process";
+import { resolveElectronExecutableForNatStack } from "./branded-electron.mjs";
 
-const require = createRequire(import.meta.url);
-const electronBinary = require("electron");
+const electronBinary = resolveElectronExecutableForNatStack();
 
 const rawExtraArgs = process.argv.slice(2);
 const autoApprove = rawExtraArgs.includes("--auto-approve");
@@ -55,11 +54,7 @@ async function runElectron(args) {
     };
 
     currentChild.on("message", (message) => {
-      if (
-        message &&
-        message.type === "natstack:dev-relaunch" &&
-        isStringArray(message.args)
-      ) {
+      if (message && message.type === "natstack:dev-relaunch" && isStringArray(message.args)) {
         relaunchArgs = message.args;
       }
     });
