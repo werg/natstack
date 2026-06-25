@@ -1,8 +1,10 @@
 /**
- * Edit tool — GAD-native. Reads the base from the caller's vcs head and commits
- * the change through `vcs.applyEdits` (edit-first; disk is a projection of the
- * head, never written directly). The fuzzy / BOM / line-ending matching logic
- * is the upstream pi-coding-agent behaviour.
+ * Edit tool — GAD-native. Reads the base from the caller's vcs head and records
+ * the change as an UNCOMMITTED working edit through `vcs.edit` (edit-first; disk
+ * is a projection of the head, never written directly). It does NOT commit, so
+ * nothing builds or advances `main` until a deliberate `vcs.commit` + `vcs.push`.
+ * The fuzzy / BOM / line-ending matching logic is the upstream pi-coding-agent
+ * behaviour.
  */
 
 import { Type, type Static } from "@sinclair/typebox";
@@ -44,7 +46,7 @@ export function createEditTool(
     description:
       "Edit a file by replacing exact text. The oldText must match exactly (including whitespace). Use this for precise, surgical edits.",
     parameters: editSchema,
-    execute: async (_toolCallId, input, signal) => {
+    execute: async (toolCallId, input, signal) => {
       const { path, oldText, newText } = input;
       if (typeof path !== "string" || typeof oldText !== "string" || typeof newText !== "string") {
         throw new Error("edit requires path, oldText, and newText");
@@ -123,14 +125,11 @@ export function createEditTool(
         ];
       }
 
-      const result = await vcs.applyEdits({ baseStateHash: base.stateHash, edits });
+      // Tie this edit to the authoring tool-call (the edge into the agentic
+      // trajectory: file → edit → invocation → turn → session, queryable + kept
+      // through commit).
+      await vcs.edit({ baseStateHash: base.stateHash, edits, invocationId: toolCallId });
       if (signal?.aborted) throw new Error("Operation aborted");
-      if (result.status === "conflicted") {
-        throw new Error(
-          `Edit to ${path} conflicted with a concurrent change to the same region; the merge is parked. ` +
-            `Re-read the file and reapply your change against the current content.`
-        );
-      }
 
       const diffResult = generateDiffString(baseContent, newContent);
       const content_: (TextContent | ImageContent)[] = [

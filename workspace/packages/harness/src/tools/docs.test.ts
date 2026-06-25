@@ -54,4 +54,24 @@ describe("renderEntry (readable docs_open text)", () => {
     expect(text).toContain("feeds.add({ feedId: string; limit?: integer })");
     expect(text).toContain(".feedId: string — the feed id");
   });
+
+  it("shows the raw rpc.call form for service methods", () => {
+    const entry: CatalogEntry = {
+      id: "service:workers.listSources",
+      surface: "service",
+      qualifiedName: "workers.listSources",
+      title: "workers.listSources",
+      argsSchema: {
+        type: "array",
+        minItems: 0,
+        maxItems: 0,
+        items: [],
+      },
+    };
+    const text = renderEntry(entry);
+
+    expect(text).toContain('await rpc.call("main", "workers.listSources", [])');
+    expect(text).toContain("services.<name>");
+    expect(text).toContain("ergonomic runtime client");
+  });
 });

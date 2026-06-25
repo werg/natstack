@@ -1,8 +1,10 @@
 /**
  * Tool-side adapter over the server's `vcs.*` RPC surface. The file-editing
- * tools (`edit`, `write`) commit through GAD's edit-first `applyEdits` rather
- * than writing the working tree directly — disk is a projection of the head,
- * never written behind GAD's back.
+ * tools (`edit`, `write`) record UNCOMMITTED working edits through GAD's
+ * edit-first `vcs.edit` rather than writing the working tree directly — disk is
+ * a projection of the head, never written behind GAD's back. Deliberate
+ * milestones are sealed with `vcs.commit`, and `main` advances only via
+ * `vcs.push`.
  */
 
 import { resolveToCwd } from "./path-utils.js";
@@ -42,23 +44,74 @@ export type ToolVcsFileReadContent =
   | { kind: "text"; text: string }
   | { kind: "bytes"; base64: string };
 
-export interface ToolVcsApplyResult {
-  status: "clean" | "conflicted";
+/** Result of `vcs.edit` — a tracked UNCOMMITTED working edit (no commit, no build). */
+export interface ToolVcsEditResult {
+  head: string;
+  stateHash: string;
+  committed: false;
+  status: "uncommitted";
+  editSeq: number;
+  changedPaths: string[];
+}
+
+/** Per-repo result of `vcs.commit`. */
+export interface ToolVcsCommitResult {
+  repoPath: string;
+  head: string;
   stateHash: string;
   eventId: string | null;
   headHash: string | null;
-  conflicts: Array<{ path: string; kind: string }>;
+  editCount: number;
+  status: "committed" | "unchanged";
   changedPaths: string[];
+}
+
+/** Result of `vcs.push` (discriminated by status). */
+export type ToolVcsPushResult =
+  | { status: "pushed"; repoPaths: string[]; reports: unknown[] }
+  | { status: "up-to-date"; repoPaths: string[]; reports: unknown[] }
+  | { status: "diverged"; divergences: unknown[] }
+  | { status: "build-failed"; reports: unknown[] };
+
+/** Result of `vcs.merge` — a reconcile commit pulling `main` into the head. */
+export interface ToolVcsMergeResult {
+  status: "up-to-date" | "merged" | "conflicted";
+  stateHash: string | null;
+  conflicts: Array<{ path: string; kind: string }>;
+  mergeable: "clean" | "conflict";
+  upstreamCommits: Array<{ eventId: string; message: string; stateHash: string }>;
+  conflictPaths?: string[];
 }
 
 export interface ToolVcs {
   /** Read a file at the caller's head: content + the state hash to pin. */
   readFile(path: string): Promise<{ content: ToolVcsFileReadContent; stateHash: string } | null>;
-  /** Commit ops to the caller's head (server resolves head + actor). */
-  applyEdits(input: {
+  /**
+   * Record edit ops as UNCOMMITTED working changes on the caller's head (server
+   * resolves head + actor). NOT a commit: no head advance, no build. Seal with
+   * {@link ToolVcs.commit}.
+   */
+  edit(input: {
     baseStateHash?: string;
     edits: ToolVcsEditOp[];
-  }): Promise<ToolVcsApplyResult>;
+    repoPath?: string;
+    /** Authoring tool-call id — the edge from these edits into the agentic
+     *  trajectory (file → edit → invocation → turn → session). The edit/write
+     *  tools pass their `toolCallId`. */
+    invocationId?: string;
+  }): Promise<ToolVcsEditResult>;
+  /** Fold the caller's uncommitted working edits into a messaged snapshot per repo. */
+  commit(input: {
+    message: string;
+    repoPaths?: string[];
+    exclude?: string[];
+  }): Promise<ToolVcsCommitResult[]>;
+  /** Build-gate one or more repos' committed snapshots into `main` (atomic group). */
+  push(input: { repoPaths: string[]; message?: string }): Promise<ToolVcsPushResult>;
+  /** Pull `main` into the caller's head on a repo (reconcile divergence). */
+  merge(repoPath: string): Promise<ToolVcsMergeResult>;
+  /** Drop a repo's uncommitted working edits + any pending merge on the caller's head. */
+  discardEdits(repoPath: string): Promise<{ discarded: number; stateHash: string }>;
 }
 
 /** Build a {@link ToolVcs} from a main-RPC call function. */
@@ -71,6 +124,11 @@ export function createToolVcs(
         "",
         path,
       ]),
-    applyEdits: (input) => callMain<ToolVcsApplyResult>("vcs.applyEdits", [input]),
+    edit: (input) => callMain<ToolVcsEditResult>("vcs.edit", [input]),
+    commit: (input) => callMain<ToolVcsCommitResult[]>("vcs.commit", [input]),
+    push: (input) => callMain<ToolVcsPushResult>("vcs.push", [input]),
+    merge: (repoPath) => callMain<ToolVcsMergeResult>("vcs.merge", [repoPath]),
+    discardEdits: (repoPath) =>
+      callMain<{ discarded: number; stateHash: string }>("vcs.discardEdits", [repoPath]),
   };
 }

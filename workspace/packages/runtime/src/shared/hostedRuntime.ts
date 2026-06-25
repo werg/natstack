@@ -128,10 +128,11 @@ export { createPanelRuntime } from "./panelRuntime.js";
 export { createRuntimeParentHandle } from "./handles.js";
 
 /**
- * The complete `services.<name>.<method>(...)` namespace, identical on every
- * target. `services.<anyRegisteredService>` resolves to a client that dispatches
- * via `callMain("<name>.<method>", args)` — so EVERY registered RPC service is
- * reachable BY NAME with no hand-curated list (gaps are structurally impossible).
+ * Convenience `services.<name>.<method>(...)` namespace, identical on every
+ * target. Non-colliding service names resolve to a client that dispatches via
+ * `callMain("<name>.<method>", args)` with no hand-curated list; names that
+ * collide with rich runtime bindings intentionally resolve to those ergonomic
+ * clients instead.
  *
  * Two layers, composed:
  *  1. ERGONOMIC OVERRIDE — if `<name>` is a real member of the hosted runtime
@@ -145,7 +146,7 @@ export { createRuntimeParentHandle } from "./handles.js";
  * and the server dispatcher enforces each method's `policy.allowed`
  * (serviceDispatcher.ts `dispatch` → `checkServiceAccess`) at the single choke
  * point — a `do`-denied method still rejects server-side. The proxy is purely
- * ergonomic/complete reach, never an authorization bypass.
+ * ergonomic reach, never an authorization bypass.
  *
  * This is a FUNCTION (not a runtime-surface member): `services` is an eval-only
  * ambient binding, not part of the portable `createHostedRuntime` key-set, so the

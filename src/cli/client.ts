@@ -709,14 +709,14 @@ export async function main(argv: string[]): Promise<number> {
     return 2;
   }
   if (command.passthrough && command.passthroughHelp && wantsScriptHelp(subArgs)) {
-    return await command.run({ positionals: subArgs, flags: {} }, subArgs);
+    return await command.run({ positionals: subArgs, flags: {}, flagsMulti: () => [] }, subArgs);
   }
   if (wantsHelp(subArgs)) {
     console.log(renderCommandHelp(command));
     return 0;
   }
   if (command.passthrough) {
-    return await command.run({ positionals: subArgs, flags: {} }, subArgs);
+    return await command.run({ positionals: subArgs, flags: {}, flagsMulti: () => [] }, subArgs);
   }
   let inv: ParsedInvocation;
   try {

@@ -50,6 +50,13 @@ export interface RmOptions {
   force?: boolean;
 }
 
+export interface BinaryEnvelope {
+  __bin: true;
+  data: string;
+}
+
+export type RuntimeBinaryData = Uint8Array | ArrayBuffer | ArrayBufferView | BinaryEnvelope;
+
 /**
  * Options for opening a file.
  */
@@ -65,7 +72,7 @@ export interface FileHandle {
   fd: number;
   read(buffer: Uint8Array, offset: number, length: number, position: number | null): Promise<{ bytesRead: number; buffer: Uint8Array }>;
   // A string is encoded (utf-8) and the 2nd arg is the file position (Node's `write(string[, position[, encoding]])`).
-  write(buffer: Uint8Array | string, offset?: number, length?: number, position?: number | null): Promise<{ bytesWritten: number; buffer: Uint8Array | string }>;
+  write(buffer: RuntimeBinaryData | string, offset?: number, length?: number, position?: number | null): Promise<{ bytesWritten: number; buffer: RuntimeBinaryData | string }>;
   close(): Promise<void>;
   stat(): Promise<FileStats>;
 }
@@ -110,10 +117,10 @@ export interface RuntimeFs {
    * itself is not created — callers use the returned path for atomic writes
    * (write to tmp → rename into place). Analogous to the pattern used around
    * `os.tmpdir()` in Node tools.
-   */
+  */
   mktemp(prefix?: string): Promise<string>;
   readFile(path: string, encoding?: BufferEncoding): Promise<string | Buffer>;
-  writeFile(path: string, data: string | Uint8Array): Promise<void>;
+  writeFile(path: string, data: string | RuntimeBinaryData): Promise<void>;
   readdir(path: string): Promise<string[]>;
   readdir(path: string, options: { withFileTypes: true }): Promise<Dirent[]>;
   readdir(path: string, options?: ReaddirOptions): Promise<string[] | Dirent[]>;
@@ -127,7 +134,7 @@ export interface RuntimeFs {
   exists(path: string): Promise<boolean>;
   // Additional methods for broader compatibility
   access(path: string, mode?: number): Promise<void>;
-  appendFile(path: string, data: string | Uint8Array): Promise<void>;
+  appendFile(path: string, data: string | RuntimeBinaryData): Promise<void>;
   copyFile(src: string, dest: string): Promise<void>;
   rename(oldPath: string, newPath: string): Promise<void>;
   realpath(path: string): Promise<string>;

@@ -8,15 +8,18 @@
  */
 import { Buffer } from "buffer";
 import type { RpcClient } from "@natstack/rpc";
-import type { RuntimeFs, FileStats, Dirent, FileHandle } from "../types.js";
+import type {
+    RuntimeFs,
+    FileStats,
+    Dirent,
+    FileHandle,
+    BinaryEnvelope,
+    RuntimeBinaryData,
+} from "../types.js";
 import { toFileStats } from "./fs-utils.js";
 // ---------------------------------------------------------------------------
 // Binary helpers
 // ---------------------------------------------------------------------------
-interface BinaryEnvelope {
-    __bin: true;
-    data: string; // base64
-}
 function isBinaryEnvelope(v: unknown): v is BinaryEnvelope {
     return (typeof v === "object" &&
         v !== null &&
@@ -28,6 +31,18 @@ function encodeBinary(buf: Uint8Array): BinaryEnvelope {
 }
 function decodeBinary(envelope: BinaryEnvelope): Buffer {
     return Buffer.from(envelope.data, "base64");
+}
+function toUint8Array(data: RuntimeBinaryData): Uint8Array {
+    if (isBinaryEnvelope(data)) return decodeBinary(data);
+    if (data instanceof ArrayBuffer) return new Uint8Array(data);
+    if (ArrayBuffer.isView(data)) {
+        return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+    }
+    throw new TypeError("Binary filesystem payload must be an ArrayBuffer, ArrayBuffer view, or binary envelope");
+}
+function encodeWritePayload(data: string | RuntimeBinaryData): string | BinaryEnvelope {
+    if (typeof data === "string" || isBinaryEnvelope(data)) return data;
+    return encodeBinary(toUint8Array(data));
 }
 // ---------------------------------------------------------------------------
 // Dirent reconstruction
@@ -76,9 +91,8 @@ export function createRpcFs(rpc: Pick<RpcClient, "call">): RuntimeFs {
             }
             return result as string;
         },
-        async writeFile(path: string, data: string | Uint8Array): Promise<void> {
-            const payload = typeof data === "string" ? data : encodeBinary(data);
-            await call<void>("writeFile", path, payload);
+        async writeFile(path: string, data: string | RuntimeBinaryData): Promise<void> {
+            await call<void>("writeFile", path, encodeWritePayload(data));
         },
         readdir: (async (path: string, options?: {
             withFileTypes?: boolean;
@@ -119,9 +133,8 @@ export function createRpcFs(rpc: Pick<RpcClient, "call">): RuntimeFs {
         async access(path: string, mode?: number): Promise<void> {
             await call<void>("access", path, mode);
         },
-        async appendFile(path: string, data: string | Uint8Array): Promise<void> {
-            const payload = typeof data === "string" ? data : encodeBinary(data);
-            await call<void>("appendFile", path, payload);
+        async appendFile(path: string, data: string | RuntimeBinaryData): Promise<void> {
+            await call<void>("appendFile", path, encodeWritePayload(data));
         },
         async copyFile(src: string, dest: string): Promise<void> {
             await call<void>("copyFile", src, dest);
@@ -150,9 +163,9 @@ export function createRpcFs(rpc: Pick<RpcClient, "call">): RuntimeFs {
                     buffer.set(decoded, offset);
                     return { bytesRead: result.bytesRead, buffer };
                 },
-                async write(buffer: Uint8Array | string, offset?: number, length?: number, position?: number | null): Promise<{
+                async write(buffer: RuntimeBinaryData | string, offset?: number, length?: number, position?: number | null): Promise<{
                     bytesWritten: number;
-                    buffer: Uint8Array | string;
+                    buffer: RuntimeBinaryData | string;
                 }> {
                     // Node parity: `write(string[, position[, encoding]])` as well as
                     // `write(buffer[, offset[, length[, position]]])`. A string is encoded (utf-8)
@@ -163,7 +176,8 @@ export function createRpcFs(rpc: Pick<RpcClient, "call">): RuntimeFs {
                         slice = new TextEncoder().encode(buffer);
                         pos = typeof offset === "number" ? offset : null;
                     } else {
-                        slice = buffer.subarray(offset ?? 0, (offset ?? 0) + (length ?? buffer.length));
+                        const bytes = toUint8Array(buffer);
+                        slice = bytes.subarray(offset ?? 0, (offset ?? 0) + (length ?? bytes.length));
                         pos = position ?? null;
                     }
                     const result = await call<{

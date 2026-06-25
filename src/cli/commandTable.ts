@@ -16,12 +16,21 @@ export interface FlagSpec {
   short?: string;
   /** Whether the flag consumes the next argv token as its value. */
   takesValue: boolean;
+  /**
+   * Whether the flag may be repeated, accumulating every value (e.g.
+   * `--repo a --repo b`). Repeated values are retrieved via
+   * `ParsedInvocation.flagsMulti(name)`; `flags[name]` holds the last value.
+   * Only meaningful with `takesValue: true`.
+   */
+  multiple?: boolean;
   description?: string;
 }
 
 export interface ParsedInvocation {
   positionals: string[];
   flags: Record<string, string | boolean>;
+  /** Every value collected for a `multiple: true` value flag, in order. */
+  flagsMulti(name: string): string[];
 }
 
 export interface CliCommand {
@@ -73,6 +82,10 @@ export function groupCommands(commands: CliCommand[], group: string): CliCommand
 export function parseInvocation(command: CliCommand, argv: string[]): ParsedInvocation {
   const positionals: string[] = [];
   const flags: Record<string, string | boolean> = {};
+  const multi: Record<string, string[]> = {};
+  const pushMulti = (name: string, value: string): void => {
+    (multi[name] ??= []).push(value);
+  };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === undefined) continue;
@@ -96,11 +109,13 @@ export function parseInvocation(command: CliCommand, argv: string[]): ParsedInvo
       if (spec.takesValue) {
         if (inlineValue !== undefined) {
           flags[spec.name] = inlineValue;
+          if (spec.multiple) pushMulti(spec.name, inlineValue);
           continue;
         }
         const value = argv[++i];
         if (value === undefined) throw new UsageError(`Flag ${arg} requires a value`);
         flags[spec.name] = value;
+        if (spec.multiple) pushMulti(spec.name, value);
       } else if (inlineValue !== undefined) {
         if (inlineValue === "true") flags[spec.name] = true;
         else if (inlineValue === "false") flags[spec.name] = false;
@@ -112,7 +127,11 @@ export function parseInvocation(command: CliCommand, argv: string[]): ParsedInvo
       positionals.push(arg);
     }
   }
-  return { positionals, flags };
+  return {
+    positionals,
+    flags,
+    flagsMulti: (name: string) => multi[name] ?? [],
+  };
 }
 
 /** Render per-command help: usage line plus declared flags. */

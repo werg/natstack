@@ -5,6 +5,7 @@ import type { AgentTool } from "@workspace/pi-core";
 import { defaultPolicies } from "@workspace/agent-loop";
 import type { RespondPolicy, StepPolicy } from "@workspace/agent-loop";
 import { rpc } from "@workspace/runtime/worker";
+import { taxonomyRepoForPath } from "@natstack/shared/runtime/entitySpec";
 import { EXPLORER_SYSTEM_PROMPT, SCHEDULED_SWEEP_PROMPT } from "./prompts.js";
 import {
   buildCardState,
@@ -25,7 +26,12 @@ const FINDING_CLASSES: readonly FindingClass[] = ["BUG", "DOC-MISMATCH", "SURPRI
 const SEVERITIES: readonly FindingSeverity[] = ["low", "medium", "high"];
 
 export interface ExplorerPublishStatus {
+  repoPath?: string;
   files?: Array<{ path?: unknown }>;
+}
+
+interface ExplorerPushResult {
+  status?: string;
 }
 
 export function unrelatedFindingPublishPaths(
@@ -43,6 +49,16 @@ export function unrelatedFindingPublishPaths(
 
 function str(value: unknown): string {
   return typeof value === "string" ? value : "";
+}
+
+function repoScopeForPath(filePath: string): { repoPath: string; repoRelPath: string } {
+  const normalized = filePath.replace(/^\/+/, "");
+  const repoPath = taxonomyRepoForPath(normalized);
+  if (!repoPath) throw new Error(`No repo owns findings path ${JSON.stringify(filePath)}`);
+  return {
+    repoPath,
+    repoRelPath: normalized === repoPath ? "" : normalized.slice(repoPath.length + 1),
+  };
 }
 
 /**
@@ -219,14 +235,22 @@ export class ExplorerAgentWorker extends SilentAgentWorker {
         this.persistFinding(channelId, runId, detail);
         const rows = this.loadFindings(channelId, runId);
 
-        // Durable log: rebuild the whole per-run file from the table, commit + push.
+        // Durable log: rebuild the whole per-run file from the table, then
+        // edit → commit → push (record the working edit, seal a messaged
+        // snapshot, build-gate it into main).
         const fileText = renderFindingsFile(runId, rows);
-        await this.rpc.call("main", "vcs.applyEdits", [
+        const { repoPath } = repoScopeForPath(filePath);
+        await this.rpc.call("main", "vcs.edit", [
           { edits: [{ kind: "write", path: filePath, content: { kind: "text", text: fileText } }] },
         ]);
+        await this.rpc.call("main", "vcs.commit", [
+          { message: `explorer: ${cls} on ${surface} (${runId})`, repoPaths: [repoPath] },
+        ]);
+        // After committing, the findings file is the only change ahead of main —
+        // refuse to push if anything UNRELATED is also ahead (scoped publish).
         await this.assertFindingsPublishScope(filePath);
-        const publish = await this.rpc
-          .call<{ status?: string }>("main", "vcs.publish", [])
+        const push = await this.rpc
+          .call<ExplorerPushResult>("main", "vcs.push", [{ repoPaths: [repoPath] }])
           .catch((error: unknown) => ({ status: `error: ${String(error)}` }));
 
         // Aggregate into the (single, per-run) findings card in the chat panel.
@@ -240,18 +264,22 @@ export class ExplorerAgentWorker extends SilentAgentWorker {
           content: [
             {
               type: "text",
-              text: `recorded ${cls} on ${surface} — ${rows.length} finding(s) in ${filePath} (publish: ${publish?.status ?? "?"})`,
+              text: `recorded ${cls} on ${surface} — ${rows.length} finding(s) in ${filePath} (push: ${push?.status ?? "?"})`,
             },
           ],
-          details: { id: detail.id, filePath, total: rows.length, publish: publish?.status },
+          details: { id: detail.id, filePath, total: rows.length, push: push?.status },
         };
       },
     };
   }
 
   private async assertFindingsPublishScope(filePath: string): Promise<void> {
-    const status = await this.rpc.call<ExplorerPublishStatus>("main", "vcs.publishStatus", []);
-    const unrelated = unrelatedFindingPublishPaths(status, filePath);
+    const { repoPath, repoRelPath } = repoScopeForPath(filePath);
+    const statuses = await this.rpc.call<ExplorerPublishStatus[]>("main", "vcs.pushStatus", [
+      [repoPath],
+    ]);
+    const status = statuses.find((s) => s.repoPath === repoPath) ?? statuses[0] ?? { files: [] };
+    const unrelated = unrelatedFindingPublishPaths(status, repoRelPath);
     if (unrelated.length === 0) return;
     throw new Error(
       "report_finding refused to publish because this context has unrelated unpublished " +

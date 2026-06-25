@@ -19,10 +19,13 @@ export type { WriteToolInput, WriteToolDetails } from "./write.js";
 export { createToolVcs } from "./tool-vcs.js";
 export type {
   ToolVcs,
-  ToolVcsApplyResult,
+  ToolVcsCommitResult,
   ToolVcsEditOp,
+  ToolVcsEditResult,
   ToolVcsFileReadContent,
   ToolVcsFileWriteContent,
+  ToolVcsMergeResult,
+  ToolVcsPushResult,
 } from "./tool-vcs.js";
 
 export { createGrepTool } from "./grep.js";

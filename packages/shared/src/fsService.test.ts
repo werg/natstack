@@ -170,6 +170,50 @@ describe("FsService", () => {
       expect(content).toBe("world");
     });
 
+    it("writeFile creates missing parent directories for direct context writes", async () => {
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-nested-write");
+
+      await service.handleCall(ctx, "writeFile", [".natstack/tmp/fs-text-roundtrip.txt", "ok"]);
+
+      expect(
+        existsSync(
+          path.join(tmpRoot, "ctx-nested-write", ".natstack", "tmp", "fs-text-roundtrip.txt")
+        )
+      ).toBe(true);
+      await expect(
+        service.handleCall(ctx, "readFile", [".natstack/tmp/fs-text-roundtrip.txt", "utf8"])
+      ).resolves.toBe("ok");
+    });
+
+    it("appendFile creates missing parent directories for direct context writes", async () => {
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-nested-append");
+
+      await service.handleCall(ctx, "appendFile", ["/logs/roundtrip/run.log", "one\n"]);
+      await service.handleCall(ctx, "appendFile", ["/logs/roundtrip/run.log", "two\n"]);
+
+      await expect(
+        service.handleCall(ctx, "readFile", ["/logs/roundtrip/run.log", "utf8"])
+      ).resolves.toBe("one\ntwo\n");
+    });
+
+    it("copyFile and rename create missing destination parent directories", async () => {
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-nested-move");
+
+      await service.handleCall(ctx, "writeFile", ["/source.txt", "source"]);
+      await service.handleCall(ctx, "copyFile", ["/source.txt", "/copies/a/source.txt"]);
+      await expect(
+        service.handleCall(ctx, "readFile", ["/copies/a/source.txt", "utf8"])
+      ).resolves.toBe("source");
+
+      await service.handleCall(ctx, "rename", ["/copies/a/source.txt", "/archive/a/source.txt"]);
+      await expect(
+        service.handleCall(ctx, "readFile", ["/archive/a/source.txt", "utf8"])
+      ).resolves.toBe("source");
+    });
+
     it("stat sees files that were placed on disk before the service call", async () => {
       const ctx = makeWorkerCtx("do:src:class:key");
       mkdirSync(path.join(tmpRoot, "ctx-h"), { recursive: true });
@@ -600,24 +644,32 @@ describe("FsService", () => {
   // ─── GAD reroute (tracked context mutations commit through GAD) ────────────
   describe("GAD reroute", () => {
     function makeMockBridge() {
-      const files = new Map<string, FsVcsContent>(); // `${contextId}/${rel}` → content
-      const applyCalls: Array<{ contextId: string; edits: FsVcsEditOp[] }> = [];
+      const files = new Map<string, FsVcsContent>(); // `${contextId}/${repoPath}/${repoRel}` -> content
+      const applyCalls: Array<{ contextId: string; repoPath: string; edits: FsVcsEditOp[] }> = [];
       const isScratch = (rel: string) =>
         rel === ".tmp" ||
         rel.startsWith(".tmp/") ||
         rel === ".testkit" ||
         rel.startsWith(".testkit/");
+      const keyFor = (contextId: string, repoPath: string, rel: string) =>
+        `${contextId}/${repoPath}/${rel}`;
       const bridge: FsVcsBridge = {
         isTracked: async (rel) => rel.length > 0 && !isScratch(rel),
-        applyEdits: async (contextId, edits) => {
-          applyCalls.push({ contextId, edits });
+        ensureMaterialized: async () => {},
+        isMaterialized: async () => true,
+        edit: async (
+          contextId: string,
+          repoPath: import("./runtime/entitySpec.js").RepoPath,
+          edits: FsVcsEditOp[]
+        ) => {
+          applyCalls.push({ contextId, repoPath, edits });
           for (const e of edits) {
-            const key = `${contextId}/${e.path}`;
+            const key = keyFor(contextId, repoPath, e.path);
             if (e.kind === "write") files.set(key, e.content);
             else if (e.kind === "delete") files.delete(key);
           }
         },
-        readFile: async (contextId, rel) => files.get(`${contextId}/${rel}`) ?? null,
+        readFile: async (contextId, repoPath, rel) => files.get(keyFor(contextId, repoPath, rel)) ?? null,
         listFiles: async (contextId) =>
           [...files.keys()]
             .filter((k) => k.startsWith(`${contextId}/`))
@@ -635,10 +687,11 @@ describe("FsService", () => {
       await svc.handleCall(ctx, "writeFile", ["/panels/app/index.ts", "export const x = 1;\n"]);
 
       expect(applyCalls).toHaveLength(1);
+      expect(applyCalls[0]!.repoPath).toBe("panels/app");
       expect(applyCalls[0]!.edits).toEqual([
         {
           kind: "write",
-          path: "panels/app/index.ts",
+          path: "index.ts",
           content: { kind: "text", text: "export const x = 1;\n" },
         },
       ]);
@@ -673,7 +726,8 @@ describe("FsService", () => {
       await svc.handleCall(ctx, "unlink", ["/packages/lib/a.ts"]);
 
       expect(files.has("ctx-del/packages/lib/a.ts")).toBe(false);
-      expect(applyCalls.at(-1)!.edits).toEqual([{ kind: "delete", path: "packages/lib/a.ts" }]);
+      expect(applyCalls.at(-1)!.repoPath).toBe("packages/lib");
+      expect(applyCalls.at(-1)!.edits).toEqual([{ kind: "delete", path: "a.ts" }]);
     });
 
     it("commits an atomic-write rename (.tmp → tracked) through GAD and drops the temp", async () => {
@@ -702,6 +756,182 @@ describe("FsService", () => {
       await expect(svc.handleCall(ctx, "open", ["/panels/app/index.ts", "w"])).rejects.toThrow(
         /must commit through GAD/
       );
+    });
+
+    // ─── Per-repo edit routing (section taxonomy) ─────────────────────────
+    function makeRoutedBridge() {
+      const files = new Map<string, FsVcsContent>(); // `${contextId}/${repoPath}/${repoRel}` -> content
+      const applyCalls: Array<{ repoPath: string; edits: FsVcsEditOp[] }> = [];
+      const isScratch = (rel: string) =>
+        rel === ".tmp" || rel.startsWith(".tmp/") || rel === ".testkit" || rel.startsWith(".testkit/");
+      const keyFor = (contextId: string, repoPath: string, rel: string) =>
+        `${contextId}/${repoPath}/${rel}`;
+      const bridge: FsVcsBridge = {
+        isTracked: async (rel) => rel.length > 0 && !isScratch(rel),
+        ensureMaterialized: async () => {},
+        isMaterialized: async () => true,
+        edit: async (
+          contextId: string,
+          repoPath: import("./runtime/entitySpec.js").RepoPath,
+          edits: FsVcsEditOp[]
+        ) => {
+          applyCalls.push({ repoPath, edits });
+          for (const e of edits) {
+            const key = keyFor(contextId, repoPath, e.path);
+            if (e.kind === "write") files.set(key, e.content);
+            else if (e.kind === "delete") files.delete(key);
+          }
+        },
+        readFile: async (contextId, repoPath, rel) => files.get(keyFor(contextId, repoPath, rel)) ?? null,
+        listFiles: async () => [],
+      };
+      return { bridge, applyCalls, files };
+    }
+
+    it("routes a write to its owning repo (prefix stripped) and applies on that repo head", async () => {
+      const { bridge, applyCalls, files } = makeRoutedBridge();
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-r");
+
+      await svc.handleCall(ctx, "writeFile", ["/packages/lib/src/x.ts", "x\n"]);
+
+      expect(applyCalls).toHaveLength(1);
+      expect(applyCalls[0]!.repoPath).toBe("packages/lib");
+      expect(applyCalls[0]!.edits).toEqual([
+        { kind: "write", path: "src/x.ts", content: { kind: "text", text: "x\n" } },
+      ]);
+      expect(files.get("ctx-r/packages/lib/src/x.ts")).toEqual({ kind: "text", text: "x\n" });
+    });
+
+    it("rejects an edit whose path is not inside any workspace repo", async () => {
+      // Every context is a full workspace branch (routed by the section taxonomy); the
+      // only structural rejection left is a path outside any workspace repo
+      // (a top-level file under no section).
+      const { bridge, applyCalls } = makeRoutedBridge();
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-w");
+
+      await expect(
+        svc.handleCall(ctx, "writeFile", ["/random-toplevel.ts", "nope"])
+      ).rejects.toThrow(/not inside a workspace repo/);
+      expect(applyCalls).toHaveLength(0);
+    });
+
+    it("rejects writes that name a workspace repo root instead of a file inside it", async () => {
+      const { bridge, applyCalls } = makeRoutedBridge();
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-root");
+
+      await expect(
+        svc.handleCall(ctx, "writeFile", ["/projects/scratch", "nope"])
+      ).rejects.toThrow(/names a workspace repo root.*projects\/scratch\/README\.md/s);
+      expect(applyCalls).toHaveLength(0);
+    });
+
+    it("suggests a repo-shaped path when a dotted project filename is used at repo root", async () => {
+      const { bridge, applyCalls } = makeRoutedBridge();
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-dotted");
+
+      await expect(
+        svc.handleCall(ctx, "writeFile", ["/projects/file-roundtrip-test.txt", "nope"])
+      ).rejects.toThrow(/repo-shaped path.*projects\/file-roundtrip-test\/file-roundtrip-test\.txt/s);
+      expect(applyCalls).toHaveLength(0);
+    });
+  });
+
+  describe("sparse materialization (demand + loud assertion)", () => {
+    function makeMaterializeBridge(opts: { materialize: boolean }) {
+      const calls: Array<{ contextId: string; repos: string[] | "all" }> = [];
+      const present = new Set<string>();
+      const bridge: FsVcsBridge = {
+        isTracked: async (rel) => rel.length > 0,
+        edit: async () => {},
+        readFile: async () => null,
+        listFiles: async () => [],
+        ensureMaterialized: async (contextId, repos) => {
+          calls.push({ contextId, repos });
+          if (opts.materialize) {
+            if (repos === "all") present.add("*");
+            else for (const r of repos) present.add(r);
+          }
+        },
+        isMaterialized: async (_contextId, repo) => present.has("*") || present.has(repo),
+      };
+      return { bridge, calls };
+    }
+
+    it("a read demands ONLY the target path's repo (minimal scope, not 'all')", async () => {
+      mkdirSync(path.join(tmpRoot, "ctx-s", "packages", "lib"), { recursive: true });
+      writeFileSync(path.join(tmpRoot, "ctx-s", "packages", "lib", "x.ts"), "x\n");
+      const { bridge, calls } = makeMaterializeBridge({ materialize: true });
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-s");
+
+      await svc.handleCall(ctx, "readdir", ["/packages/lib"]);
+
+      // Exactly the one repo was demanded — never "all".
+      expect(calls).toEqual([{ contextId: "ctx-s", repos: ["packages/lib"] }]);
+    });
+
+    it("a read whose repo stays unmaterialized surfaces a natural ENOENT (not silent-partial)", async () => {
+      // A bridge that declines to materialize — simulates a non-existent repo
+      // (nothing to project) or a consumer/path that slipped past demand. Every
+      // context may read any repo (no read confinement), so an existing repo is
+      // always materialized by the preceding ensureMaterialized; reaching here
+      // means there is no subtree on disk. The read must NOT silently return
+      // empty/partial data — it falls through to the underlying fs op's natural
+      // result, which for a missing dir is ENOENT (the code callers handle),
+      // rather than a bespoke ENOMATERIALIZE that breaks them.
+      const { bridge } = makeMaterializeBridge({ materialize: false });
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-s2");
+
+      await expect(svc.handleCall(ctx, "readdir", ["/packages/lib"])).rejects.toThrow(/ENOENT/);
+    });
+
+    it("a root grep demands 'all' (the only legitimate blanket case)", async () => {
+      const { bridge, calls } = makeMaterializeBridge({ materialize: true });
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-s3");
+
+      await svc.handleCall(ctx, "grep", ["needle", { path: "/" }]).catch(() => {});
+
+      expect(calls.some((c) => c.repos === "all")).toBe(true);
+    });
+
+    it("a scoped glob demands ONLY options.path's repo, not 'all'", async () => {
+      // glob(pattern, opts): the search dir is opts.path on args[1] — NOT the pattern
+      // string on args[0]. Reading args[0].path always missed → every glob fell back
+      // to "/" → "all" (whole-workspace materialize).
+      mkdirSync(path.join(tmpRoot, "ctx-glob-demand", "panels", "foo"), { recursive: true });
+      writeFileSync(path.join(tmpRoot, "ctx-glob-demand", "panels", "foo", "a.ts"), "x\n");
+      const { bridge, calls } = makeMaterializeBridge({ materialize: true });
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-glob-demand");
+
+      await svc.handleCall(ctx, "glob", ["*.ts", { path: "panels/foo" }]);
+
+      expect(calls).toEqual([{ contextId: "ctx-glob-demand", repos: ["panels/foo"] }]);
+    });
+
+    it("ensureMaterialized RPC declares a narrow scope (a single repo)", async () => {
+      const { bridge, calls } = makeMaterializeBridge({ materialize: true });
+      const svc = new FsService(makeStubFolderManager(tmpRoot), entityCache, { vcsBridge: bridge });
+      const ctx = makeWorkerCtx("do:src:class:key");
+      registerContext(ctx.caller.runtime.id, "do", "ctx-s4");
+
+      await svc.handleCall(ctx, "ensureMaterialized", ["panels/chat/index.tsx"]);
+
+      expect(calls).toEqual([{ contextId: "ctx-s4", repos: ["panels/chat"] }]);
     });
   });
 });

@@ -219,6 +219,22 @@ function formatExamples(qualifiedName: string, examples: unknown[]): string {
     .join("\n");
 }
 
+function serviceRpcExample(qualifiedName: string, argsSchema: unknown): string | null {
+  const s = argsSchema as JsonSchema | undefined;
+  if (!s || s["type"] !== "array" || !Array.isArray(s["items"])) return null;
+  const items = s["items"] as unknown[];
+  const args = items.map((item, index) => {
+    const type = typeString(item);
+    if (type.startsWith("{ ")) return "{ ... }";
+    if (type === "string" || type.startsWith("string ")) return `"arg${index}"`;
+    if (type === "integer" || type === "number") return "0";
+    if (type === "boolean") return "false";
+    if (type.endsWith("[]")) return "[]";
+    return `/* ${type} */`;
+  });
+  return `await rpc.call("main", ${JSON.stringify(qualifiedName)}, [${args.join(", ")}])`;
+}
+
 export function renderEntry(entry: CatalogEntry): string {
   const parts: string[] = [`# ${entry.qualifiedName}  (${entry.surface})`];
   if (entry.description) parts.push(entry.description);
@@ -255,6 +271,17 @@ export function renderEntry(entry: CatalogEntry): string {
     );
     const breakdown = argBreakdown(entry.argsSchema);
     if (breakdown) parts.push(clamp(breakdown, MAX_SCHEMA_CHARS));
+    if (entry.surface === "service") {
+      const rpcExample = serviceRpcExample(entry.qualifiedName, entry.argsSchema);
+      if (rpcExample) {
+        parts.push(
+          `Eval/raw RPC call:\n${rpcExample}\n\n` +
+            "In eval, this raw service method is always reachable through the portable `rpc.call(target, method, args)` form. " +
+            "The `services.<name>` convenience binding may be an ergonomic runtime client when " +
+            "the service name also exists in `@workspace/runtime`."
+        );
+      }
+    }
   }
   if (entry.examples?.length) {
     parts.push(

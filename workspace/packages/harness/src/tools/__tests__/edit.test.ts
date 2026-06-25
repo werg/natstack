@@ -15,6 +15,9 @@ describe("createEditTool", () => {
     });
     expect(result.details.diff).toContain("const x = 42;");
     expect(vcs.read("a.ts")).toContain("const x = 42;");
+    // Provenance: the edit is tagged with the authoring tool-call id (the edge
+    // into the agentic trajectory — file → edit → invocation → turn → session).
+    expect(vcs.lastEditInput?.invocationId).toBe("call-1");
   });
 
   it("rejects when there are multiple occurrences", async () => {

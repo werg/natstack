@@ -4,7 +4,11 @@
  * for head subscriptions.
  */
 
-import { vcsMethods, type VcsHeadAdvance } from "@natstack/shared/serviceSchemas/vcs";
+import {
+  vcsMethods,
+  type VcsHeadAdvance,
+  type VcsWorkingAdvance,
+} from "@natstack/shared/serviceSchemas/vcs";
 import {
   createTypedServiceClient,
   type TypedServiceClient,
@@ -12,7 +16,13 @@ import {
 
 export type {
   VcsApplyEditsInput,
-  VcsApplyEditsResult,
+  VcsEditResult,
+  VcsCommitInput,
+  VcsCommitResult,
+  VcsEditOpRow,
+  VcsCommitAncestor,
+  VcsRepoDivergence,
+  VcsUpstreamCommit,
   VcsDiffResult,
   VcsEditOp,
   VcsFileContent,
@@ -23,12 +33,14 @@ export type {
   VcsLogEntry,
   VcsMergeResult,
   VcsPendingMerge,
-  VcsPublishStatus,
+  VcsPushInput,
+  VcsPushResult,
+  VcsPushStatus,
   VcsRecallInput,
   VcsRecallResult,
   VcsResolveHeadResult,
   VcsStatusResult,
-  VcsUnitStatus,
+  VcsWorkingAdvance,
 } from "@natstack/shared/serviceSchemas/vcs";
 
 /** Minimal event-capable rpc surface (method form -> param bivariance, so the
@@ -46,6 +58,14 @@ export type VcsClient = VcsRpcClient & {
    * delta, and authored edit intent when available. Returns an unsubscribe.
    */
   subscribeHead(head: string, onAdvance: (advance: VcsHeadAdvance) => void): () => void;
+  /**
+   * Subscribe to UNCOMMITTED working-content advances (`vcs.edit`, incl.
+   * `vcs.revert`) on `head`. Distinct from {@link subscribeHead}: working edits
+   * are not commits (no log entry, no build). Reactive editors consume this to
+   * reflect uncommitted edits and to apply a revert (now a working edit) into
+   * the view. Returns an unsubscribe.
+   */
+  subscribeWorking(head: string, onAdvance: (advance: VcsWorkingAdvance) => void): () => void;
 };
 
 export function createVcsClient(
@@ -65,6 +85,16 @@ export function createVcsClient(
       // Pair the server-side subscription with an unsubscribe on teardown.
       // A DO push-subscriber persists (no socket to reap it), so an un-torn-down
       // `events.subscribe` would leak and keep the server pushing to a corpse.
+      return () => {
+        off();
+        void callMain("events.unsubscribe", topic).catch(() => {});
+      };
+    },
+    subscribeWorking(head, onAdvance) {
+      if (!events?.on) throw new Error("vcs.subscribeWorking requires an event-capable rpc");
+      const topic = `vcs:working:${head}`;
+      const off = events.on(`event:${topic}`, (ev) => onAdvance(ev.payload as VcsWorkingAdvance));
+      void callMain("events.subscribe", topic).catch(() => {});
       return () => {
         off();
         void callMain("events.unsubscribe", topic).catch(() => {});

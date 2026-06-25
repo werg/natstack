@@ -1,5 +1,4 @@
 import * as fs from "node:fs/promises";
-import * as path from "node:path";
 import {
   fsMethods,
   type FsBinaryEnvelope,
@@ -136,12 +135,6 @@ async function write(inv: ParsedInvocation): Promise<number> {
           : await readStdin();
     const { client, contextId } = resolveSessionScope(inv);
     const fsClient = typedClient("fs", fsMethods, client);
-    if (inv.flags["parents"] === true) {
-      const dir = path.posix.dirname(target);
-      if (dir && dir !== "/" && dir !== ".") {
-        await fsClient.mkdir(contextId, dir, { recursive: true });
-      }
-    }
     const append = inv.flags["append"] === true;
     if (append) {
       await fsClient.appendFile(contextId, target, encodeBinary(data));
@@ -338,13 +331,11 @@ export const fsCommands: CliCommand[] = [
     group: "fs",
     name: "write",
     summary: "Write a file from CONTENT, --content, --from-file, or stdin",
-    usage:
-      "natstack fs write PATH [CONTENT] [--content TEXT | --from-file F] [--append] [--parents]",
+    usage: "natstack fs write PATH [CONTENT] [--content TEXT | --from-file F] [--append]",
     flags: [
       { name: "from-file", takesValue: true, description: "Read content from a local file" },
       { name: "content", takesValue: true, description: "Literal content" },
       { name: "append", takesValue: false, description: "Append instead of overwrite" },
-      { name: "parents", takesValue: false, description: "Create parent directories first" },
       SESSION_FLAG,
       JSON_FLAG,
     ],

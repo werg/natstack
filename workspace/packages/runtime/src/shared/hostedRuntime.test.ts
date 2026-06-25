@@ -229,10 +229,8 @@ describe("createHostedRuntime ⟷ portable surface parity", () => {
 });
 
 /**
- * createServicesProxy — the COMPLETE `services.<name>` namespace (Fix 1): every
- * registered service reachable by name, rich clients overriding by identity, all
- * others a dynamic callMain proxy. No hand-curated list ⇒ no advertised-but-
- * unreachable gap.
+ * createServicesProxy — rich runtime clients override by identity; all
+ * non-colliding service names use a dynamic callMain proxy. No hand-curated list.
  */
 describe("createServicesProxy", () => {
   it("returns the SAME rich client object for a name present on the runtime (ergonomic override)", () => {

@@ -203,19 +203,18 @@ describe("natstack fs commands", () => {
     expect(Buffer.from(envelope.data, "base64").toString("utf8")).toBe("héllo wörld");
   });
 
-  it("write --append --parents creates parents and appends", async () => {
+  it("write --append sends one append intent; the service creates parents", async () => {
     writeCredentials(tmpDir);
     writeSession(tmpDir);
     const { rpcBodies } = stubServer(() => null);
 
     const { main } = await import("../client.js");
     await expect(
-      main(["fs", "write", "/a/b/c.txt", "--content", "x", "--append", "--parents", "--json"])
+      main(["fs", "write", "/a/b/c.txt", "--content", "x", "--append", "--json"])
     ).resolves.toBe(0);
 
-    expect(rpcBodies.map((body) => body.method)).toEqual(["fs.mkdir", "fs.appendFile"]);
-    expect(rpcBodies[0]!.args).toEqual(["ctx_1", "/a/b", { recursive: true }]);
-    expect(rpcBodies[1]!.args[1]).toBe("/a/b/c.txt");
+    expect(rpcBodies.map((body) => body.method)).toEqual(["fs.appendFile"]);
+    expect(rpcBodies[0]!.args[1]).toBe("/a/b/c.txt");
   });
 
   it("write --from-file reads local content", async () => {

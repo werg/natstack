@@ -104,6 +104,18 @@ function jsonOutput(): unknown {
   return JSON.parse(lines[lines.length - 1]!);
 }
 
+function withTtyStdout<T>(fn: () => Promise<T>): Promise<T> {
+  const original = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+  Object.defineProperty(process.stdout, "isTTY", { value: true, configurable: true });
+  return fn().finally(() => {
+    if (original) {
+      Object.defineProperty(process.stdout, "isTTY", original);
+    } else {
+      Reflect.deleteProperty(process.stdout, "isTTY");
+    }
+  });
+}
+
 describe("natstack vcs commands", () => {
   let tmpDir = "";
 
@@ -122,67 +134,428 @@ describe("natstack vcs commands", () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("status calls vcs.unitStatus with the repo and session context head", async () => {
+  it("status calls vcs.status with positional (repoPath, head) args", async () => {
     writeCredentials(tmpDir);
     writeSession(tmpDir);
-    // The server now does the unit-scoping (unitStatusFromHead) and returns a
-    // UnitVcsStatus; the CLI passes it through.
+    // Server returns a per-repo RepoStatus (added/removed/changed of the repo
+    // subtree vs its own main); the CLI passes it through under --json.
     const statusResult = {
-      unitPath: "panels/notes",
-      head: "ctx:ctx_1",
       stateHash: "state:abc123",
       dirty: true,
-      files: [{ path: "panels/notes/index.ts", status: "modified" }],
+      uncommitted: 0,
+      added: [],
+      removed: [],
+      changed: ["index.ts"],
+      deleted: false,
     };
     const { rpcBodies } = stubServer(() => statusResult);
 
     const { main } = await import("../client.js");
     await expect(main(["vcs", "status", "--repo", "panels/notes", "--json"])).resolves.toBe(0);
 
-    expect(rpcBodies).toEqual([{ method: "vcs.unitStatus", args: ["panels/notes", "ctx:ctx_1"] }]);
+    expect(rpcBodies).toEqual([{ method: "vcs.status", args: ["panels/notes", "ctx:ctx_1"] }]);
     expect(jsonOutput()).toEqual(statusResult);
   });
 
-  it("diff renders name-status output from vcs.unitStatus", async () => {
+  it("diff renders name-status output from vcs.status (added/changed/removed)", async () => {
     writeCredentials(tmpDir);
     writeSession(tmpDir);
     const { rpcBodies } = stubServer(() => ({
-      unitPath: "panels/notes",
-      head: "ctx:ctx_1",
       stateHash: "state:abc123",
       dirty: true,
-      files: [
-        { path: "panels/notes/new.ts", status: "added" },
-        { path: "panels/notes/index.ts", status: "modified" },
-        { path: "panels/notes/old.ts", status: "deleted" },
-      ],
+      uncommitted: 0,
+      added: ["new.ts"],
+      changed: ["index.ts"],
+      removed: ["old.ts"],
+      deleted: false,
     }));
 
     const { main } = await import("../client.js");
     await expect(main(["vcs", "diff", "--repo", "panels/notes", "--json"])).resolves.toBe(0);
 
-    expect(rpcBodies).toEqual([{ method: "vcs.unitStatus", args: ["panels/notes", "ctx:ctx_1"] }]);
-    expect(jsonOutput()).toBe(
-      "A\tpanels/notes/new.ts\nM\tpanels/notes/index.ts\nD\tpanels/notes/old.ts"
-    );
+    expect(rpcBodies).toEqual([{ method: "vcs.status", args: ["panels/notes", "ctx:ctx_1"] }]);
+    expect(jsonOutput()).toBe("A\tnew.ts\nM\tindex.ts\nD\told.ts");
   });
 
   it("honors --session for non-default sessions", async () => {
     writeCredentials(tmpDir);
     writeSession(tmpDir, "work");
     const { rpcBodies } = stubServer(() => ({
-      unitPath: "panels/notes",
-      head: "ctx:ctx_1",
       stateHash: null,
       dirty: false,
-      files: [],
+      uncommitted: 0,
+      added: [],
+      removed: [],
+      changed: [],
+      deleted: false,
     }));
 
     const { main } = await import("../client.js");
     await expect(
       main(["vcs", "status", "--repo", "panels/notes", "--session", "work", "--json"])
     ).resolves.toBe(0);
-    expect(rpcBodies[0]).toEqual({ method: "vcs.unitStatus", args: ["panels/notes", "ctx:ctx_1"] });
+    expect(rpcBodies[0]).toEqual({ method: "vcs.status", args: ["panels/notes", "ctx:ctx_1"] });
+  });
+
+  it("status renders uncommitted-only dirty state in human output", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    stubServer(() => ({
+      stateHash: "state:working",
+      dirty: true,
+      uncommitted: 2,
+      added: [],
+      removed: [],
+      changed: [],
+      deleted: false,
+    }));
+
+    const { main } = await import("../client.js");
+    await withTtyStdout(async () => {
+      await expect(main(["vcs", "status", "--repo", "panels/notes"])).resolves.toBe(0);
+    });
+
+    const logs = vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
+    expect(logs).toContain("U\t2 uncommitted working edit(s)");
+    expect(logs).not.toContain("clean (in sync with main)");
+  });
+
+  it("push --repo (single) calls vcs.push and returns 0 on pushed", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const result = {
+      status: "pushed",
+      repoPaths: ["panels/notes"],
+      reports: [
+        {
+          repoPath: "panels/notes",
+          kind: "panel",
+          role: "pushed",
+          required: true,
+          status: "ok",
+          builds: [{ target: "runtime", diagnostics: [] }],
+        },
+      ],
+    };
+    const { rpcBodies } = stubServer(() => result);
+
+    const { main } = await import("../client.js");
+    await expect(main(["vcs", "push", "--repo", "panels/notes", "--json"])).resolves.toBe(0);
+
+    expect(rpcBodies).toEqual([
+      {
+        method: "vcs.push",
+        args: [{ repoPaths: ["panels/notes"], sourceHead: "ctx:ctx_1" }],
+      },
+    ]);
+    expect(jsonOutput()).toEqual(result);
+  });
+
+  it("repeated --repo forms an atomic group push (all repos in one call)", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const { rpcBodies } = stubServer(() => ({
+      status: "pushed",
+      repoPaths: ["packages/core", "panels/notes"],
+      reports: [],
+    }));
+
+    const { main } = await import("../client.js");
+    await expect(
+      main(["vcs", "push", "--repo", "packages/core", "--repo", "panels/notes", "--json"])
+    ).resolves.toBe(0);
+
+    expect(rpcBodies[0]).toEqual({
+      method: "vcs.push",
+      args: [{ repoPaths: ["packages/core", "panels/notes"], sourceHead: "ctx:ctx_1" }],
+    });
+  });
+
+  it("a build-failed push exits non-zero and still emits the full result under --json", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const result = {
+      status: "build-failed",
+      reports: [
+        {
+          repoPath: "panels/notes",
+          kind: "panel",
+          role: "pushed",
+          required: true,
+          status: "failed",
+          builds: [
+            {
+              target: "runtime",
+              diagnostics: [
+                {
+                  source: "tsc",
+                  severity: "error",
+                  file: "panels/notes/index.tsx",
+                  line: 12,
+                  column: 5,
+                  message: "Type 'string' is not assignable to type 'number'.",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    stubServer(() => result);
+
+    const { main } = await import("../client.js");
+    await expect(main(["vcs", "push", "--repo", "panels/notes", "--json"])).resolves.toBe(1);
+    expect(jsonOutput()).toEqual(result);
+  });
+
+  it("a diverged push exits non-zero", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    stubServer(() => ({
+      status: "diverged",
+      divergences: [
+        {
+          repoPath: "panels/notes",
+          base: "state:base",
+          mainTip: "state:main",
+          upstreamCommits: [
+            { eventId: "evt-1", message: "main moved", stateHash: "state:main", createdAt: null },
+          ],
+          mergeable: "conflict",
+          conflictPaths: ["panels/notes/index.tsx"],
+        },
+      ],
+    }));
+
+    const { main } = await import("../client.js");
+    await expect(main(["vcs", "push", "--repo", "panels/notes", "--json"])).resolves.toBe(1);
+  });
+
+  it("diverged push human output separates clean merge from conflict commit steps", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    stubServer(() => ({
+      status: "diverged",
+      divergences: [
+        {
+          repoPath: "panels/notes",
+          base: "state:base",
+          mainTip: "state:main",
+          upstreamCommits: [
+            { eventId: "evt-1", message: "main moved", stateHash: "state:main", createdAt: null },
+          ],
+          mergeable: "clean",
+        },
+      ],
+    }));
+
+    const { main } = await import("../client.js");
+    await withTtyStdout(async () => {
+      await expect(main(["vcs", "push", "--repo", "panels/notes"])).resolves.toBe(1);
+    });
+
+    const errors = vi.mocked(console.error).mock.calls.map((call) => String(call[0]));
+    expect(
+      errors.some((line) =>
+        line.includes(
+          "Reconcile with `natstack vcs merge --repo REPOPATH`, then push. " +
+            "If the merge conflicts, resolve markers and commit before pushing."
+        )
+      )
+    ).toBe(true);
+  });
+
+  it("merge human output distinguishes clean and conflicting resolution steps", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const { rpcBodies } = stubServer(() => ({
+      status: "merged",
+      mergeable: "clean",
+      upstreamCommits: [
+        { eventId: "evt-1", message: "main moved", stateHash: "state:main", createdAt: null },
+      ],
+    }));
+
+    const { main } = await import("../client.js");
+    await withTtyStdout(async () => {
+      await expect(main(["vcs", "merge", "--repo", "panels/notes"])).resolves.toBe(0);
+    });
+
+    expect(rpcBodies[0]).toEqual({ method: "vcs.merge", args: ["panels/notes", "ctx:ctx_1"] });
+    const logs = vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
+    expect(
+      logs.some((line) => line.includes("clean merge committed — push now fast-forwards."))
+    ).toBe(true);
+    expect(logs).not.toContain("clean merge — `vcs commit` then push (now fast-forwards).");
+  });
+
+  it("push-status renders uncommitted, diverged, and deleted blockers", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const { rpcBodies } = stubServer(() => [
+      {
+        repoPath: "panels/notes",
+        head: "ctx:ctx_1",
+        headStateHash: "state:head",
+        mainStateHash: "state:main",
+        ahead: 0,
+        uncommitted: 2,
+        diverged: false,
+        deleted: false,
+        files: [],
+      },
+      {
+        repoPath: "packages/lib",
+        head: "ctx:ctx_1",
+        headStateHash: "state:lib",
+        mainStateHash: "state:main-lib",
+        ahead: 1,
+        uncommitted: 0,
+        diverged: true,
+        deleted: true,
+        files: [{ path: "index.ts", kind: "changed" }],
+      },
+    ]);
+
+    const { main } = await import("../client.js");
+    await withTtyStdout(async () => {
+      await expect(
+        main(["vcs", "push-status", "--repo", "panels/notes", "--repo", "packages/lib"])
+      ).resolves.toBe(0);
+    });
+
+    expect(rpcBodies[0]).toEqual({
+      method: "vcs.pushStatus",
+      args: [["panels/notes", "packages/lib"]],
+    });
+    const logs = vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
+    expect(logs).toContain("panels/notes: 2 uncommitted working edit(s)");
+    expect(logs).toContain("  commit or discard uncommitted edits before push");
+    expect(logs).toContain("packages/lib: DELETED, diverged, 1 unpushed change(s)");
+    expect(logs).toContain("  merge/rebase this context before push");
+    expect(logs).toContain(
+      "  repo was deleted from workspace main; restore it or drop/rebase this context"
+    );
+    expect(logs).not.toContain("panels/notes: clean (in sync with main)");
+  });
+
+  it("log calls vcs.log scoped to a single repo", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const { rpcBodies } = stubServer(() => [
+      { stateHash: "state:1", parent: null, message: "init", timestamp: 1 },
+    ]);
+
+    const { main } = await import("../client.js");
+    await expect(main(["vcs", "log", "--repo", "meta", "--json"])).resolves.toBe(0);
+    // Positional (repoPath, limit?); no --limit ⇒ limit serializes to null.
+    expect(rpcBodies[0]).toEqual({ method: "vcs.log", args: ["meta", null] });
+  });
+
+  it("fork-repo forks to a new path (history-preserving)", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const { rpcBodies } = stubServer(() => ({
+      repoPath: "panels/mychat",
+      head: "main",
+      inherited: 3,
+      stateHash: "state:fork",
+    }));
+
+    const { main } = await import("../client.js");
+    await expect(
+      main(["vcs", "fork-repo", "panels/chat", "panels/mychat", "--json"])
+    ).resolves.toBe(0);
+    expect(rpcBodies[0]).toEqual({
+      method: "vcs.forkRepo",
+      args: ["panels/chat", "panels/mychat"],
+    });
+  });
+
+  it("delete-repo calls vcs.deleteRepo with the repo path", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const { rpcBodies } = stubServer(() => ({
+      repoPath: "panels/old",
+      archived: true,
+      archiveHead: "archived:state:doomed",
+      removedPaths: ["panels/old/index.tsx"],
+      stateHash: "state:after",
+    }));
+
+    const { main } = await import("../client.js");
+    await expect(main(["vcs", "delete-repo", "--repo", "panels/old", "--json"])).resolves.toBe(0);
+    expect(rpcBodies[0]).toEqual({
+      method: "vcs.deleteRepo",
+      args: [{ repoPath: "panels/old" }],
+    });
+  });
+
+  it("restore-repo calls vcs.restoreRepo with the repo path", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const { rpcBodies } = stubServer(() => ({
+      repoPath: "panels/old",
+      restored: true,
+      fromArchiveHead: "archived:state:doomed",
+      restoredPaths: ["panels/old/index.tsx"],
+      stateHash: "state:after",
+    }));
+
+    const { main } = await import("../client.js");
+    await expect(main(["vcs", "restore-repo", "--repo", "panels/old", "--json"])).resolves.toBe(0);
+    expect(rpcBodies[0]).toEqual({
+      method: "vcs.restoreRepo",
+      args: [{ repoPath: "panels/old" }],
+    });
+  });
+
+  it("context-status calls vcs.contextStatus and renders forked/ahead/behind", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const result = [
+      { repoPath: "panels/chat", forked: true, ahead: true, behind: false },
+      { repoPath: "packages/ui", forked: false, ahead: false, behind: true },
+    ];
+    const { rpcBodies } = stubServer(() => result);
+    const { main } = await import("../client.js");
+    await expect(main(["vcs", "context-status", "--json"])).resolves.toBe(0);
+    expect(rpcBodies[0]).toEqual({ method: "vcs.contextStatus", args: [] });
+    expect(jsonOutput()).toEqual(result);
+  });
+
+  it("rebase calls vcs.rebaseContext", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    const { rpcBodies } = stubServer(() => ({
+      repos: [{ repoPath: "panels/chat", status: "merged" }],
+      baseView: "state:newbase",
+    }));
+    const { main } = await import("../client.js");
+    await expect(main(["vcs", "rebase", "--json"])).resolves.toBe(0);
+    expect(rpcBodies[0]).toEqual({ method: "vcs.rebaseContext", args: [] });
+  });
+
+  it("rebase conflict human output tells users to commit before re-push", async () => {
+    writeCredentials(tmpDir);
+    writeSession(tmpDir);
+    stubServer(() => ({
+      repos: [{ repoPath: "panels/chat", status: "conflicted" }],
+      baseView: "state:newbase",
+    }));
+    const { main } = await import("../client.js");
+    await withTtyStdout(async () => {
+      await expect(main(["vcs", "rebase"])).resolves.toBe(0);
+    });
+
+    const logs = vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
+    expect(
+      logs.some((line) =>
+        line.includes(
+          "1 repo(s) conflicted — resolve the markers, commit the resolution, then re-push."
+        )
+      )
+    ).toBe(true);
   });
 
   it("maps failures to the exit-code conventions", async () => {

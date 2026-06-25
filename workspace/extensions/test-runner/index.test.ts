@@ -42,12 +42,14 @@ function makeCtx(workspace = makeWorkspace(), caller: CallerInfo = {}) {
     })
   );
   const revoke = vi.fn(async () => true);
+  const ensureMaterialized = vi.fn(async (_scope: string | string[] | "all") => {});
   const ctx = {
     workspace: {
       async getInfo() {
         return { path: workspace.source, contextsPath: workspace.contexts };
       },
     },
+    fs: { ensureMaterialized },
     invocation: {
       current: () => ({
         caller: {
@@ -61,7 +63,7 @@ function makeCtx(workspace = makeWorkspace(), caller: CallerInfo = {}) {
     approvals: { request: approval, revoke },
     log: { info: vi.fn() },
   };
-  return { ctx, approval, revoke };
+  return { ctx, approval, revoke, ensureMaterialized };
 }
 
 describe("@workspace-extensions/test-runner", () => {
@@ -94,9 +96,32 @@ describe("@workspace-extensions/test-runner", () => {
     expect(result.summary).toContain("No test files found");
     expect(result.contextId).toBe("ctx-1");
     expect(approval).toHaveBeenCalledTimes(1);
+    expect(ctx.fs.ensureMaterialized).toHaveBeenCalledWith("packages/tool");
     expect(mockStartVitest).toHaveBeenCalledWith(
       "run",
       [path.join(target, "**/*.test.{ts,tsx}")],
+      expect.objectContaining({ root: workspace.source })
+    );
+  });
+
+  it("materializes sparse context targets before checking disk", async () => {
+    const workspace = makeWorkspace();
+    cleanup.push(workspace.source, workspace.contexts);
+    const target = path.join(workspace.contexts, "ctx-1", "extensions", "test-runner");
+    const { ctx, ensureMaterialized } = makeCtx(workspace, { chainContextId: "ctx-1" });
+    ensureMaterialized.mockImplementationOnce(async (scope) => {
+      expect(scope).toBe("extensions/test-runner");
+      fs.mkdirSync(target, { recursive: true });
+      fs.writeFileSync(path.join(target, "index.test.ts"), "import { it } from 'vitest';\n");
+    });
+    const api = await activate(ctx);
+
+    await api.run({ target: "extensions/test-runner", fileFilter: "index.test.ts" });
+
+    expect(ensureMaterialized).toHaveBeenCalledWith("extensions/test-runner");
+    expect(mockStartVitest).toHaveBeenCalledWith(
+      "run",
+      [path.join(target, "index.test.ts")],
       expect.objectContaining({ root: workspace.source })
     );
   });

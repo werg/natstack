@@ -20,6 +20,10 @@ interface ExtensionContextLike {
   };
   fs: {
     realpath(path: string): Promise<string>;
+    /** Materialize the given workspace path(s)/repo(s) into the (sparse) context
+     *  folder so disk-walking tools (ripgrep) can see them. Optional only so tests
+     *  with a real on-disk fixture can omit it; the real runtime client always has it. */
+    ensureMaterialized?(scope: string | string[] | "all"): Promise<void>;
   };
   log: {
     info(message: string): void;
@@ -158,6 +162,12 @@ async function resolveSearchPath(
     throw new Error("file-tools requires a scoped extension invocation context");
   }
   const virtualPath = resolveVirtualPath(req.cwd, req.path);
+  // Context folders are SPARSE — only materialized repos exist on disk. file-tools
+  // reads disk directly (ripgrep subprocess / streams), so it must materialize the
+  // narrowest scope it searches BEFORE touching disk. ensureMaterialized resolves
+  // `virtualPath` to its minimal repo scope (a single repo, a section, or "all"
+  // only for a true workspace-root search).
+  await ctx.fs.ensureMaterialized?.(virtualPath);
   const searchPath = resolveWithin(root, `.${virtualPath}`);
   let stat;
   try {

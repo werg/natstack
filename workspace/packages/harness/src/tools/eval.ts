@@ -92,7 +92,7 @@ export function createEvalTool(
     name: "eval",
     label: "eval",
     description:
-      "Execute TypeScript/JS in your persistent sandbox (a per-agent EvalDO). REPL scope persists across calls via `scope`; a synchronous in-DO SQLite `db` is available; call workspace services via `rpc`/`services`; `return` sends a value back; console output is captured. Persistent compute that survives across turns.",
+      "Execute TypeScript/JS in your persistent sandbox (a per-agent EvalDO). REPL scope persists across calls via `scope`; a synchronous in-DO SQLite `db` is available; call workspace services via `rpc`/`services`; `return` sends a bounded value back; console output is captured. Very large console/return payloads are windowed with recovery pointers to `scope.$lastConsole` / `scope.$lastReturn`, so prefer returning compact summaries and store large artifacts in scope/blobstore.",
     parameters: evalSchema,
     execute: async (_toolCallId, params): Promise<AgentToolResult<EvalRunResult>> => {
       if ((params.code === undefined) === (params.path === undefined)) {
