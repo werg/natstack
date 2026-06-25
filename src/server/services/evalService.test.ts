@@ -146,7 +146,7 @@ describe("createEvalService", () => {
   });
 
   it("keeps entity callers bound to their verified runtime owner", async () => {
-    const ownerId = "do:agents/worker:Agent:abc";
+    const ownerId = "do:workers/agent-worker:AiChatWorker:abc";
     const { service, calls } = createHarness({ [ownerId]: "ctx_agent" });
 
     await service.handler({ caller: createVerifiedCaller(ownerId, "do") }, "run", [
@@ -287,7 +287,7 @@ describe("createEvalService", () => {
   });
 
   it("startRun: inserts with the caller's runId, returns it, and pushes completion to the agent", async () => {
-    const ownerId = "do:agents/worker:Agent:abc";
+    const ownerId = "do:workers/agent-worker:AiChatWorker:abc";
     const { service, calls } = createHarness({ [ownerId]: "ctx_agent" });
 
     const ret = await service.handler({ caller: createVerifiedCaller(ownerId, "do") }, "startRun", [
@@ -308,13 +308,13 @@ describe("createEvalService", () => {
     expect(calls.find((c) => c.method === "executeRun")).toMatchObject({ args: ["inv-42"] });
     // Completion pushed to the owning agent DO, content-routed by channelId.
     expect(calls.find((c) => c.method === "onEvalComplete")).toMatchObject({
-      ref: { source: "agents/worker", className: "Agent", objectKey: "abc" },
+      ref: { source: "workers/agent-worker", className: "AiChatWorker", objectKey: "abc" },
       args: [expect.objectContaining({ runId: "inv-42", channelId: "chan_1" })],
     });
   });
 
   it("startRun without a caller runId mints a server uuid (and uses it for the run)", async () => {
-    const ownerId = "do:agents/worker:Agent:abc";
+    const ownerId = "do:workers/agent-worker:AiChatWorker:abc";
     const { service, calls } = createHarness({ [ownerId]: "ctx_agent" });
 
     const ret = (await service.handler(
@@ -329,7 +329,7 @@ describe("createEvalService", () => {
   });
 
   it("getRun: routes to the owner's EvalDO by (owner, subKey)", async () => {
-    const ownerId = "do:agents/worker:Agent:abc";
+    const ownerId = "do:workers/agent-worker:AiChatWorker:abc";
     const { service, calls } = createHarness({ [ownerId]: "ctx_agent" });
 
     await service.handler({ caller: createVerifiedCaller(ownerId, "do") }, "getRun", [
@@ -344,7 +344,7 @@ describe("createEvalService", () => {
   });
 
   it("cancel: routes to the owner's EvalDO by (owner, subKey) and forwards the runId", async () => {
-    const ownerId = "do:agents/worker:Agent:abc";
+    const ownerId = "do:workers/agent-worker:AiChatWorker:abc";
     const { service, calls } = createHarness({ [ownerId]: "ctx_agent" });
 
     const ret = await service.handler({ caller: createVerifiedCaller(ownerId, "do") }, "cancel", [
@@ -360,7 +360,7 @@ describe("createEvalService", () => {
   });
 
   it("forceReset: routes to the owner's EvalDO by (owner, subKey)", async () => {
-    const ownerId = "do:agents/worker:Agent:abc";
+    const ownerId = "do:workers/agent-worker:AiChatWorker:abc";
     const { service, calls } = createHarness({ [ownerId]: "ctx_agent" });
 
     const ret = await service.handler(
@@ -408,7 +408,7 @@ function createHeldFailHarness(opts: {
       throw new Error(`unexpected dispatch ${method}`);
     },
   } as unknown as DODispatch;
-  const ownerId = "do:agents/worker:Agent:abc";
+  const ownerId = "do:workers/agent-worker:AiChatWorker:abc";
   const entityCache = {
     resolveContext: () => opts.contextId,
     resolveActive: () => null,
@@ -443,7 +443,7 @@ describe("createEvalService — F2 held-run failure reconciliation", () => {
     // After the held dispatch threw, the service reconciled via getRun and pushed the REAL result.
     expect(calls.find((c) => c.method === "getRun")).toMatchObject({ args: ["inv-h1"] });
     expect(calls.find((c) => c.method === "onEvalComplete")).toMatchObject({
-      ref: { source: "agents/worker", className: "Agent", objectKey: "abc" },
+      ref: { source: "workers/agent-worker", className: "AiChatWorker", objectKey: "abc" },
       args: [expect.objectContaining({ runId: "inv-h1", channelId: "chan_1", result })],
     });
   });

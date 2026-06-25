@@ -30,8 +30,11 @@ export interface SubscribeHeadlessAgentOptions {
   objectKey: string;
   /** Channel ID to subscribe to */
   channelId: string;
-  /** Context ID for authorization */
-  contextId: string;
+  /**
+   * Context ID for the spawned agent. Omit to let runtime.createEntity mint a
+   * fresh isolated context for this headless agent.
+   */
+  contextId?: string;
   /**
    * Pi-native pass-through config. Common keys are `model`,
    * `thinkingLevel`, `approvalLevel`, `systemPrompt`, and
@@ -45,6 +48,7 @@ export interface HeadlessAgentSubscription {
   participantId?: string;
   entityId: string;
   targetId: string;
+  contextId: string;
 }
 
 /**
@@ -71,14 +75,19 @@ export async function subscribeHeadlessAgent(
       source: opts.source,
       className: opts.className,
       key: opts.objectKey,
-      contextId: opts.contextId,
+      ...(opts.contextId ? { contextId: opts.contextId } : {}),
       // Agent config is PER-AGENT, seeded from creation stateArgs — so the model
       // AND the headless-recommended config (e.g. approvalLevel: 2 / Full Auto)
       // ride creation, not the (now membership-only) subscription. Seed from the
       // FULL subscriptionConfig so full-auto isn't lost. Vessel reads STATE_ARGS.agentConfig.
       stateArgs: { agentConfig: subscriptionConfig },
     },
-  ])) as { id: string; targetId: string };
+  ])) as { id: string; targetId: string; contextId?: string };
+  const contextId = opts.contextId ?? entity.contextId;
+  if (!contextId) {
+    await opts.rpcCall("main", "runtime.retireEntity", [{ id: entity.id }]).catch(() => {});
+    throw new Error("runtime.createEntity did not return a contextId for headless agent subscription");
+  }
 
   // The subscription carries presentation (handle/name/systemPrompt) + any
   // worker extras — the behavior settings rode the creation stateArgs above and
@@ -90,12 +99,12 @@ export async function subscribeHeadlessAgent(
       [
         {
           channelId: opts.channelId,
-          contextId: opts.contextId,
+          contextId,
           config: toSubscriptionConfig(subscriptionConfig),
         },
       ],
     )) as { ok: boolean; participantId?: string };
-    return { ...result, entityId: entity.id, targetId: entity.targetId };
+    return { ...result, entityId: entity.id, targetId: entity.targetId, contextId };
   } catch (err) {
     await opts.rpcCall("main", "runtime.retireEntity", [{ id: entity.id }]).catch(() => {});
     throw err;

@@ -1,7 +1,12 @@
 import { describe, it, expect, vi } from "vitest";
 import { HeadlessSession } from "./headless-session.js";
 import type { ChatMessage, ConnectionConfig } from "@workspace/agentic-core";
-import { brandId, type TurnId } from "@workspace/agentic-protocol";
+import {
+  AGENTIC_EVENT_PAYLOAD_KIND,
+  brandId,
+  type TurnId,
+} from "@workspace/agentic-protocol";
+import type { MethodDefinition } from "@workspace/pubsub";
 
 function createConfig(): ConnectionConfig {
   return {
@@ -197,6 +202,53 @@ describe("HeadlessSession", () => {
     ]);
   });
 
+  it("can detach local session state while remote cleanup continues", async () => {
+    const session = HeadlessSession.create({
+      config: createConfig(),
+    });
+    const calls: Array<{ target: string; method: string; args: unknown[] }> = [];
+    let releaseUnsubscribe: (() => void) | undefined;
+    (session as any)._agentEntityId = "do:workers/agent-worker:AiChatWorker:obj-1";
+    (session as any)._agentTargetId = "do:workers/agent-worker:AiChatWorker:obj-1";
+    (session as any)._channelId = "ch-1";
+    (session as any)._agentRpcCall = vi.fn(async (target: string, method: string, args: unknown[]) => {
+      calls.push({ target, method, args });
+      if (method === "unsubscribeChannel") {
+        await new Promise<void>((resolve) => {
+          releaseUnsubscribe = resolve;
+        });
+      }
+      return undefined;
+    });
+
+    await expect(session.close({ waitForRemoteCleanup: false })).resolves.toBeUndefined();
+
+    expect(session.channelId).toBe(null);
+    expect(calls).toEqual([
+      {
+        target: "do:workers/agent-worker:AiChatWorker:obj-1",
+        method: "unsubscribeChannel",
+        args: ["ch-1"],
+      },
+    ]);
+
+    releaseUnsubscribe?.();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(calls).toEqual([
+      {
+        target: "do:workers/agent-worker:AiChatWorker:obj-1",
+        method: "unsubscribeChannel",
+        args: ["ch-1"],
+      },
+      {
+        target: "main",
+        method: "runtime.retireEntity",
+        args: [{ id: "do:workers/agent-worker:AiChatWorker:obj-1" }],
+      },
+    ]);
+  });
+
   it("records cleanup errors from headless agent teardown", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const session = HeadlessSession.create({
@@ -245,7 +297,7 @@ describe("HeadlessSession", () => {
     const rpcCall = vi.fn(async (target: string, method: string) => {
       order.push(`rpc:${target}:${method}`);
       if (target === "main" && method === "runtime.createEntity") {
-        return { id: "entity-1", targetId: "agent-target" };
+        return { id: "entity-1", targetId: "agent-target", contextId: "ctx-1" };
       }
       if (target === "agent-target" && method === "subscribeChannel") {
         return { ok: true, participantId: "do:agent" };
@@ -270,6 +322,161 @@ describe("HeadlessSession", () => {
 
     expect(order).toEqual([
       "connect:headless-1:set_title",
+      "rpc:main:runtime.createEntity",
+      "rpc:agent-target:subscribeChannel",
+    ]);
+  });
+
+  it("can opt into synthetic panel UI methods that publish typed UI events", async () => {
+    let registeredMethods: Record<string, MethodDefinition> = {};
+    const publish = vi.fn(async () => 1);
+    const originalConnect = HeadlessSession.prototype.connect;
+    const connect = vi
+      .spyOn(HeadlessSession.prototype, "connect")
+      .mockImplementation(async function (
+        this: HeadlessSession,
+        channelId: string,
+        options?: Parameters<HeadlessSession["connect"]>[1]
+      ) {
+        registeredMethods = options?.methods ?? {};
+        (this as unknown as { _channelId: string; _client: unknown })._channelId = channelId;
+        (this as unknown as { _client: unknown })._client = {
+          clientId: "headless-panel",
+          publish,
+        };
+      });
+    const rpcCall = vi.fn(async (target: string, method: string) => {
+      if (target === "main" && method === "runtime.createEntity") {
+        return { id: "entity-1", targetId: "agent-target", contextId: "ctx-1" };
+      }
+      if (target === "agent-target" && method === "subscribeChannel") {
+        return { ok: true, participantId: "do:agent" };
+      }
+      throw new Error(`unexpected RPC ${target}.${method}`);
+    });
+
+    try {
+      await HeadlessSession.createWithAgent({
+        config: createConfig(),
+        rpcCall,
+        source: "workers/agent-worker",
+        className: "AiChatWorker",
+        objectKey: "agent-1",
+        contextId: "ctx-1",
+        channelId: "headless-1",
+        includeSyntheticPanelUiMethods: true,
+      });
+
+      expect(Object.keys(registeredMethods).sort()).toEqual([
+        "inline_ui",
+        "load_action_bar",
+        "set_title",
+      ]);
+
+      await registeredMethods["inline_ui"]!.execute(
+        {
+          code: "export default function App() { return null; }",
+        },
+        {} as never
+      );
+      await registeredMethods["load_action_bar"]!.execute(
+        {
+          path: "skills/test/ActionBar.tsx",
+        },
+        {} as never
+      );
+      await registeredMethods["load_action_bar"]!.execute({ clear: true }, {} as never);
+    } finally {
+      connect.mockRestore();
+      HeadlessSession.prototype.connect = originalConnect;
+    }
+
+    expect(publish).toHaveBeenCalledTimes(3);
+    expect(publish.mock.calls[0]).toEqual([
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      expect.objectContaining({
+        kind: "ui.inline_rendered",
+        payload: expect.objectContaining({
+          uiType: "inline",
+          source: { type: "code", code: "export default function App() { return null; }" },
+        }),
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining("synthetic-ui:inline:"),
+      }),
+    ]);
+    expect(publish.mock.calls[1]).toEqual([
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      expect.objectContaining({
+        kind: "ui.action_bar.updated",
+        payload: expect.objectContaining({
+          uiType: "action_bar",
+          source: { type: "file", path: "skills/test/ActionBar.tsx" },
+        }),
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining("synthetic-ui:action-bar:"),
+      }),
+    ]);
+    expect(publish.mock.calls[2]).toEqual([
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      expect.objectContaining({
+        kind: "ui.action_bar.updated",
+        payload: expect.objectContaining({
+          uiType: "action_bar",
+          cleared: true,
+          result: { ok: true },
+        }),
+      }),
+      expect.objectContaining({
+        idempotencyKey: expect.stringContaining("synthetic-ui:action-bar:clear:"),
+      }),
+    ]);
+  });
+
+  it("can create an agent in a runtime-minted isolated context", async () => {
+    const originalConnect = HeadlessSession.prototype.connect;
+    const order: string[] = [];
+    const connect = vi
+      .spyOn(HeadlessSession.prototype, "connect")
+      .mockImplementation(async function (
+        this: HeadlessSession,
+        channelId: string,
+        options?: { contextId?: string; methods?: Record<string, unknown> },
+      ) {
+        order.push(`connect:${channelId}:${options?.contextId ?? "minted"}`);
+        (this as unknown as { _channelId: string; _client: unknown })._channelId = channelId;
+        (this as unknown as { _client: unknown })._client = { close: vi.fn() };
+      });
+    const rpcCall = vi.fn(async (target: string, method: string, args: unknown[]) => {
+      order.push(`rpc:${target}:${method}`);
+      if (target === "main" && method === "runtime.createEntity") {
+        expect(args[0]).not.toHaveProperty("contextId");
+        return { id: "entity-1", targetId: "agent-target", contextId: "ctx-minted" };
+      }
+      if (target === "agent-target" && method === "subscribeChannel") {
+        expect(args[0]).toMatchObject({ channelId: "headless-1", contextId: "ctx-minted" });
+        return { ok: true, participantId: "do:agent" };
+      }
+      throw new Error(`unexpected RPC ${target}.${method}`);
+    });
+
+    try {
+      await HeadlessSession.createWithAgent({
+        config: createConfig(),
+        rpcCall,
+        source: "workers/agent-worker",
+        className: "AiChatWorker",
+        objectKey: "agent-1",
+        channelId: "headless-1",
+      });
+    } finally {
+      connect.mockRestore();
+      HeadlessSession.prototype.connect = originalConnect;
+    }
+
+    expect(order).toEqual([
+      "connect:headless-1:minted",
       "rpc:main:runtime.createEntity",
       "rpc:agent-target:subscribeChannel",
     ]);

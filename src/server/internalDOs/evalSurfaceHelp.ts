@@ -19,31 +19,52 @@ export const EVAL_RUNTIME_METHOD_NOTES: Record<string, { description: string }> 
     description:
       "mktemp(prefix?) → a unique temp FILE path under .tmp/ (the file is NOT created — write to it, " +
       "or use it as a name and rename into place). For a temp DIRECTORY, mkdir it yourself. This is " +
-      "NOT Node's mkdtemp (which creates the directory).",
+      "NOT Node's mkdtemp (which creates the directory), and .tmp paths are scratch space, not " +
+      "tracked edit/VCS destinations.",
+  },
+  "workers.create": {
+    description:
+      "create({ source, contextId, name?, ref?, env?, bindings? }) → WorkerInstanceInfo. " +
+      "Pass ref: `ctx:${ctx.contextId}` for worker code created or edited on the current context head; " +
+      "omit ref only when intentionally launching the main build.",
+  },
+  "workers.destroy": {
+    description:
+      "destroy(name: string) → void. Pass the worker instance name, not the full object returned by " +
+      "create() or list().",
+  },
+  "workers.listInstanceSources": {
+    description:
+      "listInstanceSources() → available worker-instance source packages. This is the ergonomic " +
+      "runtime call for listing launchable worker sources; the raw catalog method " +
+      '`workers.listSources` is reached with `rpc.call("main", "workers.listSources", [])`.',
   },
 };
-
-/**
- * Disambiguate the eval ambient `rpc.call` arguments. EVAL.md documents the 2-arg sugar
- * `call(method, args)` (targets the server, "main"); for ergonomics we ALSO accept the full-client
- * habit `call(target, method, args)` (e.g. `call("main", "docs.describeService", [...])` or a
- * runtime-id target). They're told apart by whether the 2nd arg is a method STRING (→ 3-arg) vs an
- * args ARRAY / undefined (→ 2-arg). Returns the resolved `[target, method, args]`.
- */
-export function normalizeAmbientRpcCall(
-  a: string,
-  b?: unknown,
-  c?: unknown
-): [target: string, method: string, args: unknown[]] {
-  if (typeof b === "string") return [a, b, (c as unknown[]) ?? []];
-  return ["main", a, (b as unknown[]) ?? []];
-}
 
 export interface InjectedSurfaceDescription {
   name: string;
   surface: "injected-runtime";
   note: string;
   methods: Record<string, unknown>;
+}
+
+export function invalidHelpArgumentResponse(value: unknown): Record<string, unknown> {
+  const received =
+    value && typeof value === "object"
+      ? Object.keys(value as Record<string, unknown>).length > 0
+        ? Object.keys(value as Record<string, unknown>)
+            .slice(0, 8)
+            .join(", ")
+        : "object"
+      : typeof value;
+  return {
+    error: "help() expects a string service or runtime binding name.",
+    received,
+    example: 'await help("workers")',
+    note:
+      "Pass the binding name as a string. For a live object's enumerable methods, " +
+      "Object.keys(workers) also works.",
+  };
 }
 
 /**
@@ -73,8 +94,10 @@ export function describeEvalBindingSurface(
     surface: "injected-runtime",
     note:
       `Methods on the injected \`${name}\` binding — what eval code calls directly. The raw ` +
-      `\`${name}\` RPC service (via \`services.${name}\`/\`rpc.call("${name}.…")\`) may differ; ` +
-      `low-level wire methods are intentionally hidden behind these ergonomic wrappers.`,
+      `\`${name}\` RPC service (via \`rpc.call("main", "${name}.…", [...])\`) may differ. ` +
+      `When a service name also exists as a runtime binding, \`services.${name}\` is this ` +
+      `ergonomic client; use \`rpc.call\` for raw service-only methods. Low-level wire methods ` +
+      `are intentionally hidden behind these wrappers.`,
     methods,
   };
 }

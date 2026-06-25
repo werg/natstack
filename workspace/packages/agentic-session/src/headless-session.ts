@@ -6,8 +6,9 @@
  * wrapper subscribes a PubSubClient to the channel and reads persisted
  * channel messages (text, thinking, action, image, inline_ui) to expose
  * chat state.
- * Panel-local action bars are not channel messages, so headless sessions do
- * not expose them.
+ * Panel-local UI tools are not exposed by default because there is no browser
+ * panel. Tests can opt into synthetic panel UI methods that publish the same
+ * typed transcript events without doing browser rendering.
  *
  * Public API:
  *   - `HeadlessSession.create()` — wire up a session, no agent yet
@@ -41,8 +42,10 @@ import type {
 } from "@workspace/pubsub";
 import {
   AGENTIC_EVENT_PAYLOAD_KIND,
+  AGENTIC_PROTOCOL_VERSION,
   createInitialChannelViewState,
   reduceChannelView,
+  type ActorKind,
   type AgenticEvent,
   type ChannelEnvelope,
   type ChannelViewState,
@@ -90,7 +93,8 @@ export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
   source: string;
   className: string;
   objectKey?: string;
-  contextId: string;
+  /** Omit to let runtime.createEntity mint a fresh isolated agent context. */
+  contextId?: string;
   channelId?: string;
   channelConfig?: ChannelConfig;
   methods?: Record<string, MethodDefinition>;
@@ -100,6 +104,22 @@ export interface HeadlessWithAgentConfig extends HeadlessSessionConfig {
    * `systemPromptMode`.
    */
   extraConfig?: AgentSubscriptionConfig;
+  /**
+   * Test-only harness mode: advertise panel-local UI methods from the headless
+   * client and publish their typed UI events. This exercises agent/tool
+   * integration without a browser renderer.
+   */
+  includeSyntheticPanelUiMethods?: boolean;
+}
+
+export interface HeadlessSessionCloseOptions {
+  /**
+   * Await remote agent unsubscribe/retire cleanup. Disable for harnesses that
+   * must release local waiters even when the remote agent/channel is wedged.
+   * Best-effort cleanup is still started and records asynchronous failures on
+   * this session when they arrive.
+   */
+  waitForRemoteCleanup?: boolean;
 }
 
 // ===========================================================================
@@ -230,8 +250,12 @@ export class HeadlessSession {
     const session = new HeadlessSession(config);
 
     const defaultMethods = session.buildDefaultMethods();
+    const syntheticPanelUiMethods = config.includeSyntheticPanelUiMethods
+      ? session.buildSyntheticPanelUiMethods()
+      : {};
     const methods: Record<string, MethodDefinition> = {
       ...defaultMethods,
+      ...syntheticPanelUiMethods,
       ...config.methods,
     };
 
@@ -242,7 +266,7 @@ export class HeadlessSession {
 
     await session.connect(channelId, {
       channelConfig,
-      contextId: config.contextId,
+      ...(config.contextId ? { contextId: config.contextId } : {}),
       methods,
     });
 
@@ -303,6 +327,146 @@ export class HeadlessSession {
           console.warn("[HeadlessSession] runtime.setTitle failed:", err);
         }
         return warnings.length > 0 ? { ok: true, warnings } : { ok: true };
+      },
+    };
+
+    return methods;
+  }
+
+  private actorKindFromMetadata(type: string | undefined): ActorKind {
+    if (type === "agent" || type === "system" || type === "panel" || type === "external") {
+      return type;
+    }
+    return "user";
+  }
+
+  private localActor() {
+    const metadata = this._config.metadata ?? DEFAULT_METADATA;
+    const id = this._client?.clientId ?? this._clientId ?? metadata.handle ?? "headless";
+    return {
+      kind: this.actorKindFromMetadata(metadata.type),
+      id,
+      displayName: metadata.name ?? id,
+      metadata: { ...metadata },
+    };
+  }
+
+  private async publishSyntheticPanelUiEvent(
+    event: AgenticEvent<"ui.inline_rendered" | "ui.action_bar.updated">,
+    idempotencyKey: string,
+  ): Promise<number | undefined> {
+    const client = this._client;
+    if (!client) return undefined;
+    return client.publish(AGENTIC_EVENT_PAYLOAD_KIND, event, { idempotencyKey });
+  }
+
+  private buildSyntheticPanelUiMethods(): Record<string, MethodDefinition> {
+    const methods: Record<string, MethodDefinition> = {};
+
+    methods["inline_ui"] = {
+      description:
+        "Synthetic panel harness: render a persistent inline UI component in the chat transcript. Provide either TSX code or a context-relative path. Publishes the same typed inline UI event as the browser panel tool, but does not mount a browser renderer.",
+      parameters: z.object({
+        code: z.string().optional(),
+        path: z.string().optional(),
+        imports: z.record(z.string(), z.string()).optional(),
+        props: z.record(z.unknown()).optional(),
+      }),
+      execute: async (args: unknown) => {
+        const { code, path, imports, props } = args as {
+          code?: string;
+          path?: string;
+          imports?: Record<string, string>;
+          props?: Record<string, unknown>;
+        };
+        const trimmedPath = path?.trim();
+        if (!trimmedPath && !code) return { ok: false, error: "Missing code or path" };
+
+        const id = crypto.randomUUID();
+        const source = trimmedPath
+          ? { type: "file" as const, path: trimmedPath }
+          : { type: "code" as const, code: code! };
+        const eventPayload: AgenticEvent<"ui.inline_rendered">["payload"] = {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          uiType: "inline",
+          id,
+          source,
+        };
+        if (imports !== undefined) eventPayload.imports = imports;
+        if (props !== undefined) eventPayload.props = props;
+        await this.publishSyntheticPanelUiEvent(
+          {
+            kind: "ui.inline_rendered",
+            actor: this.localActor(),
+            payload: eventPayload,
+            createdAt: new Date().toISOString(),
+          },
+          `synthetic-ui:inline:${id}`,
+        );
+        return { ok: true, id };
+      },
+    };
+
+    methods["load_action_bar"] = {
+      description:
+        "Synthetic panel harness: load, replace, or clear a compact panel action bar. Provide a context-relative TSX path unless clear is true. Publishes the same typed action-bar update event as the browser panel tool, but does not mount a browser renderer.",
+      parameters: z.object({
+        path: z.string().optional(),
+        imports: z.record(z.string(), z.string()).optional(),
+        props: z.record(z.unknown()).optional(),
+        maxHeight: z.number().optional(),
+        clear: z.boolean().optional(),
+      }),
+      execute: async (args: unknown) => {
+        const { path, imports, props, maxHeight, clear } = args as {
+          path?: string;
+          imports?: Record<string, string>;
+          props?: Record<string, unknown>;
+          maxHeight?: number;
+          clear?: boolean;
+        };
+        if (clear) {
+          await this.publishSyntheticPanelUiEvent(
+            {
+              kind: "ui.action_bar.updated",
+              actor: this.localActor(),
+              payload: {
+                protocol: AGENTIC_PROTOCOL_VERSION,
+                uiType: "action_bar",
+                cleared: true,
+                result: { ok: true },
+              },
+              createdAt: new Date().toISOString(),
+            },
+            `synthetic-ui:action-bar:clear:${crypto.randomUUID()}`,
+          );
+          return { ok: true, cleared: true };
+        }
+
+        const trimmedPath = path?.trim();
+        if (!trimmedPath) return { ok: false, error: "Missing path" };
+
+        const id = crypto.randomUUID();
+        const eventPayload: AgenticEvent<"ui.action_bar.updated">["payload"] = {
+          protocol: AGENTIC_PROTOCOL_VERSION,
+          uiType: "action_bar",
+          id,
+          source: { type: "file", path: trimmedPath },
+          result: { ok: true },
+        };
+        if (imports !== undefined) eventPayload.imports = imports;
+        if (props !== undefined) eventPayload.props = props;
+        if (maxHeight !== undefined) eventPayload.maxHeight = maxHeight;
+        await this.publishSyntheticPanelUiEvent(
+          {
+            kind: "ui.action_bar.updated",
+            actor: this.localActor(),
+            payload: eventPayload,
+            createdAt: new Date().toISOString(),
+          },
+          `synthetic-ui:action-bar:${id}`,
+        );
+        return { ok: true, id };
       },
     };
 
@@ -492,7 +656,7 @@ export class HeadlessSession {
     this._messageListeners.clear();
   }
 
-  async close(): Promise<void> {
+  async close(opts: HeadlessSessionCloseOptions = {}): Promise<void> {
     const entityId = this._agentEntityId;
     const targetId = this._agentTargetId;
     const channelId = this._channelId;
@@ -500,17 +664,32 @@ export class HeadlessSession {
     this._agentEntityId = null;
     this._agentTargetId = null;
     this._agentRpcCall = null;
-    if (targetId && channelId && rpcCall) {
+
+    const unsubscribe = async () => {
+      if (!targetId || !channelId || !rpcCall) return;
       await unsubscribeHeadlessAgent({ rpcCall, targetId, channelId }).catch((err) => {
         this.recordCleanupError("unsubscribeHeadlessAgent", err);
       });
-    }
-    this.dispose();
-    if (entityId && rpcCall) {
+    };
+    const retire = async () => {
+      if (!entityId || !rpcCall) return;
       await retireHeadlessAgent({ rpcCall, entityId }).catch((err) => {
         this.recordCleanupError("retireHeadlessAgent", err);
       });
+    };
+
+    if (opts.waitForRemoteCleanup === false) {
+      this.dispose();
+      void (async () => {
+        await unsubscribe();
+        await retire();
+      })();
+      return;
     }
+
+    await unsubscribe();
+    this.dispose();
+    await retire();
   }
 
   async [Symbol.asyncDispose](): Promise<void> {

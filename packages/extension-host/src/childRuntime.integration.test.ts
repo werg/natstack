@@ -8,7 +8,11 @@ import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 import { createNodeProcessAdapter, type ProcessAdapter } from "@natstack/process-adapter";
 import type { RpcEnvelope, RpcMessage, RpcRequest, RpcResponse } from "@natstack/rpc";
-import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
+import type {
+  WsClientMessage,
+  WsServerMessage,
+  WsRpcResponseMessage,
+} from "@natstack/shared/ws/protocol";
 
 function tempDir(): string {
   return fs.mkdtempSync(path.join(os.tmpdir(), "natstack-extension-runtime-"));
@@ -201,6 +205,63 @@ describe("extension child runtime process", () => {
       type: "response",
       requestId,
       result: "pong:ok",
+    });
+
+    const serverTargetRequestId = randomUUID();
+    const serverTargetRequest: RpcRequest = {
+      type: "request",
+      requestId: serverTargetRequestId,
+      fromId: "server",
+      method: "extension.invoke",
+      args: [
+        "ping",
+        ["server-ok"],
+        {
+          requestId: serverTargetRequestId,
+          extensionName: "@workspace-extensions/process-test",
+          method: "ping",
+          caller: { callerId: "server", callerKind: "server" },
+        },
+      ],
+    };
+    const serverTargetEnvelope: RpcEnvelope = {
+      from: "server",
+      target: "@workspace-extensions/process-test",
+      delivery: { caller: { callerId: "server", callerKind: "server" } },
+      provenance: [{ callerId: "server", callerKind: "server" }],
+      message: serverTargetRequest,
+    };
+    const serverTargetResponse = await waitForMessage<WsRpcResponseMessage>((resolve, reject) => {
+      ready.ws.on("message", (raw) => {
+        try {
+          const message = JSON.parse(String(raw)) as WsRpcResponseMessage;
+          const rpc = message.envelope?.message ?? message.message;
+          if (rpc?.type === "response" && rpc.requestId === serverTargetRequestId) {
+            resolve(message);
+          }
+        } catch (err) {
+          reject(err instanceof Error ? err : new Error(String(err)));
+        }
+      });
+      ready.ws.send(
+        JSON.stringify({
+          type: "ws:rpc",
+          envelope: serverTargetEnvelope,
+          message: serverTargetRequest,
+        } satisfies WsServerMessage)
+      );
+    });
+
+    expect(serverTargetResponse).toMatchObject({
+      type: "ws:rpc",
+      envelope: {
+        target: "server",
+        message: {
+          type: "response",
+          requestId: serverTargetRequestId,
+          result: "pong:server-ok",
+        },
+      },
     });
 
     const contextRequestId = randomUUID();

@@ -545,7 +545,12 @@ export class ExtensionHost implements UnitMetaChangeApprovalProvider<UnitBatchEn
     method: string,
     args: unknown[]
   ): Promise<unknown> {
-    await this.whenSettled();
+    // Do not wait for the global background approval/build flow here. Invocation is target-local:
+    // use the currently active bundle if one exists, or fail fast below. Waiting for `whenSettled()`
+    // can park a low-value call to an already-running extension behind an unrelated pending
+    // extension approval, which in turn can wedge eval/tool callers that are just awaiting an
+    // extension-backed helper.
+    await this.whenReconciled();
     const entry = this.lookupForInvoke(name);
     if (!entry) {
       throw new ServiceError(
@@ -624,7 +629,8 @@ export class ExtensionHost implements UnitMetaChangeApprovalProvider<UnitBatchEn
     method: string,
     args: unknown[]
   ): Promise<Response> {
-    await this.whenSettled();
+    // See invoke(): stream calls should not wait behind unrelated extension approval/build work.
+    await this.whenReconciled();
     const entry = this.lookupForInvoke(name);
     if (!entry) {
       throw new ServiceError(

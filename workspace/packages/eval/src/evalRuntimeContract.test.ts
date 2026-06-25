@@ -61,7 +61,6 @@ function evalEnv() {
   };
   const bindings: Record<string, unknown> = {
     ...rt,
-    rpc: { call: async () => null, callTarget: async () => null }, // 2-arg ambient sugar
     services: {},
     scope: {},
     scopes: {},

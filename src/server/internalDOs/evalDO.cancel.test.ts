@@ -129,6 +129,81 @@ describe("EvalDO cancellation + forced recovery", () => {
     }
   );
 
+  it("alarm re-arms instead of aborting when an in-memory claimed run exists", async () => {
+    const { instance } = await createTestDO(EvalDO);
+    priv<Set<string>>(instance, "activeRunIds").add("claimed-run");
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const setAlarmAt = vi
+      .spyOn(
+        instance as unknown as { setAlarmAt: (timeMs: number, opts?: unknown) => void },
+        "setAlarmAt"
+      )
+      .mockImplementation(() => undefined);
+
+    await instance.alarm();
+
+    expect(setAlarmAt).toHaveBeenCalledTimes(1);
+    expect(setAlarmAt).toHaveBeenCalledWith(expect.any(Number), { bestEffort: true });
+    expect(consoleInfo).toHaveBeenCalledWith(
+      "[EvalDO] idle eviction alarm",
+      expect.objectContaining({
+        objectKey: "test-key",
+        inFlightRuns: 0,
+        activeRunIds: 1,
+        inMemoryRunIds: ["claimed-run"],
+        durableRuns: 0,
+      })
+    );
+    consoleInfo.mockRestore();
+  });
+
+  it("alarm does not log the detailed state dump for confirmed-idle eviction", async () => {
+    const { instance } = await createTestDO(EvalDO);
+    const consoleInfo = vi.spyOn(console, "info").mockImplementation(() => undefined);
+    const unsubscribeAll = vi.fn(() => Promise.resolve());
+    setPriv(instance, "mainEvents", () => ({ unsubscribeAll }));
+    const abort = vi.fn();
+    priv<{ abort?: (reason?: string) => void }>(instance, "ctx").abort = abort;
+
+    await instance.alarm();
+
+    expect(consoleInfo).not.toHaveBeenCalled();
+    expect(unsubscribeAll).toHaveBeenCalledTimes(1);
+    expect(abort).toHaveBeenCalledWith("EvalDO: idle eviction (reclaim memory; SQLite preserved)");
+    consoleInfo.mockRestore();
+  });
+
+  it("executeRun persists a bounded terminal result for huge console and return payloads", async () => {
+    const { instance, sql } = await createTestDO(EvalDO);
+    const hugeConsole = `console-start\n${"c".repeat(220_000)}\nconsole-end`;
+    const hugeReturn = { value: `return-start\n${"r".repeat(220_000)}\nreturn-end` };
+    setPriv(instance, "runLocked", () =>
+      Promise.resolve({ success: true, console: hugeConsole, returnValue: hugeReturn })
+    );
+    seedPendingRun(sql, "huge-run");
+
+    const result = await priv<(id: string) => Promise<RunResult>>(instance, "executeRun").call(
+      instance,
+      "huge-run"
+    );
+
+    expect(result.success).toBe(true);
+    expect(result.console.length).toBeLessThan(100_000);
+    expect(result.console).toContain("scope.$lastConsole");
+    expect(result.returnValue).toMatchObject({
+      truncated: true,
+      scopeKey: "$lastReturn",
+    });
+
+    const persisted = priv<(id: string) => { status: string; result?: RunResult }>(
+      instance,
+      "getRun"
+    ).call(instance, "huge-run");
+    expect(persisted.status).toBe("done");
+    expect(persisted.result).toEqual(result);
+    expect(JSON.stringify(persisted.result).length).toBeLessThan(250_000);
+  });
+
   it("cancel(runId): an in-flight run wedged on an outbound call unwinds once cancelled", async () => {
     const { instance, sql } = await createTestDO(EvalDO);
     const { runLocked, started } = blockUntilAborted();
@@ -258,7 +333,7 @@ describe("EvalDO cancellation + forced recovery", () => {
     });
   });
 
-  it("runLocked threads the run's abort signal into the eval's outbound rpc.call + callTarget", async () => {
+  it("runLocked threads the run's abort signal into eval outbound rpc.call", async () => {
     // Verifies task 2a end-to-end through the REAL runLocked: the `rpc` binding handed to the sandbox
     // forwards the current run's signal as the rpc call's `options.signal`, so abort can unwind it.
     const { instance } = await createTestDO(EvalDO);
@@ -266,10 +341,21 @@ describe("EvalDO cancellation + forced recovery", () => {
     // Capture the options every outbound rpc.call receives.
     const seenOptions: Array<{ method: string; options: unknown }> = [];
     const fakeRpc = {
+      selfId: "do:test:EvalDO:test-key",
       call: vi.fn((_target: string, method: string, _args: unknown[], options?: unknown) => {
         seenOptions.push({ method, options });
         return Promise.resolve("ok");
       }),
+      stream: vi.fn(),
+      emit: vi.fn(),
+      on: vi.fn(() => vi.fn()),
+      expose: vi.fn(),
+      exposeAll: vi.fn(),
+      exposeStreaming: vi.fn(),
+      peer: vi.fn(() => ({})),
+      status: vi.fn(() => "connected"),
+      ready: vi.fn(() => Promise.resolve()),
+      onStatusChange: vi.fn(() => vi.fn()),
     };
     // `runLocked` reads `this.rpc` for the binding closures — stub it.
     Object.defineProperty(instance, "rpc", { get: () => fakeRpc, configurable: true });
@@ -285,18 +371,16 @@ describe("EvalDO cancellation + forced recovery", () => {
       Promise.resolve({
         executeSandbox: async (_code: string, opts: { bindings: Record<string, unknown> }) => {
           const rpcBinding = opts.bindings["rpc"] as {
-            call: (m: string, a: unknown[]) => Promise<unknown>;
-            callTarget: (t: string, m: string, a: unknown[]) => Promise<unknown>;
+            call: (t: string, m: string, a: unknown[]) => Promise<unknown>;
           };
-          // 2-arg ambient sugar (targets "main") + explicit callTarget — both must thread the signal.
-          await rpcBinding.call("svc.method", []);
-          await rpcBinding.callTarget("do:peer", "ping", []);
+          // Eval uses the same portable RpcClient call shape as panels/workers.
+          await rpcBinding.call("main", "svc.method", []);
+          await rpcBinding.call("do:peer", "ping", []);
           return { success: true, consoleOutput: "", returnValue: undefined };
         },
       })
     );
     setPriv(instance, "ensureScopeManager", () => Promise.resolve(fakeScope));
-    setPriv(instance, "ensureHostedRuntime", () => ({}));
 
     const controller = new AbortController();
     const runLocked = priv<RunLockedFn>(instance, "runLocked").bind(instance);

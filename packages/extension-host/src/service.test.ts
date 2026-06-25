@@ -477,23 +477,25 @@ describe("ExtensionHost reconcileDeclared", () => {
     });
   });
 
-  it("waits for trusted activation before invoking a declared extension", async () => {
+  it("does not block active extension invocation behind pending re-approval", async () => {
     const extensionTransport = {
       call: vi.fn(async (_name: string, _method: string, apiMethod: string) => {
         return `called:${apiMethod}`;
       }),
     };
     const { host, approvalQueue, extensionNode } = makeHost({
-      installed: false,
+      depEv: "ev-runtime-new",
+      activeDepEv: "ev-runtime-old",
       extensionTransport,
     });
-    vi.spyOn(host.processes, "start").mockResolvedValue(undefined);
-    vi.spyOn(host.processes, "isRunning").mockImplementation((name) =>
-      Boolean(host.registry.get(name)?.activeBundleKey)
-    );
+    approvalQueue.request.mockImplementation(() => new Promise(() => {}));
+    vi.spyOn(host.processes, "isRunning").mockReturnValue(true);
 
     await host.reconcileDeclared(declare(extensionNode.name));
-    const invoke = host.invoke(panelCtx("panel-1"), extensionNode.name, "blame", []);
+    const invoke = Promise.race([
+      host.invoke(panelCtx("panel-1"), extensionNode.name, "blame", []),
+      new Promise((resolve) => setTimeout(() => resolve("timed-out"), 25)),
+    ]);
 
     await expect(invoke).resolves.toBe("called:blame");
     expect(approvalQueue.request).toHaveBeenCalledWith(
@@ -509,6 +511,7 @@ describe("ExtensionHost reconcileDeclared", () => {
         ],
       })
     );
+    expect(host.registry.get(extensionNode.name)).toMatchObject({ activeBundleKey: "bundle-key" });
     expect(extensionTransport.call).toHaveBeenCalledWith(
       extensionNode.name,
       "extension.invoke",

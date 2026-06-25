@@ -117,6 +117,14 @@ async function createGadBackedChannel(
         // Title registry isn't relevant in unit tests; treat as a no-op.
         return undefined;
       }
+      if (
+        target === "main" &&
+        (method === "workspace-state.alarmSet" || method === "workspace-state.alarmClear")
+      ) {
+        // DurableBase persists alarm metadata through main; these channel tests
+        // exercise channel behavior, so acknowledge the lifecycle write.
+        return undefined;
+      }
       if (target === "main" && method === "blobstore.putText") {
         const value = String(args[0] ?? "");
         const blob = options.blobstorePutText
@@ -203,6 +211,42 @@ describe("PubSubChannel", () => {
     ).rejects.toThrow(
       "publish: participant panel:other cannot be used by caller panel:nav-current"
     );
+  });
+
+  it("rejects arbitrary participant labels for durable-object callers", async () => {
+    const { instance } = await createGadBackedChannel({
+      rpcCall: (target, method) => {
+        if (target === "main" && method === "workers.resolveDurableObject") return {};
+        return undefined;
+      },
+    });
+    const evalDoId = "do:natstack/internal:EvalDO:eval-1";
+    const arbitraryLabel = "headless-diagnose-123";
+    setRpcCaller(instance, evalDoId, "durable-object");
+
+    await expect(
+      instance.subscribe(arbitraryLabel, {
+        contextId: "ctx-1",
+        name: "Eval client",
+        type: "client",
+      })
+    ).rejects.toThrow(`Participant ${arbitraryLabel} cannot be subscribed by caller ${evalDoId}`);
+    await expect(instance.unsubscribe(arbitraryLabel)).rejects.toThrow(
+      `unsubscribe: participant ${arbitraryLabel} cannot be used by caller ${evalDoId}`
+    );
+    await expect(
+      instance.publish(arbitraryLabel, AGENTIC_EVENT_PAYLOAD_KIND, agenticEvent())
+    ).rejects.toThrow(
+      `publish: participant ${arbitraryLabel} cannot be used by caller ${evalDoId}`
+    );
+
+    await expect(
+      instance.subscribe(evalDoId, {
+        contextId: "ctx-1",
+        name: "Eval client",
+        type: "client",
+      })
+    ).resolves.toMatchObject({ ok: true });
   });
 
   it("dedupes concurrent publishes with the same idempotency key before append settles", async () => {
@@ -469,7 +513,13 @@ describe("PubSubChannel", () => {
       // is the structured delivery we record per target.
       rpcCall: async (target, method) => {
         if (target === "main" && method === "workers.resolveDurableObject") {
-          return { kind: "durable-object", source: "s", className: "C", objectKey: "k", targetId: target };
+          return {
+            kind: "durable-object",
+            source: "s",
+            className: "C",
+            objectKey: "k",
+            targetId: target,
+          };
         }
         if (method === "onChannelEnvelope") {
           envelopeTargets.push(target);
@@ -489,7 +539,11 @@ describe("PubSubChannel", () => {
       receivesChannelEnvelopes: true,
     });
     setRpcCaller(instance, clientDoId, "durable-object");
-    await instance.subscribe(clientDoId, { contextId: "ctx-1", name: "Eval client", type: "client" });
+    await instance.subscribe(clientDoId, {
+      contextId: "ctx-1",
+      name: "Eval client",
+      type: "client",
+    });
 
     setRpcCaller(instance, "panel:user", "panel");
     await instance.subscribe("panel:user", { contextId: "ctx-1", name: "User", type: "panel" });
@@ -1015,6 +1069,108 @@ describe("PubSubChannel", () => {
     expect(terminals).toHaveLength(1);
   });
 
+  it("reconstructs agent-loop channel calls whose transport id lives in payload.transport", async () => {
+    const { instance, sql, gad } = await createGadBackedChannel();
+
+    setRpcCaller(instance, "do:agent", "durable-object");
+    await instance.subscribe("do:agent", { contextId: "ctx-1", name: "Agent", type: "agent" });
+    setRpcCaller(instance, "do:eval", "durable-object");
+    await instance.subscribe("do:eval", {
+      contextId: "ctx-1",
+      name: "Headless",
+      type: "headless",
+    });
+
+    await gad.instance.appendLogEvent({
+      logId: "channel-1",
+      head: "main",
+      logKind: "channel",
+      events: [
+        {
+          envelopeId: "invocation-agent-loop",
+          actor: { kind: "agent", id: "do:agent", participantId: "do:agent" },
+          payloadKind: AGENTIC_EVENT_PAYLOAD_KIND,
+          payload: {
+            kind: "invocation.started",
+            actor: { kind: "agent", id: "do:agent", participantId: "do:agent" },
+            turnId: "turn-agent-loop",
+            causality: {
+              invocationId: "invocation-agent-loop",
+              modelToolCallId: "invocation-agent-loop",
+            },
+            payload: {
+              protocol: AGENTIC_PROTOCOL_VERSION,
+              name: "set_title",
+              invocationType: "panel",
+              request: {
+                protocol: "natstack.blob-ref.v1",
+                digest: "request-agent-loop",
+                size: 35,
+                encoding: "json",
+                originalBytes: 35,
+              },
+              transport: {
+                kind: "channel",
+                channelId: "channel-1",
+                target: { kind: "user", id: "do:eval", participantId: "do:eval" },
+                transportCallId: "transport-agent-loop",
+              },
+              userVisible: true,
+            },
+            createdAt: "2026-06-25T13:28:08.115Z",
+          },
+        },
+      ],
+    });
+
+    const { inserted } = await instance.reconcilePendingCalls(true);
+    expect(inserted).toBe(1);
+    expect(
+      sql
+        .exec(
+          `SELECT transport_call_id, invocation_id, method FROM pending_calls WHERE transport_call_id = ?`,
+          "transport-agent-loop"
+        )
+        .toArray()
+    ).toEqual([
+      expect.objectContaining({
+        transport_call_id: "transport-agent-loop",
+        invocation_id: "invocation-agent-loop",
+        method: "set_title",
+      }),
+    ]);
+
+    setRpcCaller(instance, "do:eval", "durable-object");
+    const result = await instance.submitMethodResult(
+      "do:eval",
+      "transport-agent-loop",
+      {
+        ok: true,
+      },
+      false,
+      {
+        invocationId: "invocation-agent-loop",
+        turnId: "turn-agent-loop",
+        terminalOutcome: "success",
+      }
+    );
+
+    expect(result).toEqual({ id: expect.any(Number) });
+    expect(
+      gad.sql
+        .exec(`SELECT envelope_id FROM log_events WHERE envelope_id = ?`, "invocation-agent-loop")
+        .toArray()
+    ).toHaveLength(1);
+    expect(
+      gad.sql
+        .exec(
+          `SELECT envelope_id FROM log_events WHERE envelope_id = ?`,
+          "terminal:transport-agent-loop"
+        )
+        .toArray()
+    ).toHaveLength(1);
+  });
+
   it("recovers a lost call: appends a terminal when a result has no pending row and no started", async () => {
     const emitted: unknown[] = [];
     const { instance, gad } = await createGadBackedChannel({ emitted });
@@ -1066,7 +1222,10 @@ describe("PubSubChannel", () => {
     // The synthetic `started` root was appended too (fold invariant: every
     // terminal is paired with a started carrying the same invocation id).
     const rootRow = gad.sql
-      .exec(`SELECT payload_ref_json FROM log_events WHERE envelope_id = ?`, "invocation-lost-record")
+      .exec(
+        `SELECT payload_ref_json FROM log_events WHERE envelope_id = ?`,
+        "invocation-lost-record"
+      )
       .toArray();
     expect(rootRow).toHaveLength(1);
     expect(JSON.parse(rootRow[0]!["payload_ref_json"] as string)).toMatchObject({
@@ -1234,7 +1393,10 @@ describe("PubSubChannel", () => {
     expect(startedEvents.filter((e) => e.kind === "invocation.started")).toHaveLength(1);
     expect(startedEvents.filter((e) => e.kind === "invocation.completed")).toHaveLength(1);
     const terminal = gad.sql
-      .exec(`SELECT envelope_id FROM log_events WHERE envelope_id = ?`, "terminal:transport-start-race")
+      .exec(
+        `SELECT envelope_id FROM log_events WHERE envelope_id = ?`,
+        "terminal:transport-start-race"
+      )
       .toArray();
     expect(terminal).toHaveLength(1);
 
@@ -2068,11 +2230,7 @@ describe("PubSubChannel policy folds and cache amnesia (WS2)", () => {
       name: "Agent",
       type: "agent",
     });
-    await fork.instance.publish(
-      "agent:one",
-      AGENTIC_EVENT_PAYLOAD_KIND,
-      agentCompleted("msg-f1")
-    );
+    await fork.instance.publish("agent:one", AGENTIC_EVENT_PAYLOAD_KIND, agentCompleted("msg-f1"));
     const stamped = parent.gad.sql
       .exec(
         `SELECT annotations_json FROM log_events

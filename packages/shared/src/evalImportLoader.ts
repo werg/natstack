@@ -28,6 +28,28 @@ export function requireBuildBundleResult(result: unknown, message: string): stri
   throw new Error(message);
 }
 
+function parsePackageQualifiedNpmRef(value: string): { specifier: string; version: string } | null {
+  const at = value.lastIndexOf("@");
+  if (at <= 0) return null;
+  const specifier = value.slice(0, at);
+  if (!specifier.includes("/") && specifier.startsWith("@")) return null;
+  return { specifier, version: value.slice(at + 1) || "latest" };
+}
+
+function npmRefToVersion(specifier: string, ref: string): string {
+  const value = ref.slice("npm:".length) || "latest";
+  const qualified = parsePackageQualifiedNpmRef(value);
+  if (!qualified) return value;
+  if (qualified.specifier !== specifier) {
+    throw new Error(
+      `npm import ${JSON.stringify(specifier)} points at ${JSON.stringify(qualified.specifier)}. ` +
+        `The imports map key is the package name; use ` +
+        `imports: { ${JSON.stringify(qualified.specifier)}: ${JSON.stringify(`npm:${qualified.version}`)} } instead.`
+    );
+  }
+  return qualified.version;
+}
+
 /**
  * Build the on-demand import loader for a sandbox host. `target` selects the
  * module resolution conditions for workspace library bundles and MUST match the
@@ -40,7 +62,7 @@ export function createEvalImportLoader(
 ): EvalImportLoader {
   return async (specifier, ref, externals) => {
     if (ref?.startsWith("npm:")) {
-      const version = ref.slice(4) || "latest";
+      const version = npmRefToVersion(specifier, ref);
       const result = await build.getBuildNpm(specifier, version, externals);
       return result.bundle;
     }

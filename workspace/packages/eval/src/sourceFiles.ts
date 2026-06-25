@@ -88,6 +88,22 @@ function parentDir(dirPath: string): string | null {
   return normalized.slice(0, index);
 }
 
+/**
+ * Bound for the package.json/tsconfig.json walk-ups below. A workspace unit's
+ * config lives at its OWN repo root (`<section>/<unit>/`, e.g. `panels/chat`,
+ * `skills/foo`) — a multi-segment path. Container-section roots (`skills/`,
+ * `panels/`) and the workspace root (`""`/`/`) are single-segment-or-empty and
+ * NEVER hold a unit config, so ascending into them only probes paths that
+ * structurally can't exist: wasted reads plus a noisy fs "repo does not exist"
+ * warning per miss (e.g. probing `skills/tsconfig.json` while resolving from a
+ * docs-only skill). The walk therefore stops once `dir` is no longer inside a
+ * unit. (Flat content sections like `meta` hold no code/tsconfig, so excluding
+ * single-segment roots loses nothing the eval resolver needs.)
+ */
+function isInsideWorkspaceUnit(dir: string): boolean {
+  return dir.includes("/");
+}
+
 // TS/NodeNext lets a `.js`/`.jsx` specifier point at a `.ts`/`.tsx` source.
 // Map a written JS extension to the source extensions to try, in priority order.
 const SOURCE_EXTENSION_FALLBACKS: Record<string, string[]> = {
@@ -192,8 +208,8 @@ export async function findNearestPackageJson(
   if (!sourcePath || !loadSourceFile) return null;
   let dir: string | null = dirname(sourcePath);
 
-  while (dir !== null) {
-    const packagePath = normalizeSourcePath(dir ? `${dir}/package.json` : "package.json");
+  while (dir !== null && isInsideWorkspaceUnit(dir)) {
+    const packagePath = normalizeSourcePath(`${dir}/package.json`);
     try {
       const raw = await loadSourceFile(packagePath);
       return { path: packagePath, dir, packageJson: JSON.parse(raw) as PackageJsonShape };
@@ -212,8 +228,8 @@ async function findNearestTsConfig(
   if (!sourcePath || !loadSourceFile) return null;
   let dir: string | null = dirname(sourcePath);
 
-  while (dir !== null) {
-    const tsconfigPath = normalizeSourcePath(dir ? `${dir}/tsconfig.json` : "tsconfig.json");
+  while (dir !== null && isInsideWorkspaceUnit(dir)) {
+    const tsconfigPath = normalizeSourcePath(`${dir}/tsconfig.json`);
     try {
       const raw = await loadSourceFile(tsconfigPath);
       return { path: tsconfigPath, dir, tsconfig: JSON.parse(raw) as TsConfigShape };

@@ -26,6 +26,7 @@ function makeRpcCall(captured: {
       return {
         id: "do:workers/agent-worker:AiChatWorker:obj-1",
         targetId: "do:workers/agent-worker:AiChatWorker:obj-1",
+        contextId: (captured.createSpec?.["contextId"] as string | undefined) ?? "ctx-minted",
       };
     }
     captured.subscribeTarget = target;
@@ -77,6 +78,39 @@ describe("subscribeHeadlessAgent — unified contract", () => {
     expect(captured.subscribeTarget).toBe("do:workers/agent-worker:AiChatWorker:obj-1");
     expect(result.entityId).toBe("do:workers/agent-worker:AiChatWorker:obj-1");
     expect(result.targetId).toBe("do:workers/agent-worker:AiChatWorker:obj-1");
+    expect(result.contextId).toBe("ctx-1");
+  });
+
+  it("lets runtime.createEntity mint an isolated context when none is supplied", async () => {
+    const captured: { createSpec?: Record<string, unknown>; config?: Record<string, unknown> } = {};
+    const rpcCall = makeRpcCall(captured);
+
+    const result = await subscribeHeadlessAgent({
+      rpcCall,
+      source: "workers/agent-worker",
+      className: "AiChatWorker",
+      objectKey: "obj-1",
+      channelId: "ch-1",
+    });
+
+    expect(captured.createSpec).toEqual({
+      kind: "do",
+      source: "workers/agent-worker",
+      className: "AiChatWorker",
+      key: "obj-1",
+      stateArgs: { agentConfig: { approvalLevel: 2 } },
+    });
+    expect(result.contextId).toBe("ctx-minted");
+    expect(rpcCall).toHaveBeenLastCalledWith(
+      "do:workers/agent-worker:AiChatWorker:obj-1",
+      "subscribeChannel",
+      [
+        expect.objectContaining({
+          channelId: "ch-1",
+          contextId: "ctx-minted",
+        }),
+      ],
+    );
   });
 
   it("retires the runtime entity if subscription fails after creation", async () => {
@@ -87,6 +121,7 @@ describe("subscribeHeadlessAgent — unified contract", () => {
         return {
           id: "do:workers/agent-worker:AiChatWorker:obj-1",
           targetId: "do:workers/agent-worker:AiChatWorker:obj-1",
+          contextId: "ctx-1",
         };
       }
       if (method === "subscribeChannel") {
@@ -103,6 +138,34 @@ describe("subscribeHeadlessAgent — unified contract", () => {
       channelId: "ch-1",
       contextId: "ctx-1",
     })).rejects.toThrow("subscribe failed");
+
+    expect(calls[calls.length - 1]).toEqual({
+      target: "main",
+      method: "runtime.retireEntity",
+      args: [{ id: "do:workers/agent-worker:AiChatWorker:obj-1" }],
+    });
+  });
+
+  it("retires the runtime entity if an isolated spawn does not return a context", async () => {
+    const calls: Array<{ target: string; method: string; args: unknown[] }> = [];
+    const rpcCall = vi.fn(async (target: string, method: string, args: unknown[]) => {
+      calls.push({ target, method, args });
+      if (method === "runtime.createEntity") {
+        return {
+          id: "do:workers/agent-worker:AiChatWorker:obj-1",
+          targetId: "do:workers/agent-worker:AiChatWorker:obj-1",
+        };
+      }
+      return undefined;
+    });
+
+    await expect(subscribeHeadlessAgent({
+      rpcCall,
+      source: "workers/agent-worker",
+      className: "AiChatWorker",
+      objectKey: "obj-1",
+      channelId: "ch-1",
+    })).rejects.toThrow("runtime.createEntity did not return a contextId");
 
     expect(calls[calls.length - 1]).toEqual({
       target: "main",

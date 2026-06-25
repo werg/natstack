@@ -519,7 +519,7 @@ async function connectRuntimeBridge(): Promise<RpcClient> {
       const stampedEnvelope =
         stampedMessage === envelope.message ? envelope : { ...envelope, message: stampedMessage };
       const frame: WsClientMessage =
-        stampedEnvelope.target === "main"
+        stampedEnvelope.target === "main" || stampedEnvelope.target === "server"
           ? { type: "ws:rpc", envelope: stampedEnvelope, message: stampedMessage }
           : { type: "ws:route", envelope: stampedEnvelope };
       ws.send(JSON.stringify(frame));

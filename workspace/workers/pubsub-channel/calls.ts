@@ -71,15 +71,17 @@ export function derivePendingCalls(envelopes: LogEnvelope[]): PendingCallRow[] {
     const kind = (event as { kind?: string }).kind ?? "";
     const causality = ((event as { causality?: Record<string, unknown> }).causality ??
       {}) as Record<string, unknown>;
+    const payload = ((event as { payload?: Record<string, unknown> }).payload ??
+      {}) as Record<string, unknown>;
+    const transport = (payload["transport"] ?? {}) as Record<string, unknown>;
     const transportCallId =
       typeof causality["transportCallId"] === "string"
         ? (causality["transportCallId"] as string)
-        : null;
+        : typeof transport["transportCallId"] === "string"
+          ? (transport["transportCallId"] as string)
+          : null;
     if (!transportCallId) continue;
     if (kind === "invocation.started") {
-      const payload = ((event as { payload?: Record<string, unknown> }).payload ??
-        {}) as Record<string, unknown>;
-      const transport = (payload["transport"] ?? {}) as Record<string, unknown>;
       if (transport["kind"] !== "channel") continue;
       const actor = (event as { actor?: { id?: string; participantId?: string } }).actor ?? {};
       const target = (transport["target"] ?? {}) as { id?: string; participantId?: string };

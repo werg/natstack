@@ -15,7 +15,7 @@ import { docsMethods } from "@natstack/shared/serviceSchemas/docs";
 import { EVAL_AMBIENT_ONLY } from "@natstack/shared/runtimeSurface.eval";
 import { buildOwnerBindings } from "./evalOwnerBindings.js";
 import { ConsoleStreamer } from "./consoleStreamer.js";
-import { describeEvalBindingSurface, normalizeAmbientRpcCall } from "./evalSurfaceHelp.js";
+import { describeEvalBindingSurface, invalidHelpArgumentResponse } from "./evalSurfaceHelp.js";
 import {
   createTypedServiceClient,
   type TypedServiceClient,
@@ -75,6 +75,10 @@ const DESTRUCTIVE_STMT = /^\s*(DROP|DELETE|ALTER|UPDATE|INSERT|REPLACE|TRUNCATE|
  * eviction forces a cold reload of the engine + a scope rehydrate on the next run.
  */
 const IDLE_EVICT_MS = 30 * 60_000;
+const RESULT_CONSOLE_MAX_CHARS = 80_000;
+const RESULT_RETURN_PREVIEW_CHARS = 60_000;
+const RESULT_ERROR_MAX_CHARS = 20_000;
+const RESULT_STORAGE_MAX_CHARS = 250_000;
 
 interface UnsafeEvalBinding {
   eval(code: string, name?: string): unknown;
@@ -172,6 +176,20 @@ interface RunResult {
 interface DurableRunActivity {
   count: number;
   oldestStartedAt: number | null;
+  activeRuns: Array<{
+    runId: string;
+    status: string;
+    startedAt: number;
+    deadlineAt: number | null;
+  }>;
+  latestRuns: Array<{
+    runId: string;
+    status: string;
+    startedAt: number;
+    deadlineAt: number | null;
+    agentRef: string | null;
+    channelId: string | null;
+  }>;
 }
 
 export class EvalDO extends DurableObjectBase {
@@ -185,6 +203,8 @@ export class EvalDO extends DurableObjectBase {
    *  `executeRun` (e.g. a deferRedrive that races the first dispatch) SHARES this promise instead of
    *  starting a second sandbox run; also lets `reset` abort live runs and `alarm` skip mid-run. */
   private readonly inFlightRuns = new Map<string, Promise<RunResult>>();
+  /** Independent in-memory activity marker for claimed rows, used as an alarm safety net. */
+  private readonly activeRunIds = new Set<string>();
   /** Abort controllers per in-flight run — used by `reset` and the `timeoutMs` deadline. */
   private readonly runAborts = new Map<string, AbortController>();
   private buildClient: BuildServiceClient | null = null;
@@ -214,13 +234,12 @@ export class EvalDO extends DurableObjectBase {
   private parentMeta: RunArgs["parent"] | null = null;
 
   /**
-   * Read-only containment for the current run (`RunArgs.readOnly`). Read LIVE by
-   * the cached hosted-runtime rpc wrapper, `callMainService`, and this run's
-   * `callOptions`, so every service call the eval makes carries `readOnly` and the
-   * server dispatcher refuses non-`read` methods. Per-run like `parentMeta`
-   * (overwritten each run; the cached closures read it live).
+   * Per-run containment for eval-authored RPC calls. Read LIVE by the cached
+   * hosted-runtime rpc wrapper so cached imports of `@workspace/runtime` still
+   * get the current run's abort signal/read-only flag.
    */
   private currentRunReadOnly = false;
+  private currentRunAbortSignal: AbortSignal | null = null;
 
   /**
    * Per-OBJECT module registry passed to the engine on every run. Many owners' EvalDOs share
@@ -295,9 +314,42 @@ export class EvalDO extends DurableObjectBase {
          WHERE status IN ('pending', 'running')`
       )
       .toArray()[0];
+    const activeRuns = this.sql
+      .exec(
+        `SELECT run_id, status, started_at, deadline_at
+         FROM runs
+         WHERE status IN ('pending', 'running')
+         ORDER BY started_at ASC
+         LIMIT 5`
+      )
+      .toArray()
+      .map((r) => ({
+        runId: String(r["run_id"]),
+        status: String(r["status"]),
+        startedAt: Number(r["started_at"]),
+        deadlineAt: r["deadline_at"] == null ? null : Number(r["deadline_at"]),
+      }));
+    const latestRuns = this.sql
+      .exec(
+        `SELECT run_id, status, started_at, deadline_at, agent_ref, channel_id
+         FROM runs
+         ORDER BY started_at DESC
+         LIMIT 5`
+      )
+      .toArray()
+      .map((r) => ({
+        runId: String(r["run_id"]),
+        status: String(r["status"]),
+        startedAt: Number(r["started_at"]),
+        deadlineAt: r["deadline_at"] == null ? null : Number(r["deadline_at"]),
+        agentRef: r["agent_ref"] == null ? null : String(r["agent_ref"]),
+        channelId: r["channel_id"] == null ? null : String(r["channel_id"]),
+      }));
     return {
       count: Number(row?.["count"] ?? 0),
       oldestStartedAt: row?.["oldest_started_at"] == null ? null : Number(row["oldest_started_at"]),
+      activeRuns,
+      latestRuns,
     };
   }
 
@@ -527,6 +579,7 @@ export class EvalDO extends DurableObjectBase {
     }
 
     let result: RunResult;
+    this.activeRunIds.add(runId);
     try {
       const ran = this.runChain.then(() => this.runLocked(args, controller.signal, runId));
       this.runChain = ran.catch(() => undefined);
@@ -547,23 +600,29 @@ export class EvalDO extends DurableObjectBase {
     } finally {
       if (timer) clearTimeout(timer);
       this.runAborts.delete(runId);
+      this.activeRunIds.delete(runId);
       // Arm best-effort idle-eviction now that the run is done (never fires mid-run — see alarm()).
       this.rearmIdleEviction();
     }
 
+    const terminalResult = this.compactRunResult(result);
     // CAS persist: write `done` only if still `running`, so a concurrent `reset` → `cancelled` wins.
     this.sql.exec(
       `UPDATE runs SET status = 'done', result = ? WHERE run_id = ? AND status = 'running'`,
-      JSON.stringify(result),
+      JSON.stringify(terminalResult),
       runId
     );
     const finalStatus = this.sql
       .exec(`SELECT status FROM runs WHERE run_id = ?`, runId)
       .toArray()[0]?.["status"];
     if (String(finalStatus) === "cancelled") {
-      return { success: false, console: result.console, error: "eval: run cancelled" };
+      return this.compactRunResult({
+        success: false,
+        console: result.console,
+        error: "eval: run cancelled",
+      });
     }
-    return result;
+    return terminalResult;
   }
 
   /** Poll backstop: a run's status + result (`status` is 'pending'|'running'|'done'|'cancelled'|'unknown'). */
@@ -659,17 +718,24 @@ export class EvalDO extends DurableObjectBase {
    */
   override async alarm(): Promise<void> {
     const durableActivity = this.durableRunActivity();
-    console.info("[EvalDO] idle eviction alarm", {
-      objectKey: this.objectKey,
-      inFlightRuns: this.inFlightRuns.size,
-      durableRuns: durableActivity.count,
-      oldestDurableRunStartedAt: durableActivity.oldestStartedAt,
-    });
 
-    // Never evict mid-run. The in-memory map catches normal held executeRun calls; the durable
-    // queue catches async agent runs that are pending before the held dispatch arrives, plus any
-    // re-delivery/reconstruction edge where a due alarm races the JS instance's in-memory state.
-    if (this.inFlightRuns.size > 0 || durableActivity.count > 0) {
+    // Never evict mid-run. The in-memory map catches normal held executeRun calls, activeRunIds is
+    // a second marker tied to the claimed row lifetime, and the durable queue catches async agent
+    // runs that are pending before the held dispatch arrives plus reconstruction/race edges.
+    if (this.inFlightRuns.size > 0 || this.activeRunIds.size > 0 || durableActivity.count > 0) {
+      const inMemoryRunIds = Array.from(
+        new Set([...this.inFlightRuns.keys(), ...this.activeRunIds.keys()])
+      ).slice(0, 10);
+      console.info("[EvalDO] idle eviction alarm", {
+        objectKey: this.objectKey,
+        inFlightRuns: this.inFlightRuns.size,
+        activeRunIds: this.activeRunIds.size,
+        inMemoryRunIds,
+        durableRuns: durableActivity.count,
+        oldestDurableRunStartedAt: durableActivity.oldestStartedAt,
+        activeDurableRuns: durableActivity.activeRuns,
+        latestRuns: durableActivity.latestRuns,
+      });
       this.rearmIdleEviction();
       return;
     }
@@ -693,31 +759,19 @@ export class EvalDO extends DurableObjectBase {
     // before (re)building the host. Server-supplied; defaults to no parent.
     this.parentMeta = args.parent ?? null;
     this.currentRunReadOnly = args.readOnly ?? false;
+    this.currentRunAbortSignal = signal ?? null;
     const rt = this.ensureHostedRuntime(args.contextId ?? "", args.gatewayToken);
 
     // Thread THIS run's abort signal + read-only flag into EVERY outbound rpc.call the eval makes: the
     // abort signal so a `cancel(runId)`/`forceReset()` that aborts `controller` unwinds a run wedged on
     // an outbound call (the rpc client honors `options.signal`), and `readOnly` so a read-only run's
     // service calls are refused by the server dispatcher unless they declare `sensitivity:"read"`.
-    const callOptions =
-      signal || args.readOnly
-        ? { ...(signal ? { signal } : {}), ...(args.readOnly ? { readOnly: true } : {}) }
-        : undefined;
-    const rpcBinding = {
-      // EVAL.md documents the 2-arg ambient sugar `rpc.call(method, args)` (targets "main"). For
-      // ergonomics we ALSO accept the full-client habit `rpc.call(target, method, args)`
-      // (disambiguated by `normalizeAmbientRpcCall`), so the common cross-context call doesn't fail
-      // with a cryptic "Invalid method format". `rpc.callTarget(targetId, method, args)` is unchanged.
-      call: (a: string, b?: unknown, c?: unknown) => {
-        const [target, method, callArgs] = normalizeAmbientRpcCall(a, b, c);
-        return this.rpc.call(target, method, callArgs, callOptions);
-      },
-      callTarget: (targetId: string, method: string, callArgs: unknown[] = []) =>
-        this.rpc.call(targetId, method, callArgs, callOptions),
-    };
-    // `services` is the COMPLETE service namespace (createServicesProxy): EVERY registered RPC
-    // service is reachable as `services.<name>.<method>(...)`, with NO hand-curated list (so a
-    // gap like the old `services.blobstore === undefined` is structurally impossible). It layers:
+    const callOptions = this.currentRunCallOptions();
+    // `services` is the complete convenience namespace (createServicesProxy): service names that
+    // don't collide with runtime bindings are reachable as `services.<name>.<method>(...)`, while
+    // rich runtime clients win on collisions (`services.workers` is the same ergonomic `workers`
+    // binding). Raw service methods are always reachable with `rpc.call("main", "<svc>.<method>", [...])`.
+    // It layers:
     //  1. ergonomic override — when `<name>` is a rich runtime client (vcs/fs/credentials/blobstore/
     //     …), `services.<name>` is that SAME curated object (so `services.vcs` === the bare `vcs`),
     //  2. dynamic fallback — any other service becomes `callMain("<name>.<method>", …)`.
@@ -727,10 +781,9 @@ export class EvalDO extends DurableObjectBase {
 
     // Layer 2 — the importable surface (gad/workspace/credentials/openPanel/…)
     // injected ambiently too (same refs as `import {…} from "@workspace/runtime"`),
-    // plus Layer 3 — eval-only ambient sugar (EVAL_AMBIENT_ONLY + 2-arg rpc).
+    // plus Layer 3 — eval-only ambient state helpers (scope/db/help/etc.).
     const bindings: Record<string, unknown> = {
       ...rt,
-      rpc: rpcBinding,
       services,
       ctx: { contextId: args.contextId ?? null, objectKey: this.objectKey },
       scope: scopeManager.current,
@@ -738,10 +791,12 @@ export class EvalDO extends DurableObjectBase {
       db: this.dbBinding(),
       // `help()` → discovery for an agent driving eval: the importable runtime
       // surface (what `import {…} from "@workspace/runtime"` gives), the ambient
-      // pre-injected globals (do NOT import these), the available services (EVERY
-      // one reachable as `services.<name>`), and where to look next.
+      // pre-injected globals (do NOT import these), available raw services, and where to look next.
       // `help("<service>")` → that service's methods.
       help: async (serviceName?: string) => {
+        if (serviceName !== undefined && typeof serviceName !== "string") {
+          return invalidHelpArgumentResponse(serviceName);
+        }
         if (serviceName) {
           // Prefer the INJECTED binding's surface (what eval actually calls) over the raw RPC
           // service — they can diverge (fs's low-level handle* wire methods are hidden behind
@@ -768,8 +823,9 @@ export class EvalDO extends DurableObjectBase {
                 `Use \`help('<name>')\` with a name from the \`services\` list for RPC services.`,
             };
           }
-          // Not a rich runtime binding — a plain RPC service. It is STILL reachable: call it as
-          // `services.${serviceName}.<method>(...)` (the complete proxy dispatches via callMain).
+          // Not a rich runtime binding — a plain RPC service. It is reachable as
+          // `services.${serviceName}.<method>(...)` (dynamic proxy) or, always, via
+          // `rpc.call("main", "${serviceName}.<method>", [...])`.
           return this.mainDocs().describeService(serviceName);
         }
         return {
@@ -780,10 +836,12 @@ export class EvalDO extends DurableObjectBase {
           importable: Object.keys(rt).sort(),
           ambient: [...EVAL_AMBIENT_ONLY],
           guidance:
-            "Every name in `services` is reachable as `services.<name>.<method>(...)` — the `services` " +
-            "binding is COMPLETE (no advertised-but-unreachable gaps). For rich runtime bindings (fs, " +
-            "vcs, credentials, blobstore, gad, workers, …) `services.<name>` is the SAME ergonomic " +
-            "client as the bare import; every other service is a uniform proxy over callMain. Call " +
+            "Use rich runtime bindings directly (`workers`, `vcs`, `fs`, ...), or import them from " +
+            "`@workspace/runtime`. For raw service catalog methods, use " +
+            '`rpc.call("main", "<svc>.<method>", [...])`; `services.<svc>.<method>(...)` is also available ' +
+            "for service names that do not collide with runtime bindings. For rich runtime bindings " +
+            "(fs, vcs, credentials, blobstore, gad, workers, …), `services.<name>` is the SAME " +
+            "ergonomic client as the bare binding, so raw service-only methods may differ. Call " +
             "help('<name>') for a binding's methods — for the rich bindings this describes what you " +
             "actually call (e.g. fs.open()→FileHandle), not the raw RPC service; or use the " +
             "docs_search/docs_open tools for full typed schemas in the service/runtime catalog. `importable` " +
@@ -880,8 +938,99 @@ export class EvalDO extends DurableObjectBase {
         scopeKeys: Object.keys(scopeManager.current),
       };
     } finally {
-      await scopeManager.exitEval();
+      try {
+        await scopeManager.exitEval();
+      } finally {
+        this.currentRunAbortSignal = null;
+        this.currentRunReadOnly = false;
+      }
     }
+  }
+
+  private currentRunCallOptions<T extends Record<string, unknown> | undefined>(opts?: T): T {
+    const signal = this.currentRunAbortSignal;
+    if (!signal && !this.currentRunReadOnly) return opts as T;
+    return {
+      ...(opts ?? {}),
+      ...(signal ? { signal } : {}),
+      ...(this.currentRunReadOnly ? { readOnly: true } : {}),
+    } as T;
+  }
+
+  private compactRunResult(result: RunResult): RunResult {
+    const compact: RunResult = {
+      success: result.success,
+      console: this.windowText(result.console, RESULT_CONSOLE_MAX_CHARS, "$lastConsole"),
+      ...(result.error
+        ? { error: this.windowText(result.error, RESULT_ERROR_MAX_CHARS, "$lastConsole") }
+        : {}),
+      ...(result.scopeKeys ? { scopeKeys: result.scopeKeys.slice(0, 500) } : {}),
+    };
+    if (result.returnValue !== undefined) {
+      compact.returnValue = this.compactReturnValue(result.returnValue);
+    }
+
+    let encoded = JSON.stringify(compact);
+    if (encoded.length <= RESULT_STORAGE_MAX_CHARS) return compact;
+
+    const fallback: RunResult = {
+      success: compact.success,
+      console: this.windowText(compact.console, 20_000, "$lastConsole"),
+      ...(compact.error ? { error: this.windowText(compact.error, 10_000, "$lastConsole") } : {}),
+      ...(compact.returnValue !== undefined
+        ? {
+            returnValue: {
+              truncated: true,
+              reason: "eval return value exceeded result storage limit",
+              scopeKey: "$lastReturn",
+            },
+          }
+        : {}),
+      ...(compact.scopeKeys ? { scopeKeys: compact.scopeKeys.slice(0, 200) } : {}),
+    };
+    encoded = JSON.stringify(fallback);
+    if (encoded.length <= RESULT_STORAGE_MAX_CHARS) return fallback;
+
+    return {
+      success: result.success,
+      console:
+        "[eval] Result exceeded the EvalDO storage limit. Large console/return data may be available in scope.$lastConsole and scope.$lastReturn.",
+      ...(result.error ? { error: this.windowText(result.error, 10_000, "$lastConsole") } : {}),
+      ...(result.scopeKeys ? { scopeKeys: result.scopeKeys.slice(0, 100) } : {}),
+    };
+  }
+
+  private compactReturnValue(returnValue: unknown): unknown {
+    const text = this.stringifyForResult(returnValue);
+    if (text.length <= RESULT_RETURN_PREVIEW_CHARS) return returnValue;
+    return {
+      truncated: true,
+      reason: "eval return value exceeded result transport/storage limit",
+      originalChars: text.length,
+      scopeKey: "$lastReturn",
+      preview: this.windowText(text, RESULT_RETURN_PREVIEW_CHARS, "$lastReturn"),
+    };
+  }
+
+  private stringifyForResult(value: unknown): string {
+    try {
+      return JSON.stringify(value, null, 2) ?? String(value);
+    } catch {
+      return String(value);
+    }
+  }
+
+  private windowText(text: string, maxChars: number, scopeKey: string): string {
+    if (text.length <= maxChars) return text;
+    const head = Math.floor(maxChars * 0.7);
+    const tail = maxChars - head;
+    const elided = text.length - maxChars;
+    return (
+      `${text.slice(0, head)}\n` +
+      `[eval output truncated: ${elided} of ${text.length} chars elided. ` +
+      `Read scope.${scopeKey} in pages, e.g. return scope.${scopeKey}.slice(0, 40000).]\n` +
+      `${text.slice(-tail)}`
+    );
   }
 
   /**
@@ -1025,18 +1174,17 @@ export class EvalDO extends DurableObjectBase {
       }
       return this.hostedRuntime;
     }
-    // Read-only containment: wrap outbound calls so that when the current run is read-only
-    // (set per-run in runLocked, read live like `parentMeta`), every service call the hosted
-    // runtime / `services` proxy makes carries `readOnly`. Only `.call` is intercepted; the rest
-    // of the client delegates unchanged. DO-infrastructure calls use `this.rpc` directly (unwrapped),
-    // so durable/trajectory writes are never read-only-blocked.
+    // Per-run containment: wrap outbound calls so the current eval run's abort signal/read-only flag
+    // is added to every authored service/runtime call. The proxy is stable and reads live fields, so
+    // cached imports of @workspace/runtime remain correct across runs. DO-infrastructure calls use
+    // `this.rpc` directly (unwrapped), so durable/trajectory writes are never read-only-blocked.
     const baseRpc = this.rpc;
     const rpc = new Proxy(baseRpc, {
       get: (t, prop, receiver) =>
         prop === "call"
           ? (...callArgs: unknown[]) => {
               const opts = callArgs[3] as Record<string, unknown> | undefined;
-              const merged = this.currentRunReadOnly ? { ...opts, readOnly: true } : opts;
+              const merged = this.currentRunCallOptions(opts);
               return (baseRpc.call as (...a: unknown[]) => Promise<unknown>)(
                 callArgs[0],
                 callArgs[1],
