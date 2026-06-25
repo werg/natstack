@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { $getRoot, $createTextNode, type ElementNode } from "lexical";
 import { createMdxEditorCore, HISTORIC_TAG } from "./mdxEditorCore.js";
-import { buildCommitEdits } from "../coedit/commitEdits.js";
+import { buildEditOps } from "../coedit/commitEdits.js";
 
 describe("MdxEditorCore (headless Lexical + vendored pipeline)", () => {
   it("round-trips markdown through import → export", () => {
@@ -39,7 +39,7 @@ describe("MdxEditorCore (headless Lexical + vendored pipeline)", () => {
 
     const { canonical, dirty } = core.getDirtyCommit();
     expect(canonical).toContain("first EDITED");
-    const built = buildCommitEdits({
+    const built = buildEditOps({
       path: "Doc.mdx",
       baseText,
       currentCanonical: canonical,

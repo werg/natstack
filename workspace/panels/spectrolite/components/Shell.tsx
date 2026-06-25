@@ -141,7 +141,7 @@ function PickerScreen() {
       <Box style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
         <VaultPicker
           agentHandle={agentHandle}
-          onSelect={(contextPath) => app.vault.selectVault(contextPath)}
+          onSelect={(contextPath, options) => app.vault.selectVault(contextPath, options)}
         />
       </Box>
       <ChannelDrawer />

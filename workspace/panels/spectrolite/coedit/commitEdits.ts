@@ -1,17 +1,22 @@
 /**
- * Commit-edit builder — turn the editor's locally-dirty blocks into the exact
- * `replace` hunks for `vcs.applyEdits` (plan section A + decision 2).
+ * Edit-hunk builder — turn the editor's locally-dirty blocks into the exact
+ * `replace` hunks for a WORKING `vcs.edit` (plan section A + decision 2).
+ *
+ * Typing (debounced) records tracked working edits via `vcs.edit` — NOT a commit
+ * per keystroke. This builder produces the hunks for that recording; the
+ * deliberate `vcs.commit` (Publish / Send-to-scribe) then folds the accumulated
+ * working edits into a messaged snapshot.
  *
  * Each dirty block carries its byte range in the *base* canonical document (the
- * content at `baseStateHash`, tracked by the block registry from mdast
- * positions) and its current serialized text. The happy path emits one surgical
- * `replace` hunk per dirty block. We then **verify** by replaying those hunks
- * against the base: if the result is byte-identical to the editor's current
- * canonical serialization, the surgical hunks are provably correct and we send
- * them. If not — a block's serialization couldn't be reconciled to canonical
- * bytes (formatting / wikilink / frontmatter normalization drift, or a
- * structural local edit the range map can't express) — we fall back to a single
- * whole-document replace hunk.
+ * content at `baseStateHash` — the last recorded working state, tracked by the
+ * block registry from mdast positions) and its current serialized text. The
+ * happy path emits one surgical `replace` hunk per dirty block. We then
+ * **verify** by replaying those hunks against the base: if the result is
+ * byte-identical to the editor's current canonical serialization, the surgical
+ * hunks are provably correct and we send them. If not — a block's serialization
+ * couldn't be reconciled to canonical bytes (formatting / wikilink / frontmatter
+ * normalization drift, or a structural local edit the range map can't express) —
+ * we fall back to a single whole-document replace hunk.
  *
  * `usedFallback` feeds the **fallback-rate metric** (the rewrite's success bar):
  * a stable, round-trip-idempotent serializer keeps this ~0; a high rate means
@@ -75,10 +80,10 @@ export function applyReplaceHunks(content: string, hunks: ReplaceHunk[]): string
 }
 
 /**
- * Build the `replace` edit ops for a commit. Returns `changed: false` (no edits)
- * when the current canonical already equals the base.
+ * Build the `replace` edit ops for a working `vcs.edit`. Returns `changed: false`
+ * (no edits) when the current canonical already equals the base.
  */
-export function buildCommitEdits(input: CommitEditsInput): CommitEditsResult {
+export function buildEditOps(input: CommitEditsInput): CommitEditsResult {
   const { path, baseText, currentCanonical, dirtyBlocks } = input;
   if (currentCanonical === baseText) {
     return { edits: [], usedFallback: false, changed: false };

@@ -1,12 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { buildCommitEdits, applyReplaceHunks } from "./commitEdits.js";
+import { buildEditOps, applyReplaceHunks } from "./commitEdits.js";
 
 const PATH = "projects/default/Doc.mdx";
 
-describe("buildCommitEdits", () => {
+describe("buildEditOps", () => {
   it("emits no edits when nothing changed", () => {
     const text = "# A\n\nbody\n";
-    const r = buildCommitEdits({ path: PATH, baseText: text, currentCanonical: text, dirtyBlocks: [] });
+    const r = buildEditOps({ path: PATH, baseText: text, currentCanonical: text, dirtyBlocks: [] });
     expect(r.changed).toBe(false);
     expect(r.edits).toEqual([]);
     expect(r.usedFallback).toBe(false);
@@ -18,7 +18,7 @@ describe("buildCommitEdits", () => {
     const currentCanonical = "# Title\n\npara ONE\n\npara two";
     // The middle block "para one" sits at [9, 17).
     expect(baseText.slice(9, 17)).toBe("para one");
-    const r = buildCommitEdits({
+    const r = buildEditOps({
       path: PATH,
       baseText,
       currentCanonical,
@@ -40,7 +40,7 @@ describe("buildCommitEdits", () => {
   it("applies multiple disjoint dirty-block hunks", () => {
     const baseText = "AAA\n\nBBB\n\nCCC";
     const currentCanonical = "A1A\n\nBBB\n\nC1C";
-    const r = buildCommitEdits({
+    const r = buildEditOps({
       path: PATH,
       baseText,
       currentCanonical,
@@ -59,7 +59,7 @@ describe("buildCommitEdits", () => {
     // drift) → single whole-document replace.
     const baseText = "AAA\n\nBBB";
     const currentCanonical = "AAA\n\nBBB\n\nCCC"; // a block was added — range map can't express it
-    const r = buildCommitEdits({
+    const r = buildEditOps({
       path: PATH,
       baseText,
       currentCanonical,
@@ -75,7 +75,7 @@ describe("buildCommitEdits", () => {
   it("falls back when a stale range would land out of bounds", () => {
     const baseText = "short";
     const currentCanonical = "shorter text now";
-    const r = buildCommitEdits({
+    const r = buildEditOps({
       path: PATH,
       baseText,
       currentCanonical,

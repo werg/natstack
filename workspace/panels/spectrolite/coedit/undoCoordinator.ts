@@ -1,15 +1,15 @@
 /**
  * Undo coordinator — one ⌘Z stack over two tiers (decision 8 + section C).
  *
- * Debounced autosave means recent keystrokes have no GAD transition yet, so
- * ⌘Z must first undo **uncommitted local edits via Lexical's native undo**
- * (normal typing feel). Once an edit is committed — and for every *agent*
- * transition — undo becomes a **GAD revert**: `vcs.revert` forward-applies the
- * inverse patch (never a head reset), so reverting one transition preserves
- * later edits and an overlap surfaces as a conflict.
+ * The debounced working-edit recording means recent keystrokes may not have a
+ * GAD transition yet, so ⌘Z must first undo **uncommitted local edits via
+ * Lexical's native undo** (normal typing feel). Once an edit is committed — and
+ * for every *agent* transition — undo becomes a **GAD revert**: `vcs.revert`
+ * forward-applies the inverse patch (never a head reset), so reverting one
+ * transition preserves later edits and an overlap surfaces as a conflict.
  *
  * The Lexical↔GAD boundary is invisible and a revert round-trips
- * `applyEdits → subscribeHead → node replace`, which Lexical would otherwise
+ * `vcs.revert → subscribeHead → node replace`, which Lexical would otherwise
  * record as a NEW undoable action (double-undo / loops). So this single
  * coordinator owns ⌘Z and ⇧⌘Z:
  *   1. commits/agent-edits seal a checkpoint (push a revertable transition);

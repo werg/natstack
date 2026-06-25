@@ -3,12 +3,15 @@
  *
  * GAD-native: the path index comes from `vcs.listFiles()` (the vault's ctx
  * head), filtered to `.mdx` and mapped to vault-relative paths via the
- * {@link VaultPathMapping}. There is no `fs` walk. File creation commits an
- * empty doc through `vcs.applyEdits` so it appears in the index + every peer.
+ * {@link VaultPathMapping}. There is no `fs` walk. File creation records the new
+ * doc as a tracked working `vcs.edit` so it appears in the index immediately
+ * (committed + published later via Publish).
  *
  * Switching vault is a panel **reopen** under the new vault's stable
  * contextId (`vault-<hash>`), not a runtime `repoRoot` swap — only reopening
- * rebinds `vcs.*` (and the scribe) to the new vault's durable head.
+ * rebinds `vcs.*` (and the scribe) to the new vault's durable head. First-run
+ * starter docs are passed through stateArgs and created by the reopened panel,
+ * so the tracked working edit lands on the vault's own context head.
  */
 
 import { panel, vcs } from "@workspace/runtime";
@@ -20,6 +23,12 @@ import { vaultContextId, vaultPathMapping, normalizeVaultPath, type VaultPathMap
 export interface VaultControllerHooks {
   /** Notify the session layer (agent scope update / default-agent bootstrap). */
   onVaultSelected(repoRoot: string): void;
+}
+
+export interface VaultStarterDoc {
+  /** Vault-relative path, e.g. `Welcome.mdx`. */
+  path: string;
+  content: string;
 }
 
 export class VaultController {
@@ -41,11 +50,13 @@ export class VaultController {
    * binding to it means reopening the panel under `vault-<hash>`. We persist
    * the selection in the new context's stateArgs via `reopen`.
    */
-  selectVault(contextPath: string): void {
+  selectVault(contextPath: string, options?: { starterDoc?: VaultStarterDoc }): void {
     const repoRoot = normalizeVaultPath(contextPath);
+    const stateArgs: Record<string, unknown> = { repoRoot, openPath: undefined };
+    if (options?.starterDoc) stateArgs["pendingStarterDoc"] = options.starterDoc;
     void panel.reopen({
       contextId: vaultContextId(repoRoot),
-      stateArgs: { repoRoot, openPath: undefined },
+      stateArgs,
     }).catch((err) => {
       console.warn("[Spectrolite] reopen for vault select failed:", err);
     });
@@ -87,7 +98,8 @@ export class VaultController {
   /**
    * Create a file (exclusive — refuses to clobber an existing note). Returns
    * the final vault-relative path on success, or the existing path when the
-   * file is already there. Commits an empty doc through the vault head.
+   * file is already there. Records the empty doc as a tracked working `vcs.edit`
+   * on the vault head (no commit — Publish folds + pushes it later).
    */
   async createFile(relPath: string, initialContent: string): Promise<string> {
     const root = this.store.getState().repoRoot;
@@ -99,13 +111,9 @@ export class VaultController {
     const existing = await vcs.readFile("", vcsPath).catch(() => null);
     if (existing) return finalPath; // already exists — caller just opens it
 
-    const result = await vcs.applyEdits({
+    await vcs.edit({
       edits: [{ kind: "create", path: vcsPath, content: { kind: "text", text: initialContent } }],
     });
-    if (result.status === "conflicted") {
-      // Lost a create race — the file now exists; just open it.
-      return finalPath;
-    }
     void this.refreshPaths();
     return finalPath;
   }

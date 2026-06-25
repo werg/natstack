@@ -2,8 +2,8 @@
  * Vault picker — first-run landing screen.
  *
  *   - Lists existing `projects/*` directories from the workspace tree.
- *   - Lets the user create a new vault (mkdir + starter Welcome.mdx +
- *     workspace VCS commit).
+ *   - Lets the user create a new vault. The picker reopens into that vault's
+ *     stable context; the reopened panel records the starter Welcome.mdx there.
  *
  * Spectrolite always asks which knowledge base to work on rather than
  * guessing a default path.
@@ -12,7 +12,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Box, Button, Callout, Card, Code, Flex, Heading, IconButton, Spinner, Text, TextField } from "@radix-ui/themes";
 import { ArchiveIcon, ExclamationTriangleIcon, FilePlusIcon, ReloadIcon } from "@radix-ui/react-icons";
-import { vcs } from "@workspace/runtime";
 import { useIsMobile } from "@workspace/react";
 import { discoverVaults, vaultContextPath, validateVaultName, type VaultEntry } from "../state/vaultDiscovery";
 
@@ -34,7 +33,10 @@ Replace this file with your own content when you're ready.
 
 export interface VaultPickerProps {
   agentHandle?: string;
-  onSelect: (contextPath: string) => void;
+  onSelect: (
+    contextPath: string,
+    options?: { starterDoc?: { path: string; content: string } }
+  ) => void;
 }
 
 export function VaultPicker({ agentHandle, onSelect }: VaultPickerProps) {
@@ -75,18 +77,12 @@ export function VaultPicker({ agentHandle, onSelect }: VaultPickerProps) {
     setCreating(true);
     try {
       const dir = vaultContextPath(trimmed);
-      // Edit-first: the create commits to the context head and projects the
-      // file to disk in one atomic GAD transition (no fs write, no commit).
-      await vcs.applyEdits({
-        edits: [
-          {
-            kind: "create",
-            path: `projects/${trimmed}/Welcome.mdx`,
-            content: { kind: "text", text: WELCOME_BODY },
-          },
-        ],
+      onSelect(dir, {
+        starterDoc: {
+          path: "Welcome.mdx",
+          content: WELCOME_BODY,
+        },
       });
-      onSelect(dir);
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : String(err));
     } finally {

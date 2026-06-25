@@ -13,6 +13,7 @@ import { useApp, useAppState } from "../app/context";
 import { FileTree } from "./FileTree";
 import { BacklinksPanel } from "./BacklinksPanel";
 import { AgentRoster } from "./AgentRoster";
+import { getPublishPresentation } from "./publishPresentation";
 
 function VisuallyHidden({ children }: { children: ReactNode }) {
   return (
@@ -178,20 +179,21 @@ function PublishSummary() {
     () => app.publish.getSnapshot(),
     () => app.publish.getSnapshot(),
   );
-  const count = snapshot.ahead;
+  const dirtyCount = useAppState((s) => s.dirtyPaths.length);
+  const presentation = getPublishPresentation(snapshot, dirtyCount);
   return (
     <Flex align="center" gap="2" justify="between" data-testid="spectrolite-vcs-head">
       <Flex direction="column">
         <Text size="2" weight="medium">
-          {count > 0 ? `${count} unpublished change${count === 1 ? "" : "s"}` : "Published"}
+          {presentation.statusLabel}
         </Text>
         <Text size="1" color="gray">Changes stay on this vault's head until you publish.</Text>
       </Flex>
       <Button
         size="2"
-        variant={count > 0 ? "solid" : "soft"}
-        color={count > 0 ? "iris" : "gray"}
-        disabled={count === 0 || snapshot.publishing}
+        variant={presentation.hasChanges ? "solid" : "soft"}
+        color={presentation.hasChanges ? "iris" : "gray"}
+        disabled={!presentation.hasChanges || snapshot.publishing || presentation.publishBlocked}
         onClick={() => void app.publish.publish()}
         data-testid="spectrolite-settings-publish"
       >

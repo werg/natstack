@@ -5,17 +5,24 @@
  * move only on an explicit Publish. This bar shows "● N unpublished changes"
  * (from {@link PublishController}, a ctx-head-vs-`main` diff) and a Publish
  * button (pull-main-then-publish). A conflicted pull parks on the panel's own
- * head and is surfaced inline with Abort.
+ * head and is surfaced inline with Resolve / Complete / Abort.
  *
  * Subtle by design: when there is nothing to publish and no pending merge, the
  * bar collapses to a quiet "Published" line.
  */
 
-import { useSyncExternalStore, type ReactNode } from "react";
-import { Badge, Button, Flex, Text } from "@radix-ui/themes";
-import { UploadIcon, ExclamationTriangleIcon, Cross1Icon, FileTextIcon } from "@radix-ui/react-icons";
-import { useApp } from "../app/context";
+import { useState, useSyncExternalStore, type ReactNode } from "react";
+import { Badge, Button, Flex, Popover, Text, TextField } from "@radix-ui/themes";
+import {
+  UploadIcon,
+  ExclamationTriangleIcon,
+  Cross1Icon,
+  FileTextIcon,
+  UpdateIcon,
+} from "@radix-ui/react-icons";
+import { useApp, useAppState } from "../app/context";
 import type { PublishSnapshot } from "../app/publishController";
+import { getPublishPresentation } from "./publishPresentation";
 
 export function PublishBar({ mobile = false, trailing }: { mobile?: boolean; trailing?: ReactNode }) {
   const app = useApp();
@@ -24,13 +31,15 @@ export function PublishBar({ mobile = false, trailing }: { mobile?: boolean; tra
     () => app.publish.getSnapshot(),
     () => app.publish.getSnapshot(),
   );
+  // Working-copy dirtiness (uncommitted local edits). With deliberate commits
+  // there is no commit-per-keystroke stream, so the "unpublished" indicator must
+  // count uncommitted edits too, not just committed-but-unpushed (`ahead`).
+  const dirtyCount = useAppState((s) => s.dirtyPaths.length);
 
   if (snapshot.pending) {
-    return <PendingMergeBar snapshot={snapshot} />;
+    return <PendingMergeBar snapshot={snapshot} mobile={mobile} />;
   }
-
-  const count = snapshot.ahead;
-  const hasChanges = count > 0;
+  const presentation = getPublishPresentation(snapshot, dirtyCount);
 
   return (
     <Flex
@@ -47,7 +56,7 @@ export function PublishBar({ mobile = false, trailing }: { mobile?: boolean; tra
         <span
           aria-hidden
           style={{
-            color: hasChanges ? "var(--iris-9)" : "var(--gray-7)",
+            color: presentation.hasChanges ? "var(--iris-9)" : "var(--gray-7)",
             fontSize: 10,
             lineHeight: 1,
           }}
@@ -55,13 +64,21 @@ export function PublishBar({ mobile = false, trailing }: { mobile?: boolean; tra
           ●
         </span>
         <Text size="1" color="gray" truncate data-testid="spectrolite-publish-status">
-          {hasChanges
-            ? `${count} unpublished change${count === 1 ? "" : "s"}`
-            : "Published"}
+          {presentation.statusLabel}
         </Text>
         {snapshot.lastError ? (
           <Text size="1" color="red" truncate title={snapshot.lastError}>
             · {snapshot.lastError}
+          </Text>
+        ) : snapshot.buildReport ? (
+          <Text
+            size="1"
+            color="red"
+            truncate
+            data-testid="spectrolite-publish-build-failed"
+            title={buildReportSummary(snapshot.buildReport)}
+          >
+            · {buildReportSummary(snapshot.buildReport)}
           </Text>
         ) : null}
       </Flex>
@@ -69,11 +86,29 @@ export function PublishBar({ mobile = false, trailing }: { mobile?: boolean; tra
           strip), so the editor keeps maximum vertical room. */}
       <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
         {trailing}
+        {snapshot.behind ? (
+          <Button
+            size={mobile ? "2" : "1"}
+            variant="soft"
+            color="amber"
+            disabled={snapshot.publishing || presentation.syncBlockedByUncommitted}
+            onClick={() => void app.publish.rebase()}
+            data-testid="spectrolite-sync-button"
+            title={
+              presentation.syncBlockedByUncommitted
+                ? "Publish or discard local edits before syncing"
+                : "main advanced — pull the latest into your view"
+            }
+            style={mobile ? { minHeight: 40 } : undefined}
+          >
+            <UpdateIcon /> Sync
+          </Button>
+        ) : null}
         <Button
           size={mobile ? "2" : "1"}
-          variant={hasChanges ? "solid" : "soft"}
-          color={hasChanges ? "iris" : "gray"}
-          disabled={!hasChanges || snapshot.publishing}
+          variant={presentation.hasChanges ? "solid" : "soft"}
+          color={presentation.hasChanges ? "iris" : "gray"}
+          disabled={!presentation.hasChanges || snapshot.publishing || presentation.publishBlocked}
           onClick={() => void app.publish.publish()}
           data-testid="spectrolite-publish-button"
           style={mobile ? { minHeight: 40 } : undefined}
@@ -85,7 +120,17 @@ export function PublishBar({ mobile = false, trailing }: { mobile?: boolean; tra
   );
 }
 
-function PendingMergeBar({ snapshot }: { snapshot: PublishSnapshot }) {
+/** A one-line summary of a build-failed push: the diagnostic count + first message. */
+function buildReportSummary(reports: PublishSnapshot["buildReport"]): string {
+  const diags = (reports ?? []).flatMap((r) => r.builds.flatMap((b) => b.diagnostics));
+  if (diags.length === 0) return "Publish blocked by a build error";
+  const first = diags[0]!;
+  const where = `${first.file}:${first.line}:${first.column}`;
+  const more = diags.length > 1 ? ` (+${diags.length - 1} more)` : "";
+  return `Build failed — ${where} ${first.message}${more}`;
+}
+
+function PendingMergeBar({ snapshot, mobile = false }: { snapshot: PublishSnapshot; mobile?: boolean }) {
   const app = useApp();
   const conflicts = snapshot.pending?.conflicts ?? [];
   const mapping = app.vault.mapping();
@@ -122,26 +167,45 @@ function PendingMergeBar({ snapshot }: { snapshot: PublishSnapshot }) {
         <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
           {firstOpenable?.vaultRelPath ? (
             <Button
-              size="1"
+              size={mobile ? "2" : "1"}
               variant="solid"
               color="amber"
               onClick={() => openConflict(firstOpenable.vaultRelPath!)}
               data-testid="spectrolite-publish-resolve"
+              style={mobile ? { minHeight: 40 } : undefined}
             >
               <FileTextIcon /> Resolve
             </Button>
           ) : null}
           <Button
-            size="1"
+            size={mobile ? "2" : "1"}
+            variant="solid"
+            color="iris"
+            disabled={snapshot.publishing}
+            onClick={() => void app.publish.publish("Resolve merge")}
+            data-testid="spectrolite-publish-complete"
+            style={mobile ? { minHeight: 40 } : undefined}
+          >
+            <UploadIcon /> {snapshot.publishing ? "Completing…" : "Complete"}
+          </Button>
+          <Button
+            size={mobile ? "2" : "1"}
             variant="soft"
             color="gray"
+            disabled={snapshot.publishing}
             onClick={() => void app.publish.abort()}
             data-testid="spectrolite-publish-abort"
+            style={mobile ? { minHeight: 40 } : undefined}
           >
             <Cross1Icon /> Abort
           </Button>
         </Flex>
       </Flex>
+      {snapshot.lastError ? (
+        <Text size="1" color="red" truncate title={snapshot.lastError}>
+          {snapshot.lastError}
+        </Text>
+      ) : null}
       {conflictItems.length > 0 ? (
         <Flex
           direction="column"

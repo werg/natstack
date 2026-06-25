@@ -8,6 +8,12 @@
  * ({ repoRoot, openPath }). DOM interaction goes through CDP (driver DO
  * route for workspace panels).
  *
+ * Edit → commit → push: fixtures are recorded as tracked working `vcs.edit`s
+ * directly on the vault's durable ctx head (the head the panel reads working
+ * content from). A simulated co-editor records a working edit AND `vcs.commit`s
+ * it — only a commit (not a working edit) broadcasts a head advance, which is
+ * what drives the panel's `subscribeHead` reconcile.
+ *
  * Not ported (still outside-only): first-run vault picker + agent add/remove
  * + vault switching (deep dialog flows tied to channel agents), commit/flush
  * keyboard editing flows (Electron input events), mobile-viewport variant
@@ -70,9 +76,12 @@ const FIXTURES: Record<string, string> = {
 
 async function ensureVault(dir: string, files: Record<string, string>): Promise<void> {
   const root = dir.replace(/^\/+/, "").replace(/\/+$/, "");
-  // Edit-first GAD write: each `write` creates-or-overwrites and commits to the
-  // context head in one atomic transition (disk is projected from the head).
-  await vcs.applyEdits({
+  // Edit-first GAD write: each `write` creates-or-overwrites as a tracked
+  // working edit on the vault's durable ctx head — the head the panel reads
+  // working content from (disk is projected from the head). No commit needed for
+  // the panel to see them on load.
+  await vcs.edit({
+    head: vaultCtxHead(dir),
     edits: Object.entries(files).map(([name, content]) => ({
       kind: "write" as const,
       path: `${root}/${name}`,
@@ -168,10 +177,11 @@ export const spectrolite = suite("spectrolite", { timeoutMs: 120_000 })
   })
   .test("reconciles a co-editor's edit into the open document (no banner)", async () => {
     // GAD-native: disk is a projection of the vault head. A co-editor (the
-    // scribe) advancing the head must reconcile NARROWLY into the live editor —
-    // no "changed on disk" banner, no reload prompt (both removed). We simulate
-    // the co-editor with a privileged `vcs.applyEdits` against the vault's
-    // durable ctx head.
+    // scribe) committing on the head must reconcile NARROWLY into the live editor
+    // — no "changed on disk" banner, no reload prompt (both removed). We simulate
+    // the co-editor with a privileged working `vcs.edit` THEN `vcs.commit`
+    // against the vault's durable ctx head: only the commit broadcasts a head
+    // advance, which is what the panel's `subscribeHead` reconcile listens for.
     await ensureVault(VAULT, FIXTURES);
     await withPanel(
       "panels/spectrolite",
@@ -179,9 +189,10 @@ export const spectrolite = suite("spectrolite", { timeoutMs: 120_000 })
         await waitForText(handle, "E2E Note", { timeoutMs: 60_000 });
         const stamp = `co-editor-${Date.now()}`;
         const head = vaultCtxHead(VAULT);
-        const docPath = `${VAULT.replace(/^\/+/, "")}/E2E.mdx`;
+        const repoPath = VAULT.replace(/^\/+/, "");
+        const docPath = `${repoPath}/E2E.mdx`;
         const current = await vcs.readFile(head, docPath);
-        await vcs.applyEdits({
+        await vcs.edit({
           head,
           baseStateHash: current?.stateHash,
           edits: [
@@ -195,6 +206,7 @@ export const spectrolite = suite("spectrolite", { timeoutMs: 120_000 })
             },
           ],
         });
+        await vcs.commit({ head, repoPaths: [repoPath], message: `Co-editor ${stamp}` });
         await waitForText(handle, stamp, { timeoutMs: 60_000 });
         // The disk-conflict UX is gone entirely.
         const text = await panelText(handle);
@@ -202,6 +214,55 @@ export const spectrolite = suite("spectrolite", { timeoutMs: 120_000 })
       },
       { stateArgs: { repoRoot: VAULT, openPath: "E2E.mdx" } }
     );
+  })
+  .test("tracks working edits with provenance, then commit folds them (no per-keystroke commits)", async () => {
+    // Edit → commit → push provenance: a tracked working `vcs.edit` shows up as
+    // UNCOMMITTED on the head (status.uncommitted > 0) WITHOUT a commit-log entry
+    // or an `ahead` count; the deliberate `vcs.commit` then folds the working
+    // edits into ONE snapshot (uncommitted → 0, ahead rises), and `fileHistory`
+    // surfaces the working tail before commit and the committed op after.
+    await ensureVault(VAULT, FIXTURES);
+    const head = vaultCtxHead(VAULT);
+    const repoPath = VAULT.replace(/^\/+/, "");
+    const docPath = `${repoPath}/E2E.mdx`;
+
+    // Three separate working edits simulate debounced typing — none commits.
+    for (let i = 0; i < 3; i += 1) {
+      const cur = await vcs.readFile(head, docPath);
+      const base = cur?.content.kind === "text" ? cur.content.text : "";
+      await vcs.edit({
+        head,
+        baseStateHash: cur?.stateHash,
+        edits: [
+          {
+            kind: "write",
+            path: docPath,
+            content: { kind: "text", text: `${base}\nedit ${i}\n` },
+          },
+        ],
+      });
+    }
+
+    const beforeStatus = await vcs.status(repoPath, head);
+    expect(beforeStatus.uncommitted > 0, "working edits are tracked as uncommitted").toBe(true);
+    const beforePush = await vcs.pushStatus([repoPath]);
+    const beforeAhead = beforePush.find((s) => s.repoPath === repoPath)?.ahead ?? 0;
+    expect(beforeAhead, "working edits are NOT committed-ahead").toBe(0);
+
+    // Working edits carry provenance and appear as the working tail in history.
+    const working = await vcs.fileHistory(repoPath, "E2E.mdx", head);
+    expect(working.length > 0, "fileHistory surfaces working edit ops").toBe(true);
+
+    // The deliberate commit folds them into one messaged snapshot.
+    const committed = await vcs.commit({ head, repoPaths: [repoPath], message: "Fold working edits" });
+    expect(committed.length, "one repo committed").toBe(1);
+    expect(committed[0]!.status, "commit folded the edits").toBe("committed");
+
+    const afterStatus = await vcs.status(repoPath, head);
+    expect(afterStatus.uncommitted, "no uncommitted edits remain after commit").toBe(0);
+    const afterPush = await vcs.pushStatus([repoPath]);
+    const afterAhead = afterPush.find((s) => s.repoPath === repoPath)?.ahead ?? 0;
+    expect(afterAhead > 0, "the commit is now ahead of main (push to publish)").toBe(true);
   })
   .test("stays responsive in a larger vault (with CPU profile attached)", async (t) => {
     await ensureVault(LARGE_VAULT, largeVaultFiles());

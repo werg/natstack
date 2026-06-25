@@ -78,7 +78,7 @@ export class ViewStateStore {
     return true;
   }
 
-  /** Follow the doc on rename (sidecar is keyed by path). */
+  /** Follow the doc on rename (the sidecar is keyed by path). */
   rename(oldPath: string, newPath: string): void {
     const state = this.state(oldPath);
     this.clear(oldPath);
@@ -89,7 +89,7 @@ export class ViewStateStore {
     }
   }
 
-  /** Clean up with the doc on delete. */
+  /** Clean up with the doc on delete (the private view-state sidecar). */
   clear(path: string): void {
     this.cache.delete(path);
     this.backend.remove(this.storageKey(path));
@@ -159,7 +159,8 @@ export function localStorageBackend(): ViewStateBackend {
  * into the sidecar and strip it from the canonical bytes. Returns the parsed
  * view-state (or null) plus the canonical markdown with `state:` removed. The
  * DocController seeds the sidecar (seedIfAbsent) and, when `canonical` differs,
- * commits the strip once so the co-edited doc is pure prose thereafter.
+ * records the strip as a working `vcs.edit` once so the co-edited doc is pure
+ * prose thereafter.
  */
 export function liftLegacyViewState(markdown: string): {
   viewState: Record<string, unknown> | null;

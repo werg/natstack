@@ -96,16 +96,21 @@ export function DocumentEditor({ relPath, theme, dependencies, mentionCandidates
       coreRef.current = null;
       app.registerSuggestionApplier(null);
       app.registerCommitActiveDoc(null);
+      app.registerReloadActiveDoc(null);
       app.setDirty(relPath, false);
     };
   }, [app, relPath]);
 
-  // Pull canonical once and update the cheap derived state.
+  // Pull canonical once and update the cheap derived state. Dirtiness now means
+  // "working copy diverges from the last recorded base" (the controller's view) —
+  // not "has a live block", since typing records tracked working edits rather
+  // than commits.
   const recompute = useMemo(
     () => (core: MdxEditorCore) => {
       const canonical = core.getCanonical();
       app.setActiveDocSource(relPath, canonical);
-      app.setDirty(relPath, core.getLiveBlockIds().size > 0);
+      const controller = controllerRef.current;
+      app.setDirty(relPath, controller ? controller.isDirty() : core.getLiveBlockIds().size > 0);
     },
     [app, relPath],
   );
@@ -116,7 +121,9 @@ export function DocumentEditor({ relPath, theme, dependencies, mentionCandidates
 
       const undo = new UndoCoordinator({
         lexical: lexicalUndo,
-        revert: (target) => vcs.revert(target),
+        // Per-repo VCS: revert must name the vault's repo (the single repo this
+        // panel edits). repoPath is required on `vcs.revert`.
+        revert: (target) => vcs.revert({ ...target, repoPath: app.publish.getRepo() }),
         onRevertIssued: (stateHash) => controllerRef.current?.expectHistoric(stateHash),
       });
       undoRef.current = undo;
@@ -125,19 +132,33 @@ export function DocumentEditor({ relPath, theme, dependencies, mentionCandidates
         editor: core,
         vcs,
         vaultHead: app.vaultHead,
+        // Per-repo VCS: `vcs.commit` is scoped to the vault's single repo.
+        vaultRepo: app.publish.getRepo(),
         viewState: app.viewState,
         splitBlocks: (markdown) => splitMdxBlocks(markdown),
         onCollisions: (collisions, path) => app.pushCollisions(collisions, path),
         onConflict: (path) => app.onSaveConflict(path),
         onSaveError: (path, err) => {
-          // Teardown save failed and can't retry — keep the path marked unsaved.
-          app.setDirty(path, true);
-          console.warn("[spectrolite] save failed on teardown:", path, err);
+          // A working-edit record (or teardown flush) failed and can't retry —
+          // keep the path marked unsaved (the edit may not be durable).
+          const rel = app.vault.mapping().toVaultRelPath(path);
+          app.setDirty(rel ?? path, true);
+          console.warn("[spectrolite] working edit failed:", path, err);
+        },
+        // Working-copy dirtiness changed (working edit / commit / remote apply) —
+        // mirror it into the store so the file index dot + PublishBar reflect it.
+        onDirtyChange: (path, dirty) => {
+          const rel = app.vault.mapping().toVaultRelPath(path);
+          if (rel) app.setDirty(rel, dirty);
         },
         undo,
       });
       controllerRef.current = controller;
-      app.registerCommitActiveDoc(() => controller.commitNow());
+      // The deliberate commit (Publish / Send-to-scribe) — carries a message.
+      app.registerCommitActiveDoc((message) => controller.commitNow(message));
+      // Re-read this doc at the current head after a Sync/rebase (the re-pinned
+      // base may have moved without advancing the head).
+      app.registerReloadActiveDoc(() => controller.load(vcsPath));
 
       // A user-chosen collision resolution: replace the live blocks with the
       // resolved text as a NORMAL user edit (no historic tag) so the

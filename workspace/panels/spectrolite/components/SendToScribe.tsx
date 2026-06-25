@@ -60,7 +60,8 @@ export function SendToScribe({
       const vcsPath = app.vault.mapping().toVcsPath(activePath);
       await sendToScribe(
         {
-          commitPending: () => app.commitActiveDoc(),
+          // The deliberate commit that grounds the scribe in what the user saw.
+          commitPending: () => app.commitActiveDoc("Snapshot for @scribe"),
           send: (content, opts) => app.session.send(content, opts),
         },
         {

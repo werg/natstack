@@ -18,7 +18,7 @@ import { createPanelSandboxConfig } from "@workspace/agentic-core";
 import { createStore, type Store } from "./store";
 import { initialState, type PendingSuggestion, type SpectroliteState } from "./state";
 import { SessionController } from "./sessionController";
-import { VaultController } from "./vaultController";
+import { VaultController, type VaultStarterDoc } from "./vaultController";
 import { PublishController } from "./publishController";
 import { createViewStateStore, type ViewStateStore } from "../coedit/viewState";
 import { parseFrontmatter, diffDependencies } from "../mdx/frontmatter";
@@ -31,7 +31,16 @@ interface PersistedStateArgs {
   contextId?: string;
   installedAgents?: InstalledAgentRecord[];
   openPath?: string;
+  pendingStarterDoc?: unknown;
   repoRoot?: string;
+}
+
+function parsePendingStarterDoc(value: unknown): VaultStarterDoc | null {
+  if (!value || typeof value !== "object") return null;
+  const candidate = value as { path?: unknown; content?: unknown };
+  return typeof candidate.path === "string" && typeof candidate.content === "string"
+    ? { path: candidate.path, content: candidate.content }
+    : null;
 }
 
 export interface SpectroliteApp {
@@ -58,10 +67,17 @@ export interface SpectroliteApp {
   resolveSuggestion(id: string, resolved: SuggestionResolution | null): void;
   /** DocumentEditor registers how to apply a block resolution to the live doc. */
   registerSuggestionApplier(applier: SuggestionApplier | null): void;
-  /** DocumentEditor registers a flush-now (commit pending dirty blocks). */
+  /** DocumentEditor registers the active doc's deliberate commit (Publish /
+   *  Send-to-scribe flush). Carries a commit message. */
   registerCommitActiveDoc(commit: CommitActiveDoc | null): void;
-  /** Commit the active doc's pending edits now (Send-to-scribe flush-first). */
-  commitActiveDoc(): Promise<{ stateHash: string; changed: boolean } | null>;
+  /** DocumentEditor registers a reload-now (re-read at the current head) — used
+   *  after a Sync/rebase that re-pinned the base without advancing the head. */
+  registerReloadActiveDoc(reload: ReloadActiveDoc | null): void;
+  /** Commit the active doc's working copy now with a message (Send-to-scribe
+   *  flush-first). NOT called on typing — only on deliberate user gestures. */
+  commitActiveDoc(
+    message: string
+  ): Promise<{ stateHash: string; changed: boolean; conflicted?: boolean } | null>;
   /** A save 3-way-conflicted (DocController.onConflict): refresh publish state so
    *  the parked pending merge surfaces in the resolution UX. */
   onSaveConflict(vcsPath: string): void;
@@ -69,7 +85,11 @@ export interface SpectroliteApp {
   dispose(): void;
 }
 
-export type CommitActiveDoc = () => Promise<{ stateHash: string; changed: boolean } | null>;
+export type CommitActiveDoc = (
+  message: string
+) => Promise<{ stateHash: string; changed: boolean; conflicted?: boolean } | null>;
+/** Re-read the active document at the current head (used after a Sync/rebase). */
+export type ReloadActiveDoc = () => Promise<void>;
 
 /** The text the user chose for a colliding run, with the run's live block ids. */
 export interface SuggestionResolution {
@@ -83,6 +103,7 @@ export type SuggestionApplier = (resolution: SuggestionResolution) => void;
 export function createSpectroliteApp(): SpectroliteApp {
   const args = panel.stateArgs.get<PersistedStateArgs>();
   const contextId = resolveContextId(args.contextId, runtimeContextId) ?? null;
+  const pendingStarterDoc = parsePendingStarterDoc(args.pendingStarterDoc);
   const store = createStore(initialState({
     contextId,
     channelName: args.channelName ?? null,
@@ -96,7 +117,32 @@ export function createSpectroliteApp(): SpectroliteApp {
   const vaultHead = contextId ? `ctx:${contextId}` : "ctx:unbound";
 
   const viewState = createViewStateStore();
-  const publish = new PublishController(vcs);
+  // The vault is a single repo: its repo path IS the vault's workspace-relative
+  // root (`projects/<vault>`). Spectrolite only ever pushes this one repo, so
+  // the controller is bound to it (per-repo push/pushStatus on
+  // `vcs:repo:projects/<vault>`). `""` (root) is used until a vault is picked.
+  // The generated VcsClient structurally satisfies the narrow PublishVcs surface
+  // (push/pushStatus/merge/pendingMerge/abortMerge) the controller consumes — no
+  // cast needed (PublishVcs is a structural supertype of the client methods).
+  //
+  // The active document's reload-now (re-read at the current head), registered by
+  // DocumentEditor. Declared before `publish` so the controller's onRebased can
+  // close over it. `onRebased` re-reads the active doc after a Sync: an unedited
+  // vault's rebase only re-pins the base (no head advance), so the DocController
+  // won't reload on its own — without this the editor would show stale content
+  // under a cleared "behind" indicator.
+  let reloadActiveDocFn: ReloadActiveDoc | null = null;
+  // The active document's deliberate commit (working copy → ctx head with a
+  // message), registered by DocumentEditor. Declared before `publish` so the
+  // controller's commit-then-push step can close over it. Publish ties the
+  // commit and the push into one user gesture.
+  let commitActiveDocFn: CommitActiveDoc | null = null;
+  const publish = new PublishController(
+    vcs,
+    args.repoRoot ?? "",
+    () => (reloadActiveDocFn ? reloadActiveDocFn() : Promise.resolve()),
+    (message) => (commitActiveDocFn ? commitActiveDocFn(message) : Promise.resolve(null))
+  );
 
   // A panel sandbox used solely to prefetch frontmatter-declared dependencies
   // into the panel's module map so inline JSX (LiveJsxEditor) + Preview-mode
@@ -109,8 +155,6 @@ export function createSpectroliteApp(): SpectroliteApp {
   let lastDeps: Record<string, string> = {};
   // How the active document applies a user-chosen collision resolution.
   let suggestionApplier: SuggestionApplier | null = null;
-  // The active document's commit-now (flush pending dirty blocks).
-  let commitActiveDocFn: CommitActiveDoc | null = null;
 
   const setActiveDocSource = (path: string, markdown: string): void => {
     if (store.getState().activePath !== path) return;
@@ -133,8 +177,38 @@ export function createSpectroliteApp(): SpectroliteApp {
     },
   });
 
+  const openFileInternal = (path: string, extraStateArgs?: Record<string, unknown>): void => {
+    if (store.getState().activePath === path) {
+      if (extraStateArgs) void panel.stateArgs.set({ openPath: path, ...extraStateArgs });
+      return;
+    }
+    store.setState((prev) => ({
+      activePath: path,
+      recentPaths: [path, ...prev.recentPaths.filter((p) => p !== path)].slice(0, 12),
+      // A doc switch clears stale deps; setActiveDocSource re-derives them.
+      activeDeps: {},
+      // Suggestions are per-doc; drop any not for the new doc on open.
+      pendingSuggestions: prev.pendingSuggestions.filter(
+        (s) => s.vcsPath === vault.mapping().toVcsPath(path),
+      ),
+    }));
+    lastDeps = {};
+    void panel.stateArgs.set({ openPath: path, ...(extraStateArgs ?? {}) });
+  };
+
+  const createPendingStarterDoc = async (): Promise<void> => {
+    if (!pendingStarterDoc) return;
+    try {
+      const created = await vault.createFile(pendingStarterDoc.path, pendingStarterDoc.content);
+      openFileInternal(created, { pendingStarterDoc: null });
+    } catch (err) {
+      console.warn("[Spectrolite] starter doc creation failed:", err);
+    }
+  };
+
   let started = false;
   let offPublishHead: (() => void) | null = null;
+  let offPublishWorking: (() => void) | null = null;
   return {
     store,
     session,
@@ -143,19 +217,7 @@ export function createSpectroliteApp(): SpectroliteApp {
     viewState,
     vaultHead,
     openFile(path) {
-      if (store.getState().activePath === path) return;
-      store.setState((prev) => ({
-        activePath: path,
-        recentPaths: [path, ...prev.recentPaths.filter((p) => p !== path)].slice(0, 12),
-        // A doc switch clears stale deps; setActiveDocSource re-derives them.
-        activeDeps: {},
-        // Suggestions are per-doc; drop any not for the new doc on open.
-        pendingSuggestions: prev.pendingSuggestions.filter(
-          (s) => s.vcsPath === vault.mapping().toVcsPath(path),
-        ),
-      }));
-      lastDeps = {};
-      void panel.stateArgs.set({ openPath: path });
+      openFileInternal(path);
     },
     setActiveDocSource,
     setDirty(path, dirty) {
@@ -198,8 +260,11 @@ export function createSpectroliteApp(): SpectroliteApp {
     registerCommitActiveDoc(commit) {
       commitActiveDocFn = commit;
     },
-    commitActiveDoc() {
-      return commitActiveDocFn ? commitActiveDocFn() : Promise.resolve(null);
+    registerReloadActiveDoc(reload) {
+      reloadActiveDocFn = reload;
+    },
+    commitActiveDoc(message) {
+      return commitActiveDocFn ? commitActiveDocFn(message) : Promise.resolve(null);
     },
     onSaveConflict() {
       // The save parked a pending merge on the vault head; surface it.
@@ -210,16 +275,22 @@ export function createSpectroliteApp(): SpectroliteApp {
       started = true;
       void session.start();
       if (store.getState().repoRoot !== null) {
+        void createPendingStarterDoc();
         void vault.refreshPaths();
         void publish.refresh();
       }
       offPublishHead = vcs.subscribeHead(vaultHead, () => {
         void publish.refresh();
       });
+      offPublishWorking = vcs.subscribeWorking(vaultHead, () => {
+        void publish.refresh();
+      });
     },
     dispose() {
       offPublishHead?.();
+      offPublishWorking?.();
       offPublishHead = null;
+      offPublishWorking = null;
       session.dispose();
     },
   };

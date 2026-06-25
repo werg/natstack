@@ -2,9 +2,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createStore } from "./store";
 import { initialState } from "./state";
 import { VaultController } from "./vaultController";
+import { vaultContextId } from "./vaultContext";
 
 const runtimeMocks = vi.hoisted(() => ({
   listFiles: vi.fn(),
+  edit: vi.fn(),
+  readFile: vi.fn(),
   reopen: vi.fn(async () => ({ id: "p", title: "t" })),
   setStateArgs: vi.fn(),
 }));
@@ -12,8 +15,8 @@ const runtimeMocks = vi.hoisted(() => ({
 vi.mock("@workspace/runtime", () => ({
   vcs: {
     listFiles: runtimeMocks.listFiles,
-    applyEdits: vi.fn(),
-    readFile: vi.fn(),
+    edit: runtimeMocks.edit,
+    readFile: runtimeMocks.readFile,
   },
   panel: {
     reopen: runtimeMocks.reopen,
@@ -72,5 +75,23 @@ describe("VaultController", () => {
     ]);
     await controller.refreshPaths();
     expect(store.getState().paths).toEqual(["A.mdx", "nested/B.mdx"]);
+  });
+
+  it("passes starter docs through reopen so creation happens in the vault context", () => {
+    const store = makeStore();
+    const controller = new VaultController(store, { onVaultSelected: () => {} });
+    const starterDoc = { path: "Welcome.mdx", content: "# Welcome\n" };
+
+    controller.selectVault("/projects/fresh", { starterDoc });
+
+    expect(runtimeMocks.reopen).toHaveBeenCalledWith({
+      contextId: vaultContextId("projects/fresh"),
+      stateArgs: {
+        repoRoot: "projects/fresh",
+        openPath: undefined,
+        pendingStarterDoc: starterDoc,
+      },
+    });
+    expect(runtimeMocks.edit).not.toHaveBeenCalled();
   });
 });
