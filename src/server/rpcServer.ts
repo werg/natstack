@@ -158,6 +158,7 @@ type RelayErrorCode =
   | "SERVER_SHUTTING_DOWN"
   | "DO_CONTEXT_MISMATCH"
   | "DO_NOT_CREATED"
+  | "RPC_PROTOCOL_ERROR"
   | "TARGET_NOT_REACHABLE"
   | "UNKNOWN_TARGET_KIND";
 
@@ -1042,6 +1043,11 @@ export class RpcServer {
     }
 
     if (message.type === "response") {
+      if (targetId === "server") {
+        this.failServerBoundRoutedResponse(client, message);
+        return;
+      }
+
       // MED-7: route the response back to the ORIGIN CONNECTION that issued the
       // request, not merely to the origin caller's primary connection. A
       // multi-connection origin would otherwise misroute the reply to the wrong
@@ -1234,6 +1240,41 @@ export class RpcServer {
     }
   }
 
+  private failServerBoundRoutedResponse(client: WsClientState, message: RpcResponse): void {
+    const err = createRelayError(
+      `Protocol error: response for server request ${message.requestId} was sent via ws:route; use ws:rpc for server-bound responses`,
+      "RPC_PROTOCOL_ERROR"
+    );
+    const errorMessage = err.message;
+    const errorCode = getErrorCode(err);
+
+    log.warn("server-bound routed response", {
+      callerId: client.caller.runtime.id,
+      callerKind: client.caller.runtime.kind,
+      requestId: message.requestId,
+      error: errorMessage,
+      errorCode,
+    });
+
+    const transport = this.connections.getTransport(client.caller.runtime.id, client.connectionId);
+    if (transport) {
+      transport.deliver(client.caller.runtime.id, {
+        type: "response",
+        requestId: message.requestId,
+        error: errorMessage,
+        ...(errorCode ? { errorCode } : {}),
+      });
+    }
+
+    this.sendToWs(client.ws, {
+      type: "ws:routed-response-error",
+      targetId: "server",
+      requestId: message.requestId,
+      error: errorMessage,
+      ...(errorCode ? { errorCode } : {}),
+    });
+  }
+
   private recordRoutedRequestOrigin(requestId: string, client: WsClientState): void {
     this.routedRequestOrigins.set(requestId, {
       callerId: client.caller.runtime.id,
@@ -1266,8 +1307,8 @@ export class RpcServer {
     const callerId = client.caller.runtime.id;
     const callerKind = client.caller.runtime.kind;
     const connectionKey = this.connectionKey(callerId, client.connectionId);
-    const wasReplaced = this.connections.getConnection(callerId, client.connectionId) !== client;
-    this.connections.removeClient(client);
+    const removedActive = this.connections.removeClient(client);
+    const wasReplaced = !removedActive;
 
     // Abort any in-flight streaming RPCs owned by this connection.
     // Without this, the upstream fetch keeps draining bytes that
@@ -1280,7 +1321,7 @@ export class RpcServer {
       }
     }
 
-    if (callerKind === "panel") {
+    if (!wasReplaced && callerKind === "panel") {
       this.deps.runtimeCoordinator?.markDisconnected(callerId, client.connectionId);
       this.lastDisconnectAt.set(callerId, Date.now());
       log.info("panel disconnected", {
@@ -1297,7 +1338,9 @@ export class RpcServer {
                 : "other",
       });
     }
-    this.sessions.markDisconnected(callerId, callerKind);
+    if (!wasReplaced) {
+      this.sessions.markDisconnected(callerId, callerKind);
+    }
 
     // Reject pending tool calls for this client
     for (const [callId, pending] of this.pendingToolCalls) {
@@ -1308,7 +1351,8 @@ export class RpcServer {
       }
     }
 
-    // If this socket was replaced (code 4002), the replacement is already connected.
+    // If this socket was replaced, the replacement is already connected under the
+    // same caller/connection id. Do not arm reconnect waiters or expire the live lease.
     if (wasReplaced) return;
 
     if (!this.connectionReconnectWaiters.has(connectionKey)) {

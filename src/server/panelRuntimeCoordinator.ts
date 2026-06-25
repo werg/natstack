@@ -37,6 +37,7 @@ export class PanelRuntimeCoordinator {
   private leases = new Map<PanelEntityId, PanelRuntimeLease>();
   private clients = new Map<string, ClientSession>();
   private expiryTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private defaultCdpLeaseConnections = new Set<string>();
   /**
    * Slots that must stay loaded on their serving host (≥1 CDP client attached).
    * Leases for a pinned slot carry `keepLoaded: true` and are refused for
@@ -110,11 +111,16 @@ export class PanelRuntimeCoordinator {
     if (!client) return;
     this.clients.delete(clientSessionId);
 
-    const released: Array<{ entityId: PanelEntityId; lease: PanelRuntimeLease }> = [];
+    const released: Array<{
+      entityId: PanelEntityId;
+      lease: PanelRuntimeLease;
+      wasDefaultCdpLease: boolean;
+    }> = [];
     for (const [entityId, lease] of this.leases) {
       if (lease.clientSessionId !== clientSessionId) continue;
       this.clearExpiry(entityId);
       this.leases.delete(entityId);
+      const wasDefaultCdpLease = this.defaultCdpLeaseConnections.delete(lease.connectionId);
       this.closeConnection?.(
         lease.runtimeEntityId,
         lease.connectionId,
@@ -122,11 +128,13 @@ export class PanelRuntimeCoordinator {
         "Panel runtime host unregistered"
       );
       this.emitChange(entityId, lease.slotId, lease, null, "released");
-      released.push({ entityId, lease });
+      released.push({ entityId, lease, wasDefaultCdpLease });
     }
 
-    for (const { entityId, lease } of released) {
-      this.assignDefaultCdpHost(entityId, lease.slotId);
+    for (const { entityId, lease, wasDefaultCdpLease } of released) {
+      if (this.shouldReassignDefaultCdpLease(lease, wasDefaultCdpLease)) {
+        this.assignDefaultCdpHost(entityId, lease.slotId);
+      }
     }
   }
 
@@ -153,6 +161,12 @@ export class PanelRuntimeCoordinator {
       return true;
     }
     return false;
+  }
+
+  ownsClientSession(clientSessionId: string, ownerCallerId: string): boolean {
+    const client = this.clients.get(clientSessionId);
+    if (!client) return false;
+    return client.ownerCallerId === undefined || client.ownerCallerId === ownerCallerId;
   }
 
   resolveHostForSlot(slotId: string): { hostConnectionId: string; supportsCdp: boolean } | null {
@@ -233,7 +247,8 @@ export class PanelRuntimeCoordinator {
           connectionId: `default-cdp-${slotId}-${randomUUID()}`,
           hostConnectionId: client.hostConnectionId,
         },
-        "acquired"
+        "acquired",
+        { defaultCdpLease: true }
       ),
     };
   }
@@ -298,8 +313,12 @@ export class PanelRuntimeCoordinator {
     }
     this.clearExpiry(entityId);
     this.leases.delete(entityId);
+    const wasDefaultCdpLease = this.defaultCdpLeaseConnections.delete(existing.connectionId);
     this.emitChange(entityId, existing.slotId, existing, null, reason);
-    if ((reason === "released" || reason === "expired") && existing.platform !== "headless") {
+    if (
+      (reason === "released" || reason === "expired") &&
+      this.shouldReassignDefaultCdpLease(existing, wasDefaultCdpLease)
+    ) {
       this.assignDefaultCdpHost(entityId, existing.slotId);
     }
   }
@@ -312,6 +331,7 @@ export class PanelRuntimeCoordinator {
       if (lease.slotId !== normalizedSlotId) continue;
       this.clearExpiry(entityId);
       this.leases.delete(entityId);
+      this.defaultCdpLeaseConnections.delete(lease.connectionId);
       this.closeConnection?.(
         lease.runtimeEntityId,
         lease.connectionId,
@@ -333,6 +353,7 @@ export class PanelRuntimeCoordinator {
     if (!existing) return;
     this.clearExpiry(entityId);
     this.leases.delete(entityId);
+    this.defaultCdpLeaseConnections.delete(existing.connectionId);
     this.closeConnection?.(
       runtimeEntityId,
       existing.connectionId,
@@ -416,7 +437,8 @@ export class PanelRuntimeCoordinator {
       connectionId: string;
       hostConnectionId?: string;
     },
-    reason: PanelRuntimeLeaseChangedReason
+    reason: PanelRuntimeLeaseChangedReason,
+    options: { defaultCdpLease?: boolean } = {}
   ): PanelRuntimeLease {
     const client = this.clients.get(input.clientSessionId);
     if (!client) {
@@ -425,6 +447,7 @@ export class PanelRuntimeCoordinator {
     const slotId = asPanelSlotId(input.slotId);
     const previous = this.leases.get(runtimeEntityId) ?? null;
     this.clearExpiry(runtimeEntityId);
+    if (previous) this.defaultCdpLeaseConnections.delete(previous.connectionId);
     const lease: PanelRuntimeLease = {
       slotId,
       runtimeEntityId,
@@ -439,6 +462,7 @@ export class PanelRuntimeCoordinator {
       acquiredAt: Date.now(),
     };
     this.leases.set(runtimeEntityId, lease);
+    if (options.defaultCdpLease) this.defaultCdpLeaseConnections.add(lease.connectionId);
     this.emitChange(runtimeEntityId, slotId, previous, lease, reason);
     return lease;
   }
@@ -449,16 +473,25 @@ export class PanelRuntimeCoordinator {
   ): PanelRuntimeLease | null {
     const client = this.getDefaultCdpHostClient();
     if (!client) return null;
+    const connectionId = `default-cdp-${slotId}-${randomUUID()}`;
     return this.writeLease(
       runtimeEntityId,
       {
         slotId,
         clientSessionId: client.clientSessionId,
-        connectionId: `default-cdp-${slotId}-${randomUUID()}`,
+        connectionId,
         hostConnectionId: client.hostConnectionId,
       },
-      "acquired"
+      "acquired",
+      { defaultCdpLease: true }
     );
+  }
+
+  private shouldReassignDefaultCdpLease(
+    lease: PanelRuntimeLease,
+    wasDefaultCdpLease = this.defaultCdpLeaseConnections.has(lease.connectionId)
+  ): boolean {
+    return wasDefaultCdpLease && lease.platform !== "headless";
   }
 
   private clearExpiry(runtimeEntityId: PanelEntityId): void {

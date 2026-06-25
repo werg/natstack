@@ -33,6 +33,7 @@ import {
   getPanelSource,
   getPanelStateArgs,
 } from "@natstack/shared/panel/accessors";
+import { isBrowserPanelSource, isOpenPanelBrowserUrl } from "@natstack/shared/panelChrome";
 import { asPanelSlotId } from "@natstack/shared/panel/ids";
 import { resolveOwningPanelSlot } from "@natstack/shared/panel/owningPanelSlot";
 import { PanelManager } from "@natstack/shared/shell/panelManager";
@@ -89,6 +90,21 @@ function normalizePanelNavigationState(input: Record<string, unknown>): PanelNav
     ...(typeof input["canGoBack"] === "boolean" ? { canGoBack: input["canGoBack"] } : {}),
     ...(typeof input["canGoForward"] === "boolean" ? { canGoForward: input["canGoForward"] } : {}),
   };
+}
+
+function shouldValidateOpenPanelWorkspaceUnit(source: string): boolean {
+  if (!source) return false;
+  if (isBrowserPanelSource(source)) return false;
+  if (source.startsWith("about/")) return false;
+  return source === "panels" || source.startsWith("panels/");
+}
+
+function panelOpenBuildRef(options: Record<string, unknown>): string | undefined {
+  if (typeof options["ref"] === "string" && options["ref"].length > 0) return options["ref"];
+  if (typeof options["contextId"] === "string" && options["contextId"].length > 0) {
+    return `ctx:${options["contextId"]}`;
+  }
+  return undefined;
 }
 
 function normalizePanelTreeNavigateOptions(input: unknown):
@@ -580,7 +596,7 @@ export async function createServerPanelTreeBridge(
                 resolveParentId: async (id) =>
                   (await workspaceState.resolveActiveEntity(id))?.parentId,
               });
-        const isBrowser = /^https?:\/\//i.test(source);
+        const isBrowser = isOpenPanelBrowserUrl(source);
         // A null parent means a root panel. addPanel() treats a null parent
         // WITHOUT addAsRoot as "replace the tree with this single panel", so root
         // creates MUST set addAsRoot/isRoot — otherwise a root create would wipe
@@ -608,6 +624,7 @@ export async function createServerPanelTreeBridge(
           id: created.panelId,
           title: created.title,
           kind: isBrowser ? "browser" : "workspace",
+          parentId: parentId ?? null,
           contextId: created.contextId,
           source: created.source,
           runtimeEntityId,
@@ -1287,12 +1304,15 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
     let panelTreeDefinition: import("@natstack/shared/serviceDefinition").ServiceDefinition;
     container.registerManaged({
       name: "panelTree",
-      dependencies: ["shellPresence"],
+      dependencies: ["shellPresence", "buildSystem"],
       async start(resolve) {
         const shellPresence = assertPresent(
           resolve<import("./services/shellPresenceService.js").ShellPresenceServiceResult>(
             "shellPresence"
           )
+        );
+        const buildSystem = assertPresent(
+          resolve<import("./buildV2/index.js").BuildSystemV2>("buildSystem")
         );
         const { createPanelTreeService } = await import("./services/panelTreeService.js");
         const bridge = await getPanelTreeBridge();
@@ -1305,6 +1325,16 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
           resolveRequesterPanel: resolveRequesterPanelMetadataForServices,
           hasAppCapability: deps.hasAppCapability,
           hasApprovalSession: () => shellPresence.internal.isAnyShellActive(),
+          validateOpenPanelSource: async ({ source, options }) => {
+            if (!shouldValidateOpenPanelWorkspaceUnit(source)) return;
+            const ref = panelOpenBuildRef(options);
+            const unit = await buildSystem.resolveBuildUnit(source, ref);
+            if (!unit) {
+              throw new Error(
+                ref ? `Unknown build unit at ${ref}: ${source}` : `Unknown build unit: ${source}`
+              );
+            }
+          },
           bridge,
         });
       },

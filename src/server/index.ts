@@ -943,6 +943,13 @@ async function main() {
   workspaceVcs.onStateAdvanced((event) => {
     eventService.emit(`vcs:head:${event.head}`, event);
   });
+  // Working (uncommitted) edits ride a distinct topic so reactive editors can
+  // reflect them — and apply a `vcs.revert` (now a working edit) into the view —
+  // without conflating them with committed head advances. `vcs.subscribeWorking`
+  // listens here. The build trigger deliberately does NOT.
+  workspaceVcs.onWorkingAdvanced((event) => {
+    eventService.emit(`vcs:working:${event.head}`, event);
+  });
   workspaceVcs.onStateAdvanced((event) => {
     if (event.head !== "main") return;
     treeScanner.invalidate();
@@ -1127,17 +1134,30 @@ async function main() {
       },
     });
   }
+  const { GitBridge } = await import("./gadVcs/gitBridge.js");
+  const gitBridge = new GitBridge({ workspaceVcs, workspaceRoot: workspacePath });
   const gitInteropDefinition = createGitInteropService({
     treeScanner,
     workspacePath,
     workspaceConfig,
     egressProxy,
+    // W7: initialize a `vcs:repo:<path>` log per freshly cloned dependency by
+    // snapshotting its tree into the repo log at `main` (no lockfile/pinning).
+    initRepoLog: async (repoPath) => {
+      await gitBridge.importRepoTree(repoPath);
+    },
     approvalQueue,
     grantStore: capabilityGrantStore,
     hasAppCapability: (callerId, capability) =>
       appHostForGateway?.hasAppCapability(callerId, capability) ?? false,
     onWorkspaceSourceChanged: async (ctx, summary) => {
-      await workspaceVcs.commit({
+      // Per-repo model: a git import mutates one or more repo subtrees on disk
+      // (e.g. importProject rewrites meta/natstack.yml). Snapshot EVERY present
+      // repo's disk state onto its `vcs:repo:<path>` main —
+      // committing out-of-band changes to EXISTING repos (which
+      // `ensureRepoLogsFromDisk` skips because they already have a main) AND
+      // initializing logs for newly cloned repos. There is no whole-tree commit.
+      await workspaceVcs.snapshotRepoLogsFromDisk({
         summary,
         actor: { id: ctx.caller.runtime.id, kind: ctx.caller.runtime.kind },
       });
@@ -1699,6 +1719,11 @@ async function main() {
         runtimeDefinition = createRuntimeService({
           entityStore: ensureEntityStore(doDispatch),
           contextFolders: contextFolderManager,
+          // VCS branch lifecycle for full-workspace contexts.
+          vcsContexts: {
+            pinContext: (contextId) => workspaceVcs.pinContext(contextId),
+            dropContext: (contextId) => workspaceVcs.dropContext(contextId),
+          },
           hooks: {
             prepareDurableObject: (args) => workerdManager.ensureDurableObjectEntity(args),
             prepareWorker: (args) => workerdManager.startWorker(args),
@@ -2105,27 +2130,45 @@ async function main() {
     const { isWritableVcsPath, vcsContextHead } = await import("./gadVcs/store.js");
     // Reroute: sandboxed context mutations to GAD-tracked paths commit through
     // GAD (edit-first) instead of writing the worktree projection directly.
+    //
+    // Per-repo routing. fsService routes each workspace-relative edit to its
+    // owning repo by section taxonomy, strips the repo prefix, and records a
+    // working edit on that repo's `ctx:{contextId}` head.
     const vcsBridge: import("@natstack/shared/fsService").FsVcsBridge = {
       isTracked: (relPath) => isWritableVcsPath(relPath),
-      applyEdits: async (contextId, edits, actor) => {
+      // fs writes of tracked paths are WORKING edits (recordEdit): tracked
+      // durably with provenance, projected to disk, but NOT a commit — no head
+      // advance, no build. The user/agent commits deliberately via vcs.commit.
+      edit: async (contextId, repoPath, edits, actor) => {
         const head = vcsContextHead(contextId);
-        const baseStateHash = await workspaceVcs.resolveHead(head);
-        if (!baseStateHash) {
-          throw new Error(`fs reroute: context head ${head} has no base state to edit`);
-        }
-        const result = await workspaceVcs.applyEdits({ head, baseStateHash, edits, actor });
-        if (result.status === "conflicted") {
-          throw new Error(
-            `fs write to ${head} conflicted with a concurrent change to the same region; retry the operation`
-          );
-        }
+        await workspaceVcs.recordEdit({
+          head,
+          repoPath,
+          edits,
+          actor,
+        });
       },
-      readFile: async (contextId, relPath) => {
-        const file = await workspaceVcs.readFile(vcsContextHead(contextId), relPath);
+      // Read from the context's composed view: each repo's `ctx` head if it has
+      // been edited, else that repo's pinned-`baseView` state. The composed view
+      // is a workspace-rooted state, so address it by the full workspace path.
+      readFile: async (contextId, repoPath, relPath) => {
+        const view = await workspaceVcs.resolveContextView(contextId);
+        const wsPath = `${repoPath}/${relPath}`;
+        const file = await workspaceVcs.readFile(view, wsPath);
         return file ? file.content : null;
       },
-      listFiles: async (contextId) =>
-        (await workspaceVcs.listFiles(vcsContextHead(contextId))).map((f) => f.path),
+      // Workspace-relative listing of the whole composed context view (all repos:
+      // edited ones at their ctx head, the rest at the pinned base).
+      listFiles: async (contextId) => {
+        const view = await workspaceVcs.resolveContextView(contextId);
+        return (await workspaceVcs.listFiles(view)).map((f) => f.path);
+      },
+      // Sparse demand-materialize: write only the requested repos' subtrees to
+      // the context folder (intelligent — a repo-scoped grep materializes one repo).
+      ensureMaterialized: (contextId, repos) =>
+        workspaceVcs.materializeContextRepos(contextId, repos),
+      isMaterialized: async (contextId, repoPath) =>
+        workspaceVcs.isContextRepoMaterialized(contextId, repoPath),
     };
     container.registerManaged({
       name: "fsService",
@@ -2364,6 +2407,15 @@ async function main() {
           call: <T>(method: string, input: unknown): Promise<T> =>
             doDispatch.dispatch(gadRef, method, input) as Promise<T>,
         });
+        // Per-repo bootstrap: snapshot each on-disk repo subtree into its
+        // `vcs:repo:<path>` log at `main` if missing (replaces the legacy
+        // whole-tree `vcs:workspace` migration). Runs once the gad store is
+        // attached, before any context fork / build needs a repo log.
+        await workspaceVcs.ensureRepoLogsFromDisk();
+        // One-shot legacy GC: drop residual whole-tree `vcs:workspace` refs from
+        // pre-per-repo workspaces (idempotent; dead data once per-repo is authority).
+        const gced = await workspaceVcs.gcLegacyWorkspaceLog().catch(() => ({ deleted: 0 }));
+        if (gced.deleted > 0) console.log(`[Vcs] GC'd ${gced.deleted} legacy vcs:workspace ref(s)`);
         workspaceVcs.enableMemoryIndexing();
         console.log("[Vcs] Attached to gad-store DO");
         return workspaceVcs;

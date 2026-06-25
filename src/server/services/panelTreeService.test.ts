@@ -216,6 +216,32 @@ describe("panelTreeService", () => {
     });
   });
 
+  it("validates panel creation sources before approval or bridge mutation", async () => {
+    const approvalQueue = approvalQueueMock("once");
+    const validateOpenPanelSource = vi.fn(async () => {
+      throw new Error("Unknown build unit: panels/missing");
+    });
+    const bridge = vi.fn();
+    const service = createPanelTreeService({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      validateOpenPanelSource,
+      bridge,
+    });
+
+    await expect(
+      service.handler(ctx(), "create", ["panels/missing", { parentId: "parent" }])
+    ).rejects.toThrow("Unknown build unit: panels/missing");
+
+    expect(validateOpenPanelSource).toHaveBeenCalledWith({
+      method: "create",
+      source: "panels/missing",
+      options: { parentId: "parent" },
+    });
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(bridge).not.toHaveBeenCalled();
+  });
+
   it("does not delegate panel creation when parent approval is denied", async () => {
     const approvalQueue = approvalQueueMock("deny");
     const bridge = vi.fn(async (request: { method: string; args: unknown[] }) =>
@@ -408,6 +434,33 @@ describe("panelTreeService", () => {
       method: "navigate",
       args: ["target", "panels/next", { contextId: "ctx-next" }],
     });
+  });
+
+  it("validates navigation sources before approval or bridge mutation", async () => {
+    const approvalQueue = approvalQueueMock("once");
+    const validateOpenPanelSource = vi.fn(async () => {
+      throw new Error("Unknown build unit: panels/missing");
+    });
+    const bridge = vi.fn();
+    const service = createPanelTreeService({
+      approvalQueue,
+      grantStore: new CapabilityGrantStore({ statePath: tempStatePath() }),
+      validateOpenPanelSource,
+      bridge,
+    });
+
+    await expect(
+      service.handler(ctx(), "navigate", ["target", "panels/missing", { contextId: "ctx-missing" }])
+    ).rejects.toThrow("Unknown build unit: panels/missing");
+
+    expect(validateOpenPanelSource).toHaveBeenCalledWith({
+      method: "navigate",
+      source: "panels/missing",
+      options: { contextId: "ctx-missing" },
+      targetPanelId: "target",
+    });
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(bridge).not.toHaveBeenCalled();
   });
 
   it("approval-gates object-shaped structural operations by target panel id", async () => {

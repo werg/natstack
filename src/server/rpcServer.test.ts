@@ -308,8 +308,8 @@ describe("RpcServer relay behavior", () => {
     });
   });
 
-  it("keeps the replacement bridge when the old same-connection socket closes late", () => {
-    const { server, grantPanel } = createServer();
+  it("keeps the replacement bridge and lease when the old same-connection socket closes late", () => {
+    const { server, grantPanel, runtimeCoordinator } = createServer();
     const ws1 = createTestWs();
     const ws2 = createTestWs();
 
@@ -329,6 +329,10 @@ describe("RpcServer relay behavior", () => {
     expect(testServer(server).connections.getCallerConnections("panel:nav-a")).toEqual([
       expect.objectContaining({ connectionId: "conn-1", ws: ws2 }),
     ]);
+    expect(runtimeCoordinator.getLease("panel:nav-a")).toEqual(
+      expect.objectContaining({ connectionId: "conn-1" })
+    );
+    expect(runtimeCoordinator.getLease("panel:nav-a")).not.toHaveProperty("expiresAt");
   });
 
   it("ignores late frames from a replaced same-connection socket", async () => {
@@ -417,6 +421,59 @@ describe("RpcServer relay behavior", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("content-type")).toBe("text/plain");
     await expect(response.text()).resolves.toBe("hello");
+  });
+
+  it("rejects server bridge calls when a client routes a response to server", async () => {
+    const { server, tokenManager } = createServer();
+    const extensionId = "@workspace-extensions/process-test";
+    const extensionToken = tokenManager.ensureToken(extensionId, "extension");
+    const ws = createTestWs();
+
+    testServer(server).handleAuth(ws, extensionToken, "ext-conn-1");
+    const bridge = server.getClientBridge(extensionId);
+    expect(bridge).toBeTruthy();
+
+    const call = bridge!.call(extensionId, "extension.invoke", ["ping", []]);
+    await Promise.resolve();
+
+    const sent = ws.send.mock.calls
+      .map(([raw]) => JSON.parse(raw as string))
+      .find(
+        (message) => message.type === "ws:rpc" && message.envelope?.message?.type === "request"
+      );
+    expect(sent).toBeTruthy();
+    const requestId = sent.envelope.message.requestId as string;
+
+    ws.emitMessage({
+      type: "ws:route",
+      envelope: {
+        from: extensionId,
+        target: "server",
+        delivery: { caller: { callerId: extensionId, callerKind: "extension" } },
+        provenance: [{ callerId: extensionId, callerKind: "extension" }],
+        message: {
+          type: "response",
+          requestId,
+          result: "pong",
+        },
+      },
+    });
+
+    await expect(call).rejects.toMatchObject({
+      message: expect.stringContaining("was sent via ws:route"),
+      code: "RPC_PROTOCOL_ERROR",
+    });
+
+    const routedError = ws.send.mock.calls
+      .map(([raw]) => JSON.parse(raw as string))
+      .find((message) => message.type === "ws:routed-response-error");
+    expect(routedError).toMatchObject({
+      type: "ws:routed-response-error",
+      targetId: "server",
+      requestId,
+      error: expect.stringContaining("was sent via ws:route"),
+      errorCode: "RPC_PROTOCOL_ERROR",
+    });
   });
 
   it("fans routed events out to every live connection for the target caller", () => {

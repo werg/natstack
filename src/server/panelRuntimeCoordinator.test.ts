@@ -408,7 +408,7 @@ describe("PanelRuntimeCoordinator", () => {
     expect(coordinator.resolveHostForSlot("panel:tree/slot-a")).toBeNull();
   });
 
-  it("falls released panel leases back to the registered headless CDP host", () => {
+  it("does not fall a released desktop UI lease back to the headless CDP host", () => {
     const eventService = { emit: vi.fn() };
     const coordinator = new PanelRuntimeCoordinator({
       eventService: eventService as unknown as EventService,
@@ -425,6 +425,7 @@ describe("PanelRuntimeCoordinator", () => {
       hostConnectionId: "desktop-host",
       label: "Desktop",
       platform: "desktop",
+      loadOnLeaseAssignment: true,
     });
     coordinator.acquire("panel:nav-slot-a", {
       slotId: "panel:tree/slot-a",
@@ -433,6 +434,50 @@ describe("PanelRuntimeCoordinator", () => {
     });
 
     coordinator.release("panel:nav-slot-a", "desktop-runtime", "released");
+
+    expect(coordinator.getLease("panel:nav-slot-a")).toBeNull();
+    expect(eventService.emit).toHaveBeenLastCalledWith(
+      "panel:runtimeLeaseChanged",
+      expect.objectContaining({
+        slotId: "panel:tree/slot-a",
+        runtimeEntityId: "panel:nav-slot-a",
+        reason: "released",
+        next: null,
+      })
+    );
+  });
+
+  it("falls released default CDP desktop leases back to the registered headless CDP host", () => {
+    const eventService = { emit: vi.fn() };
+    const coordinator = new PanelRuntimeCoordinator({
+      eventService: eventService as unknown as EventService,
+    });
+    coordinator.registerClient({
+      clientSessionId: "desktop-session",
+      hostConnectionId: "desktop-host",
+      label: "Desktop",
+      platform: "desktop",
+      loadOnLeaseAssignment: true,
+    });
+
+    const defaultDesktop = coordinator.ensureDefaultCdpHostForSlot(
+      "panel:tree/slot-a",
+      "panel:nav-slot-a"
+    );
+    expect(defaultDesktop).toMatchObject({
+      assigned: true,
+      lease: { clientSessionId: "desktop-session", platform: "desktop" },
+    });
+    if (!defaultDesktop.assigned) throw new Error("expected default desktop lease assignment");
+
+    coordinator.registerClient({
+      clientSessionId: "headless-session",
+      hostConnectionId: "headless-host",
+      label: "Headless",
+      platform: "headless",
+      loadOnLeaseAssignment: true,
+    });
+    coordinator.release("panel:nav-slot-a", defaultDesktop.lease.connectionId, "released");
 
     expect(coordinator.getLease("panel:nav-slot-a")).toMatchObject({
       slotId: "panel:tree/slot-a",
@@ -453,7 +498,41 @@ describe("PanelRuntimeCoordinator", () => {
     );
   });
 
-  it("unregisters a host client, releases its leases, and falls back to headless", () => {
+  it("does not fall an expired desktop UI lease back to the headless CDP host", () => {
+    vi.useFakeTimers();
+    try {
+      const coordinator = new PanelRuntimeCoordinator();
+      coordinator.registerClient({
+        clientSessionId: "headless-session",
+        hostConnectionId: "headless-host",
+        label: "Headless",
+        platform: "headless",
+        loadOnLeaseAssignment: true,
+      });
+      coordinator.registerClient({
+        clientSessionId: "desktop-session",
+        hostConnectionId: "desktop-host",
+        label: "Desktop",
+        platform: "desktop",
+        loadOnLeaseAssignment: true,
+      });
+      coordinator.acquire("panel:nav-slot-a", {
+        slotId: "panel:tree/slot-a",
+        clientSessionId: "desktop-session",
+        connectionId: "desktop-runtime",
+      });
+
+      coordinator.markDisconnected("panel:nav-slot-a", "desktop-runtime");
+      vi.advanceTimersByTime(3000);
+
+      expect(coordinator.getLease("panel:nav-slot-a")).toBeNull();
+      expect(coordinator.resolveHostForSlot("panel:tree/slot-a")).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("unregisters a UI host client and releases its leases without falling back to headless", () => {
     const eventService = { emit: vi.fn() };
     const closeConnection = vi.fn();
     const coordinator = new PanelRuntimeCoordinator({
@@ -472,6 +551,7 @@ describe("PanelRuntimeCoordinator", () => {
       hostConnectionId: "desktop-host",
       label: "Desktop",
       platform: "desktop",
+      loadOnLeaseAssignment: true,
     });
     coordinator.acquire("panel:nav-slot-a", {
       slotId: "panel:tree/slot-a",
@@ -485,6 +565,57 @@ describe("PanelRuntimeCoordinator", () => {
     expect(closeConnection).toHaveBeenCalledWith(
       "panel:nav-slot-a",
       "desktop-runtime",
+      4095,
+      "Panel runtime host unregistered"
+    );
+    expect(coordinator.getLease("panel:nav-slot-a")).toBeNull();
+    expect(eventService.emit).toHaveBeenLastCalledWith(
+      "panel:runtimeLeaseChanged",
+      expect.objectContaining({
+        slotId: "panel:tree/slot-a",
+        runtimeEntityId: "panel:nav-slot-a",
+        reason: "released",
+        next: null,
+      })
+    );
+  });
+
+  it("unregisters a default CDP desktop host lease and falls back to headless", () => {
+    const eventService = { emit: vi.fn() };
+    const closeConnection = vi.fn();
+    const coordinator = new PanelRuntimeCoordinator({
+      eventService: eventService as unknown as EventService,
+    });
+    coordinator.setCloseConnection(closeConnection);
+    coordinator.registerClient({
+      clientSessionId: "desktop-session",
+      hostConnectionId: "desktop-host",
+      label: "Desktop",
+      platform: "desktop",
+      loadOnLeaseAssignment: true,
+    });
+    const defaultDesktop = coordinator.ensureDefaultCdpHostForSlot(
+      "panel:tree/slot-a",
+      "panel:nav-slot-a"
+    );
+    expect(defaultDesktop).toMatchObject({
+      assigned: true,
+      lease: { clientSessionId: "desktop-session", platform: "desktop" },
+    });
+    if (!defaultDesktop.assigned) throw new Error("expected default desktop lease assignment");
+    coordinator.registerClient({
+      clientSessionId: "headless-session",
+      hostConnectionId: "headless-host",
+      label: "Headless",
+      platform: "headless",
+      loadOnLeaseAssignment: true,
+    });
+
+    coordinator.unregisterClient("desktop-session");
+
+    expect(closeConnection).toHaveBeenCalledWith(
+      "panel:nav-slot-a",
+      defaultDesktop.lease.connectionId,
       4095,
       "Panel runtime host unregistered"
     );

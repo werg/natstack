@@ -114,11 +114,24 @@ export function createWorkerdService(deps: {
     description: "Worker instance management (workerd runtime)",
     policy: { allowed: ["server", "panel", "app", "worker", "do", "extension"] },
     methods: {
-      createInstance: { args: z.tuple([createOptionsSchema]) },
-      destroyInstance: { args: z.tuple([z.string()]) },
-      updateInstance: { args: z.tuple([z.string(), updateOptionsSchema]) },
+      createInstance: {
+        description:
+          "Create a worker instance and return its handle. Use the returned `id` for getInstanceStatus, updateInstance, and destroyInstance.",
+        args: z.tuple([createOptionsSchema]),
+      },
+      destroyInstance: {
+        description: "Destroy a worker instance by the `id` returned from workerd.createInstance.",
+        args: z.tuple([z.string()]),
+      },
+      updateInstance: {
+        description: "Update a worker instance by the `id` returned from workerd.createInstance.",
+        args: z.tuple([z.string(), updateOptionsSchema]),
+      },
       listInstances: { args: z.tuple([]) },
-      getInstanceStatus: { args: z.tuple([z.string()]) },
+      getInstanceStatus: {
+        description: "Get worker instance status by the `id` returned from workerd.createInstance.",
+        args: z.tuple([z.string()]),
+      },
       listInstanceSources: { args: z.tuple([]) },
       getPort: { args: z.tuple([]) },
       restartAll: { args: z.tuple([]) },

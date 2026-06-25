@@ -16,10 +16,12 @@ import { runtimeMethods } from "@natstack/shared/serviceSchemas/runtime";
 import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { AppCapability } from "@natstack/shared/unitManifest";
 import {
+  buildWorkspaceContext,
   canonicalEntityId,
   type EntityRecord,
   type RuntimeEntityCreateSpec,
   type RuntimeEntityHandle,
+  type WorkspaceContext,
 } from "@natstack/shared/runtime/entitySpec";
 import type { WorkspaceEntityStore } from "../workspaceEntityStore.js";
 import {
@@ -75,6 +77,20 @@ export interface RuntimeContextFolders {
   removeContext(contextId: string): Promise<void>;
 }
 
+/** VCS lifecycle hooks for full-workspace context branches. */
+export interface RuntimeVcsContexts {
+  /**
+   * Pin a context's base view at creation (idempotent — pins the current
+   * `workspaceView()` only if not already pinned) so its reads don't drift.
+   */
+  pinContext?(contextId: string): Promise<string>;
+  /**
+   * Tear down all VCS state for a context on retire: clear caches + delete its
+   * `ctx` heads and pin ref.
+   */
+  dropContext?(contextId: string): Promise<void>;
+}
+
 export interface RuntimeServiceDeps {
   /**
    * The single owner of WorkspaceDO entity state. The runtime service never
@@ -86,6 +102,8 @@ export interface RuntimeServiceDeps {
   hooks: RuntimeEntityHooks;
   capability: CapabilityPermissionDeps;
   contextFolders: RuntimeContextFolders;
+  /** Optional VCS hooks for pinning and dropping context branches. */
+  vcsContexts?: RuntimeVcsContexts;
   /**
    * Server-controlled display-title registry. Workers (and DOs / panels)
    * call `runtime.setTitle(title)` to populate the title that approval UIs
@@ -169,6 +187,20 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
       throw new Error(result.reason ?? "Cross-context entity creation denied");
     }
     return requested;
+  }
+
+  /**
+   * Set up a full logical workspace context branch. Pinning freezes the base
+   * workspace view so reads remain stable until the context explicitly rebases.
+   * Per-repo ctx heads are created lazily by the VCS layer when the context edits
+   * or commits a repo; repo membership is not part of the runtime contract.
+   */
+  async function setUpContext(contextId: string): Promise<WorkspaceContext> {
+    // Pin the context's base view (a per-context VCS ref) so its reads are a
+    // consistent snapshot and never drift as `main` advances under it. Idempotent:
+    // a second entity joining the context inherits the existing pin.
+    await deps.vcsContexts?.pinContext?.(contextId).catch(() => undefined);
+    return buildWorkspaceContext(contextId);
   }
 
   async function createEntity(
@@ -277,6 +309,10 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
       targetId = canonicalId;
     }
 
+    // A context is a full logical workspace branch. The VCS layer lazily creates
+    // per-repo ctx heads as this branch edits repos.
+    await setUpContext(contextId);
+
     const activateInput = {
       kind: spec.kind,
       source: { repoPath: spec.source, effectiveVersion },
@@ -310,6 +346,18 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
     };
   }
 
+  /**
+   * Create a full logical workspace context branch without attaching an entity
+   * to it yet. Useful when an orchestrator wants several entities to share a
+   * branch. Repo selection remains an operation-level concern on VCS methods.
+   */
+  async function createContext(args: { contextId?: string }): Promise<WorkspaceContext> {
+    const contextId = args.contextId ?? randomUUID();
+    const context = await setUpContext(contextId);
+    await deps.contextFolders.ensureContextFolder(contextId);
+    return context;
+  }
+
   async function retireEntity(id: string, removeContext?: boolean): Promise<void> {
     const record = await store.retire(id);
     if (!record) return;
@@ -322,6 +370,8 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
     if (removeContext) {
       const live = await store.listActive();
       if (!live.some((e) => e.contextId === record.contextId)) {
+        // Tear down VCS state (caches + ctx heads + pin ref) before the folder.
+        await deps.vcsContexts?.dropContext?.(record.contextId).catch(() => undefined);
         await deps.contextFolders.removeContext(record.contextId);
       }
     }
@@ -384,6 +434,10 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         case "resolveContext": {
           const [id] = args as [string];
           return await resolveContext(id);
+        }
+        case "createContext": {
+          const [{ contextId }] = args as [{ contextId?: string }];
+          return await createContext({ contextId });
         }
         case "setTitle": {
           // Access is enforced by the per-method policy on `runtimeMethods.setTitle`

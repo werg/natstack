@@ -81,6 +81,7 @@ interface BuildDepsOptions {
   canCreateCrossContextEntity?: Parameters<
     typeof createRuntimeService
   >[0]["canCreateCrossContextEntity"];
+  vcsContexts?: Parameters<typeof createRuntimeService>[0]["vcsContexts"];
 }
 
 /** In-memory context-folder fake tracking which contexts exist. */
@@ -142,6 +143,7 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
     contextFolders,
     setEntityTitle: opts.setEntityTitle,
     canCreateCrossContextEntity: opts.canCreateCrossContextEntity,
+    vcsContexts: opts.vcsContexts,
   });
 
   return {
@@ -972,5 +974,30 @@ describe("runtimeService session entities", () => {
 
     expect(contextFolders.removeContext).not.toHaveBeenCalled();
     expect(contextFolders.existing.has(handle.contextId)).toBe(true);
+  });
+
+  it("createContext creates a full workspace branch without repo membership", async () => {
+    const pinContext = vi.fn(async (contextId: string) => `view:${contextId}`);
+    const { service, contextFolders } = await buildDeps({ vcsContexts: { pinContext } });
+
+    const context = (await service.handler({ caller: serverCaller }, "createContext", [
+      { contextId: "ctx-branch" },
+    ])) as { contextId: string };
+
+    expect(context).toEqual({ contextId: "ctx-branch" });
+    expect(pinContext).toHaveBeenCalledWith("ctx-branch");
+    expect(contextFolders.ensureContextFolder).toHaveBeenCalledWith("ctx-branch");
+  });
+
+  it("createContext mints a context id when omitted", async () => {
+    const { service, contextFolders } = await buildDeps();
+
+    const context = (await service.handler({ caller: serverCaller }, "createContext", [{}])) as {
+      contextId: string;
+    };
+
+    expect(context.contextId).toEqual(expect.any(String));
+    expect(context.contextId.length).toBeGreaterThan(0);
+    expect(contextFolders.ensureContextFolder).toHaveBeenCalledWith(context.contextId);
   });
 });

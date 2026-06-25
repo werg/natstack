@@ -437,11 +437,16 @@ describe("createServerPanelTreeBridge create (root, no wipe)", () => {
     } as never);
 
     // Create a NEW root panel (server caller ⇒ no implicit parent ⇒ root).
-    await bridge({
+    const rootResult = await bridge({
       callerId: "server",
       callerKind: "server",
       method: "create",
       args: ["panels/new", {}],
+    });
+    expect(rootResult).toMatchObject({
+      parentId: null,
+      contextId: expect.any(String),
+      source: "panels/new",
     });
 
     // The broadcast tree must contain BOTH roots — the new root must not have
@@ -450,6 +455,170 @@ describe("createServerPanelTreeBridge create (root, no wipe)", () => {
     const lastTree = treeEmits.at(-1)?.[1] as { rootPanels: Array<{ id: string }> };
     expect(lastTree.rootPanels).toHaveLength(2);
     expect(lastTree.rootPanels.map((p) => p.id)).toContain("slot-existing");
+  });
+
+  it("returns the resolved owning slot parent when a panel entity creates a child", async () => {
+    const parentSlotId = "panel:tree/slot-existing";
+    const parentEntityId = "panel:existing";
+    const slots = new Map<string, Record<string, unknown>>();
+    const histories = new Map<string, unknown[]>();
+    const entities = new Map<string, Record<string, unknown>>();
+
+    slots.set(parentSlotId, {
+      slot_id: parentSlotId,
+      parent_slot_id: null,
+      current_entity_id: parentEntityId,
+      current_entity_title: "Existing",
+      current_entry_key: "entry-existing",
+      position_id: "root",
+      created_at: 1,
+      closed_at: null,
+    });
+    histories.set(parentSlotId, [
+      {
+        slot_id: parentSlotId,
+        cursor: 0,
+        entry_key: "entry-existing",
+        entity_id: parentEntityId,
+        source: "panels/existing",
+        context_id: "ctx-existing",
+        state_args: null,
+        recorded_at: 1,
+      },
+    ]);
+    entities.set(parentEntityId, {
+      id: parentEntityId,
+      kind: "panel",
+      source: { repoPath: "panels/existing", effectiveVersion: "ev-existing" },
+      contextId: "ctx-existing",
+      key: "entry-existing",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: false,
+    });
+
+    let entityCounter = 0;
+    const dispatch = vi.fn(async (_ctx, service: string, method: string, args: unknown[]) => {
+      if (service === "workspace-state") {
+        switch (method) {
+          case "slot.list":
+            return [...slots.values()].filter((s) => s["closed_at"] == null);
+          case "slot.get":
+            return slots.get(args[0] as string) ?? null;
+          case "slot.history":
+            return histories.get(args[0] as string) ?? [];
+          case "entity.resolveActive":
+            return entities.get(args[0] as string) ?? null;
+          case "slot.resolveByEntity": {
+            const entityId = args[0] as string;
+            for (const s of slots.values()) {
+              if (s["current_entity_id"] === entityId && s["closed_at"] == null)
+                return s["slot_id"];
+            }
+            return null;
+          }
+          case "panel.search":
+            return [];
+          case "panel.index":
+            return null;
+          case "slot.create": {
+            const input = args[0] as {
+              slotId: string;
+              parentSlotId: string | null;
+              positionId: string;
+              initialEntry: {
+                entryKey: string;
+                entityId: string;
+                source: string;
+                contextId: string;
+                stateArgs?: unknown;
+              };
+            };
+            slots.set(input.slotId, {
+              slot_id: input.slotId,
+              parent_slot_id: input.parentSlotId ?? null,
+              current_entity_id: input.initialEntry.entityId,
+              current_entity_title: null,
+              current_entry_key: input.initialEntry.entryKey,
+              position_id: input.positionId,
+              created_at: 2,
+              closed_at: null,
+            });
+            histories.set(input.slotId, [
+              {
+                slot_id: input.slotId,
+                cursor: 0,
+                entry_key: input.initialEntry.entryKey,
+                entity_id: input.initialEntry.entityId,
+                source: input.initialEntry.source,
+                context_id: input.initialEntry.contextId,
+                state_args: input.initialEntry.stateArgs ?? null,
+                recorded_at: 2,
+              },
+            ]);
+            return;
+          }
+        }
+      }
+      if (service === "runtime" && method === "createEntity") {
+        const spec = args[0] as { source: string; contextId: string; key: string };
+        const id = `panel:nav-new-${++entityCounter}`;
+        const record = {
+          id,
+          kind: "panel",
+          source: { repoPath: spec.source, effectiveVersion: "ev-child" },
+          contextId: spec.contextId,
+          key: spec.key,
+          createdAt: 2,
+          status: "active",
+          cleanupComplete: false,
+        };
+        entities.set(id, record);
+        return {
+          id,
+          kind: "panel",
+          source: record.source,
+          contextId: spec.contextId,
+          targetId: id,
+        };
+      }
+      if (service === "build" && method === "getPanelMetadata") return { title: "Child" };
+      if (service === "presence" && method === "markPanelActive") return undefined;
+      if (service === "auth" && method === "grantConnection") return { token: "t" };
+      throw new Error(`Unexpected dispatch: ${service}.${method}`);
+    });
+
+    const bridge = await createServerPanelTreeBridge({
+      container: { get: vi.fn(() => ({})) },
+      dispatcher: { dispatch },
+      workspace: {},
+      workspacePath: "/tmp/workspace",
+      workspaceConfig: {},
+      adminToken: "admin-token",
+      centralData: null,
+      hostConfig: { gatewayPort: 0, externalHost: "localhost", protocol: "http" },
+      isIpcMode: false,
+      panelRuntimeCoordinator: {
+        resolveHostForSlot: vi.fn(() => null),
+        getLease: vi.fn(() => null),
+      },
+      eventService: { emit: vi.fn() },
+      getGatewayPort: () => 0,
+    } as never);
+
+    const result = await bridge({
+      callerId: parentEntityId,
+      callerKind: "panel",
+      method: "create",
+      args: ["panels/child", {}],
+    });
+
+    expect(result).toMatchObject({
+      parentId: parentSlotId,
+      contextId: expect.any(String),
+      source: "panels/child",
+      runtimeEntityId: expect.stringMatching(/^panel:nav-new-/),
+    });
   });
 });
 

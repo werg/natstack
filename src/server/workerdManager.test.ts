@@ -4,6 +4,7 @@
  */
 
 import {
+  isExpectedEvalIdleEvictionWorkerdStderr,
   WorkerdManager,
   type WorkerdManagerDeps,
   type WorkerCreateOptions,
@@ -139,6 +140,21 @@ afterEach(() => {
   );
 });
 
+describe("workerd stderr filtering", () => {
+  it("identifies only expected EvalDO idle-eviction aborts", () => {
+    expect(
+      isExpectedEvalIdleEvictionWorkerdStderr(
+        "workerd/server/server.c++:5350: error: Uncaught exception: failed: remote.jsg.Error: EvalDO: idle eviction (reclaim memory; SQLite preserved)"
+      )
+    ).toBe(true);
+    expect(
+      isExpectedEvalIdleEvictionWorkerdStderr(
+        "workerd/server/server.c++:5350: error: Uncaught exception: failed: remote.jsg.Error: different failure"
+      )
+    ).toBe(false);
+  });
+});
+
 describe("WorkerdManager", () => {
   // -------------------------------------------------------------------------
   // Instance lifecycle
@@ -153,6 +169,7 @@ describe("WorkerdManager", () => {
       expect(instance.name).toBe("hello");
       expect(instance.source).toBe("workers/hello");
       expect(instance.contextId).toBe("ctx-1");
+      expect(instance.id).toBe("worker:hello");
       expect(instance.callerId).toBe("worker:hello");
       expect(instance.token).toBe("mock-token-123");
       expect(instance.status).toBe("running");
@@ -411,8 +428,8 @@ describe("WorkerdManager", () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
-      await mgr.createInstance(defaultCreateOptions());
-      await mgr.destroyInstance("hello");
+      const instance = await mgr.createInstance(defaultCreateOptions());
+      await mgr.destroyInstance(instance.id);
 
       expect(deps.tokenManager.revokeToken).toHaveBeenCalledWith("worker:hello");
       expect(deps.fsService.closeHandlesForCaller).toHaveBeenCalledWith("worker:hello");
@@ -433,8 +450,8 @@ describe("WorkerdManager", () => {
       const deps = createMockDeps();
       const mgr = new WorkerdManager(deps);
 
-      await mgr.createInstance(defaultCreateOptions());
-      const updated = await mgr.updateInstance("hello", {
+      const instance = await mgr.createInstance(defaultCreateOptions());
+      const updated = await mgr.updateInstance(instance.id, {
         env: { FOO: "bar" },
       });
 
@@ -478,11 +495,12 @@ describe("WorkerdManager", () => {
 
     it("getInstanceStatus strips token", async () => {
       const mgr = new WorkerdManager(createMockDeps());
-      await mgr.createInstance(defaultCreateOptions());
+      const instance = await mgr.createInstance(defaultCreateOptions());
 
-      const status = mgr.getInstanceStatus("hello");
+      const status = mgr.getInstanceStatus(instance.id);
       expect(status).not.toBeNull();
       expect(status).not.toHaveProperty("token");
+      expect(status?.id).toBe("worker:hello");
     });
 
     it("getInstanceStatus returns null for unknown", () => {
@@ -550,6 +568,7 @@ describe("WorkerdManager", () => {
         {
           head: "main",
           stateHash: "state:next",
+          repoStateHash: "state:next",
           sinceStateHash: "state:prev",
           eventId: "event:next",
           headHash: "head:next",
@@ -582,6 +601,7 @@ describe("WorkerdManager", () => {
         {
           head: "main",
           stateHash: "state:next",
+          repoStateHash: "state:next",
           sinceStateHash: "state:prev",
           eventId: "event:next",
           headHash: "head:next",
@@ -642,6 +662,7 @@ describe("WorkerdManager", () => {
         {
           head: "main",
           stateHash: "state:next",
+          repoStateHash: "state:next",
           sinceStateHash: "state:prev",
           eventId: "event:next",
           headHash: "head:next",

@@ -55,6 +55,7 @@ function stateAdvance(overrides: Partial<StateAdvancedEvent> = {}): StateAdvance
   return {
     head: "main",
     stateHash: "state:next",
+    repoStateHash: "state:next",
     sinceStateHash: "state:prev",
     eventId: "event:1",
     headHash: "head:1",
@@ -112,7 +113,7 @@ describe("createMainAdvanceApprovalGate", () => {
     await gate.approve({
       event: stateAdvance(),
       caller: panelCaller(),
-      operation: "publish",
+      operation: "push",
       sourceHead: "ctx:ctx-1",
     });
 
@@ -154,7 +155,7 @@ describe("createMainAdvanceApprovalGate", () => {
     const candidate = {
       event: stateAdvance(),
       caller: panelCaller(),
-      operation: "publish" as const,
+      operation: "push" as const,
       sourceHead: "ctx:ctx-1",
     };
 
@@ -176,7 +177,7 @@ describe("createMainAdvanceApprovalGate", () => {
     await gate.approve({
       event: stateAdvance({ changedPaths: ["apps/shell/index.tsx"], transitionKind: "edit" }),
       caller: panelCaller(),
-      operation: "publish",
+      operation: "push",
       sourceHead: "ctx:ctx-1",
     });
 
@@ -189,15 +190,15 @@ describe("createMainAdvanceApprovalGate", () => {
         effectiveVersion: "ev-panel",
         capability: "workspace-repo-write",
         grantResourceKey: "workspace-source-change:main",
-        title: "Publish workspace changes",
-        description: "This vcs publish moves workspace main and changes 1 path.",
+        title: "Push workspace changes",
+        description: "This vcs push moves workspace main and changes 1 path.",
         resource: {
           type: "vcs-head",
           label: "Head",
           value: "workspace main",
         },
         details: [
-          { label: "Operation", value: "vcs publish" },
+          { label: "Operation", value: "vcs push" },
           { label: "Head", value: "main" },
           { label: "Source", value: "ctx:ctx-1" },
           { label: "State", value: "state:next" },
@@ -226,7 +227,7 @@ describe("createMainAdvanceApprovalGate", () => {
         changedPaths: ["meta/natstack.yml", "apps/shell/index.tsx"],
       }),
       caller: panelCaller(),
-      operation: "publish",
+      operation: "push",
       sourceHead: "ctx:ctx-1",
     });
 
@@ -258,7 +259,7 @@ describe("createMainAdvanceApprovalGate", () => {
         caller: panelCaller(),
         operation: "apply-edits",
       })
-    ).rejects.toThrow("Workspace config publish denied");
+    ).rejects.toThrow("Workspace config push denied");
   });
 
   it("rejects denied non-meta main advances", async () => {
@@ -272,5 +273,83 @@ describe("createMainAdvanceApprovalGate", () => {
         sourceHead: "ctx:ctx-1",
       })
     ).rejects.toThrow("Workspace main update denied");
+  });
+
+  describe("approveRepoDeletion", () => {
+    const deletionCandidate = {
+      caller: panelCaller(),
+      repoPath: "panels/old",
+      fileCount: 3,
+      stateHash: "state:doomed",
+    };
+
+    it("prompts with the dedicated severe per-repo deletion capability", async () => {
+      const deps = gateDeps({ decision: "once" });
+      const gate = createMainAdvanceApprovalGate(deps);
+
+      await gate.approveRepoDeletion(deletionCandidate);
+
+      expect(deps.approvalQueue.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "capability",
+          capability: "workspace-repo-delete",
+          severity: "severe",
+          grantResourceKey: "workspace-repo-delete:panels/old",
+        })
+      );
+    });
+
+    it("throws when the user denies the deletion", async () => {
+      const gate = createMainAdvanceApprovalGate(gateDeps({ decision: "deny" }));
+      await expect(gate.approveRepoDeletion(deletionCandidate)).rejects.toThrow(
+        /Deletion of panels\/old denied/
+      );
+    });
+
+    it("is NOT auto-approved by a prior generic workspace-repo-write grant", async () => {
+      const deps = gateDeps({ decision: "deny" });
+      // Pre-grant the ordinary write capability broadly for this caller.
+      deps.capabilityGrantStore.grant(
+        "workspace-repo-write",
+        "workspace-source-change:main",
+        { callerId: "panel-1", repoPath: "panels/test", effectiveVersion: "ev-panel" },
+        "session"
+      );
+      const gate = createMainAdvanceApprovalGate(deps);
+
+      // The deletion must STILL prompt (and here be denied) — the write grant
+      // does not cover the distinct `workspace-repo-delete` capability.
+      await expect(gate.approveRepoDeletion(deletionCandidate)).rejects.toThrow(/denied/);
+      expect(deps.approvalQueue.request).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("approveRepoRestore", () => {
+    const restoreCandidate = {
+      caller: panelCaller(),
+      repoPath: "panels/old",
+      fileCount: 2,
+      stateHash: "state:archived",
+    };
+
+    it("prompts with the dedicated restore capability", async () => {
+      const deps = gateDeps({ decision: "once" });
+      const gate = createMainAdvanceApprovalGate(deps);
+      await gate.approveRepoRestore(restoreCandidate);
+      expect(deps.approvalQueue.request).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "capability",
+          capability: "workspace-repo-restore",
+          grantResourceKey: "workspace-repo-restore:panels/old",
+        })
+      );
+    });
+
+    it("throws when the user denies the restore", async () => {
+      const gate = createMainAdvanceApprovalGate(gateDeps({ decision: "deny" }));
+      await expect(gate.approveRepoRestore(restoreCandidate)).rejects.toThrow(
+        /Restore of panels\/old denied/
+      );
+    });
   });
 });

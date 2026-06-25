@@ -170,6 +170,8 @@ export interface WorkerCreateOptions {
 }
 
 export interface WorkerInstance {
+  /** Public lifecycle handle. Use this for status/update/destroy calls. */
+  id: string;
   name: string;
   source: string;
   contextId: string;
@@ -269,6 +271,13 @@ function workerdInspectorEnabled(): boolean {
   return process.env["NATSTACK_DISABLE_WORKERD_INSPECTOR"] !== "1";
 }
 
+const EXPECTED_EVAL_IDLE_EVICTION_ABORT =
+  "EvalDO: idle eviction (reclaim memory; SQLite preserved)";
+
+export function isExpectedEvalIdleEvictionWorkerdStderr(text: string): boolean {
+  return text.includes(EXPECTED_EVAL_IDLE_EVICTION_ABORT);
+}
+
 // ---------------------------------------------------------------------------
 // WorkerdManager
 // ---------------------------------------------------------------------------
@@ -300,6 +309,7 @@ export class WorkerdManager {
   private workerdStartedAtMs: number | null = null;
   private workerdMemorySampleTimer: ReturnType<typeof setInterval> | null = null;
   private lastWorkerdRssBytes: number | null = null;
+  private suppressNextExpectedWorkerdStack = false;
 
   // DO support: shared services (one per source)
   /** Shared DO services — keyed by `${source}:${className}`. Source-scoped: two workers CAN have same className if different source. */
@@ -656,6 +666,7 @@ export class WorkerdManager {
         : undefined;
 
     const instance: WorkerInstance = {
+      id: callerId,
       name,
       source: args.source,
       contextId: args.contextId,
@@ -817,6 +828,7 @@ export class WorkerdManager {
     const token = this.ensureWorkerBearer(callerId);
 
     const instance: WorkerInstance = {
+      id: callerId,
       name,
       source: options.source,
       contextId,
@@ -927,8 +939,9 @@ export class WorkerdManager {
   }
 
   async destroyInstance(name: string): Promise<void> {
-    const instance = this.instances.get(name);
-    if (!instance) {
+    const resolvedName = this.resolveInstanceName(name);
+    const instance = resolvedName ? this.instances.get(resolvedName) : undefined;
+    if (!resolvedName || !instance) {
       throw new Error(`Worker instance "${name}" not found`);
     }
 
@@ -937,7 +950,7 @@ export class WorkerdManager {
     this.revokeWorkerBearer(instance.callerId);
     this.deps.fsService.closeHandlesForCaller(instance.callerId);
     await this.deps.cleanupWebhookSubscriptions?.(instance.callerId);
-    this.instances.delete(name);
+    this.instances.delete(resolvedName);
     this.runtimeImages.delete(instance.runtimeImageId);
 
     // Unregister regular-worker routes if this was the canonical instance.
@@ -953,7 +966,7 @@ export class WorkerdManager {
     // No restart — see stopWorker. Only stop workerd when nothing remains.
     await this.stopWorkerdIfIdle();
 
-    log.info(`Worker instance "${name}" destroyed`);
+    log.info(`Worker instance "${resolvedName}" destroyed`);
   }
 
   /** Stop workerd only when no workers and no DO services remain to serve. */
@@ -967,7 +980,8 @@ export class WorkerdManager {
     name: string,
     updates: Partial<WorkerCreateOptions>
   ): Promise<WorkerInstance> {
-    const instance = this.instances.get(name);
+    const resolvedName = this.resolveInstanceName(name);
+    const instance = resolvedName ? this.instances.get(resolvedName) : undefined;
     if (!instance) {
       throw new Error(`Worker instance "${name}" not found`);
     }
@@ -999,7 +1013,7 @@ export class WorkerdManager {
       message: `Worker updated (codeVersion ${instance.codeVersion})`,
       fields: { event: "worker-updated", codeVersion: instance.codeVersion },
     });
-    log.info(`Worker instance "${name}" updated (codeVersion ${instance.codeVersion})`);
+    log.info(`Worker instance "${resolvedName}" updated (codeVersion ${instance.codeVersion})`);
     return instance;
   }
 
@@ -1013,10 +1027,25 @@ export class WorkerdManager {
   }
 
   getInstanceStatus(name: string): Omit<WorkerInstance, "token"> | null {
-    const instance = this.instances.get(name);
+    const resolvedName = this.resolveInstanceName(name);
+    const instance = resolvedName ? this.instances.get(resolvedName) : undefined;
     if (!instance) return null;
     const { token: _token, ...rest } = instance;
     return rest;
+  }
+
+  private resolveInstanceName(idOrName: string): string | null {
+    if (this.instances.has(idOrName)) return idOrName;
+    for (const [name, instance] of this.instances) {
+      if (
+        instance.id === idOrName ||
+        instance.callerId === idOrName ||
+        instance.runtimeImageId === idOrName
+      ) {
+        return name;
+      }
+    }
+    return null;
   }
 
   getPort(): number | null {
@@ -2106,6 +2135,7 @@ export default { fetch() { return new Response("universal-do host"); } };
     spawnedProcess.stderr?.on("data", (data: Buffer) => {
       const line = data.toString().trim();
       if (line) {
+        if (this.shouldSuppressWorkerdStderr(line)) return;
         this.rememberWorkerdStartupOutput(`stderr: ${line}`);
         log.warn(`[workerd] ${line}`);
       }
@@ -2249,6 +2279,18 @@ export default { fetch() { return new Response("universal-do host"); } };
         this.lastWorkerdStartupOutput.length - WORKERD_STARTUP_OUTPUT_LINES
       );
     }
+  }
+
+  private shouldSuppressWorkerdStderr(line: string): boolean {
+    if (isExpectedEvalIdleEvictionWorkerdStderr(line)) {
+      this.suppressNextExpectedWorkerdStack = !line.includes("\nstack:");
+      return true;
+    }
+    if (this.suppressNextExpectedWorkerdStack) {
+      this.suppressNextExpectedWorkerdStack = false;
+      if (line.startsWith("stack:")) return true;
+    }
+    return false;
   }
 
   private recentWorkerdOutputSuffix(): string {

@@ -14,7 +14,9 @@ function createDeps() {
   return {
     workerdManager: {
       createInstance: vi.fn(async (options) => ({
+        id: `worker:${options.name ?? options.source.split("/").pop() ?? "worker"}`,
         ...options,
+        callerId: `worker:${options.name ?? options.source.split("/").pop() ?? "worker"}`,
         token: "secret",
         status: "running",
       })),
@@ -95,6 +97,7 @@ describe("workerdService", () => {
 
     expect(result).not.toHaveProperty("token");
     expect(result).toMatchObject({
+      id: "worker:hello",
       parentId: "panel-parent",
       parentEntityId: "panel:parent-entity",
       parentKind: "panel",

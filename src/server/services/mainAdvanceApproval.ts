@@ -14,16 +14,51 @@ import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 import { isAuthorizedChrome } from "./chromeTrust.js";
 
 const WORKSPACE_REPO_WRITE_CAPABILITY = "workspace-repo-write";
+// Deliberately DISTINCT from the write capability: a generic
+// `workspace-repo-write` session/repo grant must NEVER silently authorize a
+// destructive whole-repo deletion. The per-repo resource key (below) further
+// ensures approving the deletion of one repo never covers another.
+const WORKSPACE_REPO_DELETE_CAPABILITY = "workspace-repo-delete";
+// Recovering a deleted repo re-adds it to workspace main — a global-state change,
+// so it is gated too, but as a standard (recovery) action rather than severe.
+const WORKSPACE_REPO_RESTORE_CAPABILITY = "workspace-repo-restore";
 
 export interface MainAdvanceApprovalCandidate {
   event: StateAdvancedEvent;
   caller: VerifiedCaller;
-  operation: "apply-edits" | "revert" | "merge" | "abort-merge" | "publish";
+  operation: "apply-edits" | "revert" | "merge" | "abort-merge" | "push";
   sourceHead?: string;
+}
+
+/** A pending whole-repo deletion awaiting the user's explicit, severe approval. */
+export interface RepoDeletionApprovalCandidate {
+  caller: VerifiedCaller;
+  repoPath: string;
+  /** How many tracked files the deletion will remove (for the prompt). */
+  fileCount: number;
+  /** The `main` state being archived (shown + used to scope the request). */
+  stateHash: string;
+  /** Live repos that depend on this one (force-delete) — surfaced so the user
+   *  sees what will break. Empty for a clean deletion. */
+  dependents?: string[];
+}
+
+/** A pending whole-repo restore awaiting the user's approval. */
+export interface RepoRestoreApprovalCandidate {
+  caller: VerifiedCaller;
+  repoPath: string;
+  /** How many tracked files the restore will re-add (for the prompt). */
+  fileCount: number;
+  /** The archived `main` state being restored. */
+  stateHash: string;
 }
 
 export interface MainAdvanceApprovalGate {
   approve(candidate: MainAdvanceApprovalCandidate): Promise<void>;
+  /** Gate a severe, global-state whole-repo deletion. Throws if denied. */
+  approveRepoDeletion(candidate: RepoDeletionApprovalCandidate): Promise<void>;
+  /** Gate a whole-repo restore (re-adds a deleted repo to main). Throws if denied. */
+  approveRepoRestore(candidate: RepoRestoreApprovalCandidate): Promise<void>;
 }
 
 export interface MetaApprovalGrantStore {
@@ -176,7 +211,7 @@ export function createMainAdvanceApprovalGate(deps: {
         },
       });
       if (decision === "deny") {
-        throw new Error("Workspace config publish denied");
+        throw new Error("Workspace config push denied");
       }
       for (const { provider, approval } of approvals) {
         provider.acceptPreapprovedTrust(approval.identityKeys);
@@ -186,6 +221,125 @@ export function createMainAdvanceApprovalGate(deps: {
       }
       if (decision === "session") {
         deps.grantStore.grant(grantKey, deps.grantTtlMs);
+      }
+    },
+
+    async approveRepoDeletion(candidate) {
+      // The shell acts on the user's behalf (it carries its own confirm UX), so
+      // chrome callers pass — same trust model as `approve`. Every other caller
+      // (agents, panels, workers) must get explicit user approval.
+      if (isAuthorizedChrome(candidate.caller, { hasAppCapability: deps.hasAppCapability })) {
+        return;
+      }
+      const callerKind = userlandCallerKind(candidate.caller.runtime.kind);
+      if (!callerKind) {
+        throw new Error(
+          `Repo deletion from ${candidate.caller.runtime.kind} callers is not supported`
+        );
+      }
+      const identity = candidate.caller.code;
+      if (!identity || identity.callerKind !== candidate.caller.runtime.kind) {
+        throw new Error(`Unknown caller identity: ${candidate.caller.runtime.id}`);
+      }
+      const fileSummary = `${candidate.fileCount} file${candidate.fileCount === 1 ? "" : "s"}`;
+      const dependents = candidate.dependents ?? [];
+      const dependentWarning =
+        dependents.length > 0
+          ? ` WARNING: ${dependents.length} repo(s) depend on it and will likely fail to build: ${dependents.join(", ")}.`
+          : "";
+      const authorization = await requestCapabilityPermission(
+        {
+          approvalQueue: deps.approvalQueue,
+          grantStore: deps.capabilityGrantStore,
+        },
+        {
+          caller: candidate.caller,
+          capability: WORKSPACE_REPO_DELETE_CAPABILITY,
+          severity: "severe",
+          // Per-repo resource key: a grant only ever covers THIS repo, and the
+          // state-scoped dedupKey keeps each distinct deletion its own prompt.
+          dedupKey: `workspace-repo-delete:${candidate.repoPath}:${candidate.stateHash}`,
+          resource: {
+            type: "vcs-repo",
+            label: "Repo",
+            value: candidate.repoPath,
+            key: `workspace-repo-delete:${candidate.repoPath}`,
+          },
+          operation: {
+            kind: "workspace",
+            verb: "delete repo (archives history)",
+            object: { type: "vcs-repo", label: "Repo", value: candidate.repoPath },
+            groupKey: `workspace-repo-delete:${candidate.repoPath}`,
+          },
+          title: `Delete repo ${candidate.repoPath}`,
+          description:
+            `Permanently remove ${candidate.repoPath} (${fileSummary}) from the workspace. ` +
+            `Its history is archived (recoverable), but it is dropped from the workspace's ` +
+            `main state and its working tree is deleted.${dependentWarning}`,
+          details: [
+            { label: "Repo", value: candidate.repoPath },
+            { label: "Files removed", value: String(candidate.fileCount) },
+            ...(dependents.length > 0
+              ? [{ label: "Dependents at risk", value: dependents.join(", ") }]
+              : []),
+            { label: "Archived state", value: candidate.stateHash },
+          ],
+          deniedReason: `Deletion of ${candidate.repoPath} denied`,
+        }
+      );
+      if (!authorization.allowed) {
+        throw new Error(authorization.reason ?? `Deletion of ${candidate.repoPath} denied`);
+      }
+    },
+
+    async approveRepoRestore(candidate) {
+      if (isAuthorizedChrome(candidate.caller, { hasAppCapability: deps.hasAppCapability })) {
+        return;
+      }
+      const callerKind = userlandCallerKind(candidate.caller.runtime.kind);
+      if (!callerKind) {
+        throw new Error(
+          `Repo restore from ${candidate.caller.runtime.kind} callers is not supported`
+        );
+      }
+      const identity = candidate.caller.code;
+      if (!identity || identity.callerKind !== candidate.caller.runtime.kind) {
+        throw new Error(`Unknown caller identity: ${candidate.caller.runtime.id}`);
+      }
+      const fileSummary = `${candidate.fileCount} file${candidate.fileCount === 1 ? "" : "s"}`;
+      const authorization = await requestCapabilityPermission(
+        {
+          approvalQueue: deps.approvalQueue,
+          grantStore: deps.capabilityGrantStore,
+        },
+        {
+          caller: candidate.caller,
+          capability: WORKSPACE_REPO_RESTORE_CAPABILITY,
+          dedupKey: `workspace-repo-restore:${candidate.repoPath}:${candidate.stateHash}`,
+          resource: {
+            type: "vcs-repo",
+            label: "Repo",
+            value: candidate.repoPath,
+            key: `workspace-repo-restore:${candidate.repoPath}`,
+          },
+          operation: {
+            kind: "workspace",
+            verb: "restore deleted repo",
+            object: { type: "vcs-repo", label: "Repo", value: candidate.repoPath },
+            groupKey: `workspace-repo-restore:${candidate.repoPath}`,
+          },
+          title: `Restore repo ${candidate.repoPath}`,
+          description: `Re-add ${candidate.repoPath} (${fileSummary}) to the workspace from its archived history.`,
+          details: [
+            { label: "Repo", value: candidate.repoPath },
+            { label: "Files restored", value: String(candidate.fileCount) },
+            { label: "Archived state", value: candidate.stateHash },
+          ],
+          deniedReason: `Restore of ${candidate.repoPath} denied`,
+        }
+      );
+      if (!authorization.allowed) {
+        throw new Error(authorization.reason ?? `Restore of ${candidate.repoPath} denied`);
       }
     },
   };
@@ -301,12 +455,12 @@ function metaChangeDescription(units: UnitBatchEntry[]): string {
     );
   }
   return parts.length > 0
-    ? `This publish edits workspace config and adds ${parts.join(" and ")}.`
-    : "This publish edits sensitive workspace configuration.";
+    ? `This push edits workspace config and adds ${parts.join(" and ")}.`
+    : "This push edits sensitive workspace configuration.";
 }
 
 function mainAdvanceTitle(candidate: MainAdvanceApprovalCandidate): string {
-  if (candidate.operation === "publish") return "Publish workspace changes";
+  if (candidate.operation === "push") return "Push workspace changes";
   if (candidate.operation === "merge") return "Merge into workspace main";
   if (candidate.operation === "abort-merge") return "Abort workspace main merge";
   if (candidate.operation === "revert") return "Revert workspace main";
@@ -337,8 +491,8 @@ function operationLabel(operation: MainAdvanceApprovalCandidate["operation"]): s
       return "vcs abort merge";
     case "merge":
       return "vcs merge";
-    case "publish":
-      return "vcs publish";
+    case "push":
+      return "vcs push";
     case "revert":
       return "vcs revert";
   }

@@ -15,8 +15,16 @@ export interface PanelTreeBridgeRequest {
   args: unknown[];
 }
 
+export interface PanelTreeSourceValidationRequest {
+  method: "create" | "navigate";
+  source: string;
+  options: Record<string, unknown>;
+  targetPanelId?: string;
+}
+
 export interface PanelTreeServiceDeps extends PanelAccessPermissionDeps {
   bridge(request: PanelTreeBridgeRequest): Promise<unknown>;
+  validateOpenPanelSource?(request: PanelTreeSourceValidationRequest): Promise<void>;
 }
 
 const METHOD_ACCESS: Partial<Record<string, PanelAccessOperation>> = {
@@ -43,6 +51,12 @@ const READONLY_AGENT_METHODS = new Set([
   "_agent.state",
   "_agent.routes",
 ]);
+
+function toOptionsRecord(input: unknown): Record<string, unknown> {
+  return input && typeof input === "object" && !Array.isArray(input)
+    ? (input as Record<string, unknown>)
+    : {};
+}
 
 export function createPanelTreeService(deps: PanelTreeServiceDeps): ServiceDefinition {
   async function bridge(ctx: ServiceContext, method: string, args: unknown[]): Promise<unknown> {
@@ -107,6 +121,26 @@ export function createPanelTreeService(deps: PanelTreeServiceDeps): ServiceDefin
     throw new Error(`Unknown panel agent method: ${String(agentMethod)}`);
   }
 
+  async function validatePanelSourceBeforeMutation(method: string, args: unknown[]): Promise<void> {
+    if (!deps.validateOpenPanelSource) return;
+    if (method === "create" && typeof args[0] === "string") {
+      await deps.validateOpenPanelSource({
+        method,
+        source: args[0],
+        options: toOptionsRecord(args[1]),
+      });
+      return;
+    }
+    if (method === "navigate" && typeof args[1] === "string") {
+      await deps.validateOpenPanelSource({
+        method,
+        source: args[1],
+        options: toOptionsRecord(args[2]),
+        targetPanelId: typeof args[0] === "string" ? args[0] : undefined,
+      });
+    }
+  }
+
   return {
     name: "panelTree",
     description: "Server-mediated panel tree handles and control operations",
@@ -117,6 +151,7 @@ export function createPanelTreeService(deps: PanelTreeServiceDeps): ServiceDefin
     methods: panelTreeMethods,
     handler: async (ctx, method, args) => {
       assertAllowedAgentMethod(method, args);
+      await validatePanelSourceBeforeMutation(method, args);
       const op = operationFor(method, args);
       if (op) {
         const target =

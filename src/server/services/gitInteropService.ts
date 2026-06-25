@@ -41,6 +41,15 @@ type GitInteropServiceDeps = {
   grantStore?: CapabilityGrantStore;
   hasAppCapability?: (callerId: string, capability: AppCapability) => boolean;
   onWorkspaceSourceChanged?: (ctx: ServiceContext, summary: string) => Promise<void>;
+  /**
+   * Initialize the per-repo VCS log (`vcs:repo:<repoPath>`) for a freshly
+   * cloned repo by snapshotting its on-disk tree into the repo log at `main`
+   * (W7 distribution). No lockfile, no pinning — the clone lands at its
+   * declared branch HEAD and its tree becomes the repo log's first `main`
+   * state. Wired to `GitBridge.importRepoTree`. Optional so unit tests that
+   * don't exercise distribution can omit it.
+   */
+  initRepoLog?: (repoPath: string) => Promise<void>;
 };
 
 type WorkspaceTreeNode = {
@@ -168,6 +177,22 @@ async function completeWorkspaceDependencies(
         remote: dependency.remote,
         credentialId: options?.credentialId,
       });
+      // W7: a newly cloned repo has no `vcs:repo:<path>` log yet. Snapshot its
+      // cloned tree (at the declared branch HEAD) into a fresh repo log at
+      // `main` so the workspace's live union (and every per-repo VCS op) can
+      // see it immediately. No lockfile, no pinning — the clone's tree IS the
+      // first state. A failure here must not unwind the clone (the repo is on
+      // disk and usable); surface it as a non-fatal warning.
+      if (deps.initRepoLog) {
+        try {
+          await deps.initRepoLog(imported.path);
+        } catch (logErr) {
+          console.warn(
+            `[GitRemotes] Cloned ${imported.path} but failed to initialize its vcs:repo log:`,
+            logErr instanceof Error ? logErr.message : String(logErr)
+          );
+        }
+      }
       result.imported.push(imported);
       existingUnits.add(imported.path);
     } catch (err) {
