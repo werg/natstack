@@ -265,12 +265,13 @@ components. So:
 
 ## Caveats
 
-- Workspace source is built from the committed context head, in lockstep with
-  your edits. If the module lives in a workspace unit, edit it via the
-  `edit`/`write` tools or `vcs.applyEdits` — each edit commits to your context
-  head and projects to disk atomically, so the channel can load it immediately
-  (no separate commit step). Do not edit via `fs.writeFile` and expect it to
-  load. (Same constraint as eval imports — see SKILL.md.)
+- Workspace source is built from your context head's working state, in lockstep
+  with your edits. If the module lives in a workspace unit, edit it via the
+  `edit`/`write` tools or `vcs.edit` — each working edit lands on your context
+  head and projects to disk, so the channel can load it immediately (no commit
+  needed for the build to pick it up; `vcs.commit`/`vcs.push` are for sealing and
+  shipping milestones). Do not edit via `fs.writeFile` and expect it to load.
+  (Same constraint as eval imports — see SKILL.md.)
 - Custom messages are panel-rendered. Headless sessions receive the events
   but won't materialize React output.
 - Don't reuse a `typeId` for unrelated shapes — registry updates are

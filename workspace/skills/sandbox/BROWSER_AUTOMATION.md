@@ -5,17 +5,12 @@ website automation, open or reuse a dedicated browser panel. Existing workspace
 panels, including chat panels, are application surfaces: inspect them when
 debugging that app, but do not use them as disposable web pages.
 
-> **Where this runs.** `openPanel`, `panelTree`, and `getPanelHandle` are
-> panel/component-runtime capabilities from `@workspace/runtime`
-> (`import { openPanel } from "@workspace/runtime"` does not initialize in the
-> server-side `EvalDO`). But the `handle.cdp.*` automation does **not** need a
-> panel host of its own: the lightweight CDP client is workerd-native and runs
-> over a WebSocket to the panel's CDP endpoint, so **once you hold a panel
-> handle, `handle.cdp.lightweightPage()` automation works in server-side eval
-> too** — as well as in panel code and `inline_ui`/`feedback_custom` components.
-> The catch is acquiring the handle: `openPanel`/`panelTree`/`getPanelHandle`
-> must run where the panel runtime is available, or be reached over `rpc`. The
-> "Inline UI: Browser Control Panel" example below shows the panel/component
+> **Where this runs.** `openPanel`, `panelTree`, and `getPanelHandle` are part
+> of the portable runtime surface from `@workspace/runtime`; they work from
+> server-side eval, panels, workers, and DOs. The lightweight CDP client is
+> workerd-native and runs over a WebSocket to the panel's CDP endpoint, so a
+> browser panel opened from eval can be driven there directly. The "Inline UI:
+> Browser Control Panel" example below shows the panel/component
 > shape; the `eval` snippets show the same page API. (`browserData` from
 > `@workspace/panel-browser` is shell-only and not reachable from server-side
 > eval.)
@@ -497,7 +492,7 @@ export default function BrowserController({ props, chat }) {
 
 ## Tips
 
-- **Acquire the handle where the panel runtime lives** — `openPanel`/`panelTree`/`getPanelHandle` need the panel runtime (or `rpc`); once you hold the handle, `handle.cdp.lightweightPage()` automation works in server-side eval too.
+- **Acquire or create one handle and reuse it** — `openPanel`/`panelTree`/`getPanelHandle` work from server-side eval, panels, workers, and DOs; once you hold the handle, `handle.cdp.lightweightPage()` drives the browser page.
 - **Hold a handle/page in component state and reuse it** — re-open and re-connect only for a new target; reuse the same `page` for follow-up interactions.
 - **Prefer locators with auto-wait** — `page.getByRole(...)` / `page.locator(...)` wait for the element automatically; reach for `page.evaluate()` for complex DOM queries that need full DOM API access.
 - **Use `page.goto(url, { waitUntil: "networkidle" })` for SPAs** — waits for AJAX requests to finish.

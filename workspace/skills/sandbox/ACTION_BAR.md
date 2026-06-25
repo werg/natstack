@@ -27,6 +27,12 @@ The component receives `{ props, chat }` only. It does NOT receive
 and is not shared into panel-rendered components. Reach runtime services from a
 component via `chat.rpc.call(...)`.
 
+When creating an action-bar file inside a workspace repo namespace such as
+`panels/`, write inside a repo-shaped path, for example
+`panels/action-bar-review/index.tsx`. Do not write `panels/action-bar-review.tsx`;
+that path names `panels/action-bar-review` as a repo root rather than a file
+inside a repo.
+
 Action bars can call agent methods by handle without first resolving a
 participant id:
 
@@ -58,7 +64,7 @@ file-backed action bars.
 
 ```ts
 load_action_bar({
-  path: ".natstack/action-bars/review.tsx",
+  path: "panels/action-bar-review/index.tsx",
   props: { mode: "review" },
   maxHeight: 220
 })
@@ -80,7 +86,7 @@ Chat panels can be opened with an initial action bar via state args:
 
 ```ts
 {
-  actionBarFile: ".natstack/action-bars/review.tsx",
+  actionBarFile: "panels/action-bar-review/index.tsx",
   actionBarProps: { mode: "review" }
 }
 ```

@@ -56,9 +56,9 @@ create duplicate CDP connections. There is no generic `handle.cdp.page()` alias.
 The lightweight CDP client is workerd-native: it works in panels **and** in
 worker/DO/server-side-eval contexts. It runs over a WebSocket to the panel's CDP
 endpoint, so any context that holds a panel handle can drive the page —
-including server-side `eval`. `openPanel` itself is a panel/component-runtime
-capability, but once you hold a panel handle, `handle.cdp.lightweightPage()`
-automation is available wherever that handle lives.
+including server-side `eval`. `openPanel`/`panelTree`/`getPanelHandle` are part
+of the portable runtime surface from `@workspace/runtime`, so server-side eval
+can create or acquire a panel handle directly before driving CDP automation.
 
 ## Page surface
 

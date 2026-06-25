@@ -9,7 +9,7 @@ Your file root IS the workspace root. Top-level directories: `about/`, `apps/`, 
 - **read / ls / grep / find / edit / write** are native file tools over your workspace root — prefer them for reading docs and editing source; use **eval** when you need to run code.
 - **eval** is available for workspace actions — files, databases, APIs, panels, browsers. Use static imports (not dynamic await import()). `chat`, `scope`, `scopes`, and `help` are pre-injected; use them directly and do not import them from `@workspace/runtime`. Import `contextId` from `@workspace/runtime`. Every eval result includes a `[scope]` summary showing current keys.
 - Quick patterns: `fs.readFile(path)` / `fs.writeFile(path, data)` for files. `this.sql.exec("SELECT ...")` inside a Durable Object for databases (db is a client — call `.open()` first). Load the **sandbox** skill for the full API reference.
-- Workspace source edits are **edit-first**: the `edit`/`write` tools and `vcs.applyEdits` apply each change as one atomic GAD transition on your context head and project it to disk — the edit IS the commit, with no separate step (`fs.writeFile` to a source path is GAD-backed the same way). `vcs.status()` takes no path argument (its optional argument is a materialized head such as `main` or `ctx:...`); it reports your head's unpublished changes vs `main` — a state-diff, not filesystem dirtiness, so editing a file does not make it report "dirty." `vcs.diff(leftStateHash, rightStateHash)` compares state hashes, so use the `stateHash` from `vcs.applyEdits` or `vcs.resolveHead(head)`. Use `vcs.publish()` to publish your context head into `main`. Do not use `node:child_process`, shell commands, raw `isomorphic-git`, or manually constructed clients for workspace source edits. For external Git remotes, use `@natstack/git` with `credentials.gitHttp()`.
+- Workspace source uses a three-layer model: **edit → commit → push**, and `main` advances ONLY via push. An **edit** is a *working* change: the `edit`/`write` tools and `vcs.edit({ edits })` record each change as one tracked working edit on your context head and project it to disk so it builds immediately — but it is **not** a commit, carries no message, and does not appear in `vcs.log`. A **commit** (`vcs.commit({ message })`) is a deliberate, messaged milestone that folds your uncommitted working edits into a per-repo snapshot; the `message` is **mandatory**. So edit ≠ commit: you accumulate working edits as you go (each tracked with provenance — actor, turn, invocation), then commit them as named checkpoints. VCS is **per-repo**: each repo (`panels/notes`, `packages/ui`, `projects/vault`, `meta`) has its own log, `main` head, and `ctx:*` context heads. `vcs.status(repoPath, head?)` (positional args) reports that one repo's `uncommitted` working-edit count plus its committed changes vs `main` — a state-diff, not filesystem dirtiness. `vcs.diff` compares state hashes (use the `stateHash` from `vcs.edit`/`vcs.commit` or `vcs.resolveHead(head, repoPath)`). Drop unwanted working edits with `vcs.discardEdits(repoPath)` (also clears any pending merge). Advance a repo's `main` with `vcs.push({ repoPaths: [repo], sourceHead? })` — push is **fast-forward-only** and **build-gated**: it requires your edits to be committed first (uncommitted edits cause it to throw), it builds the candidate (a `build-failed` result means no head advanced — see Diagnostics below), and if `main` has moved past your base it returns `status: "diverged"` instead of force-advancing. On divergence, `vcs.merge(repoPath)` pulls `main` into your context head: a clean merge auto-commits, a conflicting merge writes conflict markers into the working files which you then resolve via `vcs.edit` and seal with `vcs.commit` before re-pushing. To check a candidate without writing an EV baseline, use `vcs.previewBuild({ repoPaths })` — an on-demand build of your **working** content. Push several repos together (`repoPaths: [a, b]`) for an atomic group push. A **brand-new** repo needs no init: create its files under `<section>/<name>/`, commit them, then the first `vcs.push` of that path *creates* its `main` from empty (a typo'd/empty path errors with `unknown repo … has no main and no content`). To branch off an existing unit **with its history**, `vcs.forkRepo(fromPath, toPath)` copies the repo to a new path and rewrites the `package.json` `name` leaf so it is build-valid (make deeper component/class renames yourself, then commit and push). Your **context is a pinned snapshot** of the workspace: reads stay on a fixed base and do not drift as `main` advances under you, so a concurrent push never changes what you see mid-task. `vcs.contextStatus()` reports, per repo, which repos your context spans (`forked` — it has its own head there), which have `uncommitted` working edits, which you're `ahead` on (push it), and which are `behind` (main moved past your pin); when you want the latest, `vcs.rebaseContext()` merges latest `main` into your forked repos and re-pins your base. Do not use `node:child_process`, shell commands, raw `isomorphic-git`, or manually constructed clients for workspace source edits. For external Git remotes, use `@natstack/git` with `credentials.gitHttp()`.
 - Call **set_title** after the first substantive exchange.
 - **Tool availability is runtime-dependent.** `inline_ui`, `load_action_bar`, `feedback_form`, and `feedback_custom` are advertised by chat panels and only appear when a panel is connected. In headless contexts (workers, automated harnesses, tests) they will be absent — return data via eval results and ask follow-up questions through normal conversation messages instead. Do not assume a tool exists; rely on what's actually exposed to you.
 
@@ -42,9 +42,31 @@ Before using eval, read the **sandbox** skill — it has the complete API refere
 - **system-testing** — headless test runner; exports `HeadlessRunner`, `TestRunner`, test suites
 - **web-research** — searching the open web and reading pages with `web_search`, `web_fetch`, `web_read`
 
-## Diagnostics — querying unit errors, logs, and build failures
+## Diagnostics — the push report is the primary build signal
 
-Every workspace unit (panel, worker, DO, extension, app) feeds a per-unit diagnostics store. When something fails — a build breaks, a worker won't start, a panel's renderer crashes or logs errors — query it here instead of guessing:
+**Build/type errors come from the push, not from polling diagnostics.** Source is built authoritatively only at the push gate (working edits never trigger a build). When you advance a repo's `main` with `vcs.push`, the server build-gates the candidate: it bundles (esbuild) and type-checks (tsc) before any head moves. (To dry-run a build of your working content before committing, call `vcs.previewBuild({ repoPaths })` — it returns the same structured diagnostics without advancing or writing a baseline.) If the push build fails, **no head advances** and the result carries the errors directly:
+
+```js
+import { vcs } from "@workspace/runtime";
+
+const result = await vcs.push({ repoPaths: ["panels/my-panel"] });
+if (result.status === "build-failed") {
+  // result.reports[].builds[].diagnostics[] are STRUCTURED:
+  //   { source: "esbuild"|"tsc", severity, file, line, column, message, lineText?, suggestion? }
+  for (const report of result.reports)
+    for (const build of report.builds)
+      for (const d of build.diagnostics)
+        console.error(`${d.file}:${d.line}:${d.column}  ${d.severity}  [${d.source}] ${d.message}`);
+}
+```
+
+`VcsPushResult.status` is `pushed` | `up-to-date` | `diverged` | `build-failed`. A `build-failed` push did **not** advance `main` — its diagnostics are your immediate next task; fix the cited `file:line:col`, re-commit, and re-push. A `diverged` push means `main` moved past your base (push is fast-forward-only, so it refused rather than force-advancing); its `divergences` list the affected repos — run `vcs.merge(repoPath)` to fold `main` into your head (resolving any conflict markers via `vcs.edit` + `vcs.commit`), then re-push. Push also throws outright if you have uncommitted working edits — `vcs.commit({ message })` (or `vcs.discardEdits`) first. Content-only repos (`projects/<vault>`, `meta`) are ungated. Pushing a repo that breaks a dependent fails on **regression** — push the broken repos together as an atomic group.
+
+The per-unit diagnostics store below is for **already-running** units (runtime errors, logs, crashes) — not the build gate.
+
+## Diagnostics — querying RUNNING unit errors, logs, and build failures
+
+Every workspace unit (panel, worker, DO, extension, app) feeds a per-unit diagnostics store. When something fails at runtime — a worker won't start, a panel's renderer crashes or logs errors — query it here instead of guessing (for *build/type* errors, read the push report above first):
 
 ```js
 import { workspace } from "@workspace/runtime";
@@ -65,11 +87,11 @@ Accepts either the package name or the workspace-relative source path (`workers/
 
 - **Workers / DOs** — `console.*` output, plus lifecycle events (started, updated, *failed to start* with the error message).
 - **Panels** — console warnings/errors and lifecycle failures (renderer crash, load failure) forwarded from the shell. Full console history for a *running* panel is available via the panel CDP host (`consoleHistory` host command).
-- **All kinds** — state-triggered build events in `diag.builds`; a `build-error` entry means the last edit did not deploy and `error` holds the compiler output.
+- **All kinds** — state-triggered build events in `diag.builds`; `diag.builds[].diagnostics` carries the same structured `{ source, severity, file, line, column, message }` array as the push report (not a blob).
 
-From a terminal, the same data is available via the external-agent CLI: `natstack agent diag UNIT` and `natstack agent logs UNIT [--level error]`.
+From a terminal, the same data is available via the external-agent CLI: `natstack agent diag UNIT` and `natstack agent logs UNIT [--level error]`. `agent diag` is for already-running units; for whether a change *builds*, the `vcs push` report is the source of truth.
 
-Debugging order when a unit misbehaves: `units.diagnostics` → check `builds` for a failed build → check `errors` for runtime failures → `units.logs` for the surrounding log context.
+Debugging order: for a *build/type* failure, read the `vcs push` report (above). For a *running* unit that misbehaves: `units.diagnostics` → check `errors` for runtime failures → `units.logs` for the surrounding log context.
 
 ## Web tools
 

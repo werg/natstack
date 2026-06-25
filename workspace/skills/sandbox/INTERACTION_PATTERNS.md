@@ -79,6 +79,10 @@ filesystem context. It is panel-local; it does not affect other panels on the
 same channel. Keep the UI compact and use `inline_ui` for larger dashboards or
 inspectable results that belong in the transcript.
 
+When creating the file under a workspace repo namespace such as `panels/`, use
+a repo-shaped path like `panels/action-bar-review/index.tsx`; do not write a
+top-level `panels/action-bar-review.tsx` file.
+
 ## Browser Opens
 
 - Internal browser panels: `openPanel(url, { focus: true })`

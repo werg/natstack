@@ -17,7 +17,6 @@ source/
   skills/               ← Agent skill definitions
     sandbox/            ← Sandbox execution skill
     workspace-dev/           ← Workspace development skill
-  agents/               ← Agent configurations
   workers/              ← Workerd Durable Object source
     agent-worker/       ← Default AI chat worker
   apps/                 ← Trusted workspace apps
@@ -44,9 +43,9 @@ state/
 
 Like every other source directory, `meta/` is tracked by workspace VCS. This means:
 
-- It is materialized into each context folder
-- Agents can commit changes back to their context VCS head
-- Changes committed under meta/ can trigger rebuilds and config reloads
+- It is readable from any context (materialized into the context folder on demand)
+- Agents can edit and commit changes on their context VCS head
+- Pushing `meta/` into its `main` triggers rebuilds and config reloads
 - External git remotes declared under `git.remotes` are imported at startup
   when missing, then materialized into `.git/config` for interop checkouts. Prefer
   `git.setSharedRemote(path, { name, url })` for targeted approval and
@@ -60,13 +59,23 @@ When a panel or agent session starts, it gets a **context folder** — an isolat
 working tree backed by a context VCS head (`ctx:<contextId>`). Each context can
 read and write files without affecting workspace source or other contexts.
 
-Workspace source changes are edit-first: the `edit`/`write` tools (and
-`vcs.applyEdits` directly) apply each change as one atomic GAD transition on
-your context head and project it to disk, which moves the head, recomputes
-effective versions, and triggers rebuilds — so the change is visible to builds
-immediately, with no separate commit step. Do not edit via `fs.writeFile` and
-expect it to build; a stray write never lands on the head. Existing contexts do
-not auto-reset when another context publishes.
+Workspace source changes follow a three-layer build-on-push model on your
+context head:
+
+- **edit** — `vcs.edit` (the `edit`/`write` tools) applies each change as one
+  atomic GAD transition that lands WORKING content on your context head and
+  projects it to disk. No commit, no build, not in `vcs.log`.
+- **commit** — `vcs.commit({ message })` folds your uncommitted working edits
+  into a per-repo snapshot on the context head. Still no build; `main` does not
+  move.
+- **push** — `vcs.push({ repoPaths })` is a fast-forward-only advance of `main`,
+  gated on a successful build of the committed content. This is the only step
+  that produces an authoritative build and recomputes effective versions for the
+  workspace. Use `vcs.previewBuild({ repoPaths })` between edit and commit to
+  dev-build working content without writing a baseline.
+
+Do not edit via `fs.writeFile` and expect it to build; a stray write never lands
+on the head. Existing contexts do not auto-reset when another context pushes.
 
 Context heads are build-addressable, but only when requested explicitly. Use
 `ref: "ctx:<contextId>"` (or a `state:<stateHash>` ref) when you intentionally
@@ -108,7 +117,7 @@ third-party libraries, or larger patch branches an agent is preparing.
 Plain projects are still external Git-backed projects when imported that way:
 
 - They appear in the workspace tree once initialized or cloned.
-- They are materialized into context folders like other source trees.
+- They are readable from any context (materialized on demand like other source trees).
 - Shared remotes declared under `git.remotes.projects.<repo>.<remoteName>` are
   materialized into their `.git/config`. Use object declarations with `url` and
   `branch` when a workspace project must clone a non-default branch.
@@ -133,6 +142,6 @@ The `workspace/` directory in the NatStack source repo is a **template**, never 
 3. State directories are scaffolded fresh
 
 In dev mode (`pnpm dev`), an ephemeral workspace is created from the template
-each run. Committed workspace-unit edits from that generated workspace are
-mirrored back into the checked-in `workspace/` template, so accepted source
+each run. Workspace-unit changes pushed into `main` in that generated workspace
+are mirrored back into the checked-in `workspace/` template, so accepted source
 changes made during a dev session persist into the source checkout.

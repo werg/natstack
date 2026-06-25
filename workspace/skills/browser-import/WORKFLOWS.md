@@ -49,12 +49,11 @@ eval({
 
 Cookies were auto-synced during import — just open a browser panel and check.
 
-`openPanel`/`panelTree` are **panel/component-runtime** capabilities —
-`import { openPanel } from "@workspace/runtime"` does not initialize in the
-`EvalDO`, so acquire the browser handle from panel code or an
-`inline_ui`/`feedback_custom` component. The `handle.cdp.lightweightPage()`
-automation itself is workerd-native and runs over a WebSocket to the panel's CDP
-endpoint, so it also works in server-side eval once you hold the handle:
+`openPanel`/`panelTree` are part of the portable runtime surface from
+`@workspace/runtime`; they work from server-side eval, panels, workers, and DOs.
+The `handle.cdp.lightweightPage()` automation is workerd-native and runs over a
+WebSocket to the panel's CDP endpoint, so a browser panel opened from eval can be
+driven there directly:
 
 ```tsx
 import { openPanel } from "@workspace/runtime";

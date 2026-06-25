@@ -39,10 +39,17 @@ const snapshot = await handle.snapshot();
 await handle.close(); // close temporary panels opened for diagnostics/tests
 ```
 
+`openPanel(source)` opens a new panel for the main/pushed build; it does not take
+a build `ref`. `handle.navigate(source, { ref })` and
+`panelTree.navigate(id, source, { ref })` are the ref-capable replacement paths.
+Use `ref: \`ctx:${contextId}\`` only when you intentionally want code from that
+context branch. `contextId` without `ref` only changes filesystem/storage state.
+
 Inside the current panel, use `panel.reopen({ source?, contextId?, stateArgs? })`
-for self-replacement. Use `handle.navigate(source, opts)` or
-`panelTree.navigate(id, source, opts)` when intentionally replacing a known
-panel slot from another runtime.
+for self-replacement of source/state args/context. `panel.reopen({ contextId })`
+does not select code provenance. Use `handle.navigate(source, opts)` or
+`panelTree.navigate(id, source, opts)` when intentionally replacing a known panel
+slot from another runtime.
 
 `PanelHandle` fields:
 
@@ -121,10 +128,11 @@ type PanelLifecycleResult = {
 };
 ```
 
-Use `rebuildAndReload()` after committed code changes. Use `rebuildPanel()` only
-when you want to invalidate/prebuild the target bundle without touching the
-current renderer. Use `reload()` only when the bundle is already correct and the
-target renderer should do a browser-style reload.
+Use `rebuildAndReload()` after committed code changes, or after context-local
+changes only when the panel is already pinned to the intended build `ref`. Use
+`rebuildPanel()` only when you want to invalidate/prebuild the target bundle
+without touching the current renderer. Use `reload()` only when the bundle is
+already correct and the target renderer should do a browser-style reload.
 
 ## Agent Inspection
 

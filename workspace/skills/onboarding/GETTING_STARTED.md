@@ -75,8 +75,8 @@ Key directories:
 - `panels/` — panel apps (UI)
 - `packages/` — shared workspace packages
 - `workers/` — workerd workers and Durable Objects
-- `agents/` — agent definitions
 - `skills/` — skill documentation (like this one)
+- `projects/` — plain editable repos
 
 ## Step 2: Recommend a First Setup Path
 
@@ -292,13 +292,14 @@ eval({ code: `
 })
 ```
 
-Then edit the generated files with Read/Edit/Write tools — each edit commits to
-your context head and projects to disk atomically (edit-first), so it is
-build-ready immediately — and launch.
+Then edit the generated files with Read/Edit/Write tools — each edit is recorded
+as a tracked WORKING change on your context head and projected to disk (no commit
+or build yet). Seal milestones with `vcs.commit({ message })`, preview a build on
+demand with `vcs.previewBuild`, and `vcs.push` to build-gate it into `main` — and
+launch.
 
-`openPanel` is a panel/component-runtime API; it does not initialize in
-server-side eval — run it from panel code or an `inline_ui`/`feedback_custom`
-component:
+`openPanel` is part of the portable runtime surface from `@workspace/runtime`;
+it works from server-side eval, panels, workers, and DOs:
 
 ```tsx
 import { openPanel } from "@workspace/runtime";

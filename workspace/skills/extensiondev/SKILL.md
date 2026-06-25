@@ -35,7 +35,7 @@ If a worker (workerd isolate) is sufficient, prefer that — workers are cheaper
 4. **Use `ctx.approvals.request(...)` only for extension-owned shared resources exposed to other userland callers.** Do not use it as a generic confirmation prompt or wrapper around ordinary filesystem/process/network work; the host/runtime APIs own those permission boundaries.
 5. **Prefer ESM**. For external CommonJS packages, use default imports + destructure (`import pkg from "x"; const { fn } = pkg`). Named imports from CJS are blocked.
 6. **No `console.log` in production paths.** Use `ctx.log.{debug,info,warn,error}` so logs land in the workspace-unit stream (`workspace.units.logs(name)`). `console.*` is captured too, but as `source: "stdout"` / `"stderr"` instead of structured records.
-7. **Committed source state is the dev signal.** Commit/publish extension changes into `main` — the user gets an extension update approval and the manager rebuilds + replaces the running process. There is no `extensions.reload` for source changes.
+7. **A push into `main` is the dev signal.** Edit working content (`vcs.edit`), `vcs.commit({ message })`, then `vcs.push({ repoPaths })` — the build-gated, ff-only `main`-head advance triggers an extension update approval and the manager rebuilds + replaces the running process. Working/committed context-head work alone does nothing. There is no `extensions.reload` for source changes.
 
 ## Quick start
 
@@ -86,7 +86,7 @@ const hello = extensions.use<{ greet(name: string): Promise<string> }>(
 await hello.greet("world");
 ```
 
-The declared set in `meta/natstack.yml` is the single source of truth, reconciled at startup and on every committed meta-state update.
+The declared set in `meta/natstack.yml` is the single source of truth, reconciled at startup and on every `meta` push into `main`.
 
 ## Common tasks
 
@@ -96,7 +96,7 @@ The declared set in `meta/natstack.yml` is the single source of truth, reconcile
 | Read manifest rules                               | See [AUTHORING.md](AUTHORING.md) — `natstack.extension` shape, `dependencyMode`                                                |
 | Gate access to an extension-owned shared resource | See [APPROVALS.md](APPROVALS.md) — `ctx.approvals.request` + grant lookup                                                      |
 | Add an HTTP endpoint                              | See [FETCH.md](FETCH.md) — default-export `fetch` handler                                                                      |
-| Publish edits and pick up changes                 | See [DEV_LOOP.md](DEV_LOOP.md) — VCS commit/publish, dev-session, inspector                                                    |
+| Push edits and pick up changes                    | See [DEV_LOOP.md](DEV_LOOP.md) — build-gated `vcs.push`, dev-session, inspector                                                |
 | Migrate from `src/server/services/*`              | See [MIGRATIONS.md](MIGRATIONS.md) — canary pattern, `extensions.use(...)` codemod                                             |
 | Inspect an extension's status / health / logs     | `workspace.units.list()`, `workspace.units.diagnostics(name)`, `workspace.units.logs(name)`, `workspace.units.inspector(name)` |
 | Force restart (no source change)                  | `extensions.reload(name)` — approval-gated, restarts the active approved build                                                 |

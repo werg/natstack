@@ -7,7 +7,7 @@ Your working directory is the **context folder** — an isolated copy of the wor
 - All file paths are **relative to your working directory** (e.g., `panels/my-app/index.tsx`)
 - **NEVER** use host absolute paths (e.g., `/home/.../workspace/panels/...`). Runtime `fs.*` accepts context-root absolute paths like `/panels/my-app/index.tsx`, but prefer `panels/my-app/index.tsx` in examples and source edits.
 - **NEVER** use `Bash` for git operations, file listing, or file creation — use the structured tools
-- In eval, `rpc`, `services`, `fs`, `ctx`, `scope`, `scopes`, `db`, `help` (and, in agent eval, `chat`) are **injected free variables** — do **not** import them. Reach services via `services.<svc>.<method>(...)` or `rpc.call("<svc>.<method>", [args])`. For workspace/npm **packages**, use a **static import** (`import { createProject } from "@workspace-skills/workspace-dev"`). Dynamic `await import(...)` may work in some builds, but it bypasses the loader's static dependency planning and is not the supported pattern.
+- In eval, `rpc`, `services`, `fs`, `ctx`, `scope`, `scopes`, `db`, `help` (and, in agent eval, `chat`) are **injected free variables** — do **not** import them. Raw service catalog calls always work as `rpc.call("<svc>.<method>", [args])`; `services.<svc>` is convenience sugar and may be an ergonomic runtime client when the name collides (`services.workers` is `workers`). For workspace/npm **packages**, use a **static import** (`import { createProject } from "@workspace-skills/workspace-dev"`). Dynamic `await import(...)` may work in some builds, but it bypasses the loader's static dependency planning and is not the supported pattern.
 
 ---
 
@@ -68,7 +68,20 @@ Grep({ pattern: "import.*runtime", path: "panels/my-app", literal: false })
 
 Create new projects via eval. Workspace skill packages are auto-resolved — just write the `import` statement.
 
-Supported types: `panel`, `package`, `skill`, `agent`, `worker`. Each scaffolds into its directory (`panels/`, `packages/`, `skills/`, `agents/`, `workers/`).
+Supported types: `panel`, `package`, `skill`, `project`, `worker`. Each scaffolds into its repo directory (`panels/`, `packages/`, `skills/`, `projects/`, `workers/`).
+
+The scaffold runs the full dev loop for you: it writes the files (edit), commits
+them with a scaffold message (commit), and pushes the new repo so its `main` is
+created from empty (push). The new repo is build-gated green on return; your
+follow-up `edit`/`write` changes are uncommitted working edits — `vcs.commit`
+then `vcs.push` to ship them.
+
+Do **not** use `createProject` for a context-local temporary repo that might
+never be published. A repo path is established by writing any file inside it:
+`write`/`edit`/`vcs.edit` to `projects/tmp-name/note.md` is enough. You may
+leave it as uncommitted working state, `vcs.commit` it as a context-local
+snapshot, or later `vcs.push({ repoPaths: ["projects/tmp-name"] })` if it should
+become visible on `main`.
 
 ### Usage
 
@@ -83,7 +96,7 @@ eval({ code: `
 **`createProject(params)` parameters:**
 | Name | Type | Required | Description |
 |------|------|----------|-------------|
-| `projectType` | string | Yes | One of: `panel`, `package`, `skill`, `agent`, `worker` |
+| `projectType` | string | Yes | One of: `panel`, `package`, `skill`, `project`, `worker` |
 | `name` | string | Yes | Project name (kebab-case) |
 | `title` | string | No | Human-readable title (defaults to name) |
 
@@ -91,7 +104,7 @@ eval({ code: `
 
 ## eval
 
-Execute TypeScript/JavaScript code server-side in your own persistent sandbox (a per-agent EvalDO). It runs even when no panel is open. In eval, `rpc`, `services`, `fs`, `ctx`, `scope`, `scopes`, `db`, `help` (and, in agent eval, `chat`) are injected free variables; reach server/main services through `services.<svc>.<method>(...)` or `rpc.call("<svc>.<method>", [args])`. Do **not** import the injected names from `@workspace/runtime`.
+Execute TypeScript/JavaScript code server-side in your own persistent sandbox (a per-agent EvalDO). It runs even when no panel is open. In eval, `rpc`, `services`, `fs`, `ctx`, `scope`, `scopes`, `db`, `help` (and, in agent eval, `chat`) are injected free variables; reach raw service catalog methods through `rpc.call("<svc>.<method>", [args])`. Use rich runtime bindings (`workers`, `vcs`, `fs`, etc.) directly for normal workspace operations; `services.<svc>` is convenience sugar for non-colliding service names. Do **not** import the injected names from `@workspace/runtime`.
 
 **IMPORTANT:**
 
@@ -114,13 +127,22 @@ Execute TypeScript/JavaScript code server-side in your own persistent sandbox (a
 | `buildPanelLink(source, opts)` | Build a URL for panel navigation (panel/component code — not in eval)            |
 | `panel.focusPanel(panelId)`    | Focus an existing panel by ID (panel/component code — not in eval)               |
 
-In **eval**, `rpc` is an injected free variable (not an import). Note the two call shapes: the eval-injected `rpc.call(method, args)` is 2-arg and targets the server (e.g. `rpc.call("build.getBuild", ["panels/my-app"])`); the panel/worker runtime client and `chat.rpc.call(target, method, args)` are the 3-arg form (e.g. `chat.rpc.call("main", "build.recompute", [])`).
+`openPanel(source)` creates a new panel for main/pushed code. It does not take a
+build `ref` and it must not be used as proof that context-local panel edits are
+running. To run panel code from the current context branch, use a host/navigation
+path that explicitly carries `ref: \`ctx:${ctx.contextId}\``; `contextId` alone
+only selects the panel's filesystem/storage context.
+
+In **eval**, `rpc` is the same portable client shape used by panels and workers:
+`rpc.call(target, method, args)`. Raw server services target `"main"`, for
+example `rpc.call("main", "build.getBuild", ["panels/my-app"])` or
+`chat.rpc.call("main", "build.recompute", [])`.
 
 ### Using extensions
 
 Extensions are **declared** in `meta/natstack.yml` under `extensions:`. That declaration is the only way to add or remove one. To start using an extension, add it to the `extensions:` list in `meta/natstack.yml`; saving that change (a gated meta write) raises one joint approval covering every newly-declared extension. Once approved and running, call it. **From eval**, invoke an extension method via
 `services.extensions.invoke(name, "method", [args])` (the underlying RPC); list
-availability with `rpc.call("extensions.list", [])`. **In panel/component code**,
+availability with `rpc.call("main", "extensions.list", [])`. **In panel/component code**,
 use the typed client `extensions.use(name)` instead (panel-runtime sugar over the
 same RPC). Individual extension methods can still request their own approvals when
 the operation needs one, such as running tests.
@@ -148,13 +170,13 @@ const shell = extensions.use<ShellApi>("@workspace-extensions/shell", {
 });
 ```
 
-To check whether an extension is available before calling it from eval, list the registry with `rpc.call("extensions.list", [])`:
+To check whether an extension is available before calling it from eval, list the registry with `rpc.call("main", "extensions.list", [])`:
 
 ```ts
 eval({
   code: `
   const name = "@workspace-extensions/image-service";
-  const entry = (await rpc.call("extensions.list", [])).find((e) => e.name === name);
+  const entry = (await rpc.call("main", "extensions.list", [])).find((e) => e.name === name);
   if (!entry || entry.status !== "running") {
     throw new Error(name + " is not available — declare it in meta/natstack.yml and approve it.");
   }
@@ -172,7 +194,12 @@ If an extension isn't declared, adding it to `meta/natstack.yml` raises a joint 
 
 ### RPC Services
 
-Reached from eval via `services.<svc>.<method>(args)` or the 2-arg `rpc.call("<svc>.<method>", [args])`:
+From eval, prefer the ergonomic runtime clients (`workers`, `vcs`, `fs`, etc.)
+for normal workspace operations. Use raw `rpc.call("<svc>.<method>", [args])`
+when following a `docs_open` service catalog entry exactly. `services.<svc>` is
+a convenience namespace for non-colliding service names, but rich runtime
+bindings win on collision: `services.workers` is the same ergonomic `workers`
+client, not the raw `workers` service catalog.
 
 #### workerd (Worker Management)
 
@@ -181,25 +208,25 @@ Manage worker instances. Available to panels, workers, and server callers. **Lim
 ```
 // Create a worker instance
 eval({ code: `
-  const instance = await services.workers.create({
+  const instance = await workers.create({
     source: "workers/my-worker",
     contextId: ctx.contextId,
     ref: \`ctx:${ctx.contextId}\`, // for worker code created/edited in this context
   });
-  console.log("Worker started:", instance.name, "on port", await services.workers.getPort());
+  console.log("Worker started:", instance.name, "on port", await workers.getPort());
 `
 })
 
 // List running workers
 eval({ code: `
-  const list = await services.workers.list();
+  const list = await workers.list();
   console.log(list.map(w => w.name + " (" + w.status + ")"));
 `
 })
 
 // Destroy a worker
 eval({ code: `
-  await services.workers.destroy("my-worker");
+  await workers.destroy("my-worker");
 `
 })
 ```
@@ -211,53 +238,141 @@ when you intentionally want the main workspace build.
 
 Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listInstanceSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
 
-#### Version control (GAD-native, edit-first)
+#### Version control (GAD-native, edit → commit → push)
 
-Workspace version control is GAD-native and edit-first: the `edit`/`write` tools
-— and `vcs.applyEdits` directly — apply each change as one atomic GAD transition
-on your context head and project it to disk, then trigger rebuilds of every
-changed unit. The edit *is* the commit. There is no staging, no push, no
-separate commit or publish step — applying the edit does the whole thing
-atomically. (`vcs.publish` is a distinct, explicit operation that publishes your
-context head into `main`.)
+Workspace version control is GAD-native and **per-repo**. Each workspace repo
+(`packages/foo`, `panels/chat`, `projects/<vault>`, `meta`) is its own versioned
+unit with its own history. The model is three layers:
+
+1. **edit** — `vcs.edit` (what the `edit`/`write` tools call) records file
+   changes as **uncommitted working edits** on your context head. They are
+   tracked durably with full provenance and projected to disk so the worktree
+   reflects them, but they are **NOT a commit**: no commit-log entry, no head
+   advance, no build, and they never show in `vcs.log`.
+2. **commit** — `vcs.commit({ message })` folds your uncommitted edits into one
+   deliberate, messaged snapshot per repo, advancing each repo's context head.
+   `message` is mandatory. This is your milestone, queryable via `vcs.log` /
+   `vcs.commitEdits`.
+3. **push** — `vcs.push({ repoPaths })` ships committed snapshots into each
+   repo's `main`. `main` advances **only** via push. Push is **fast-forward-only**
+   and **build-gated**.
 
 ```
-// Apply an edit directly (commits + projects atomically, rebuilds changed units)
+// 1. edit (the edit/write tools do this for you; direct call shown for clarity)
 eval({ code: `
-  const base = (await services.vcs.resolveHead()).stateHash;
-  const result = await services.vcs.applyEdits({
-    baseStateHash: base,
+  const result = await services.vcs.edit({
     edits: [
       { kind: "write", path: "panels/my-app/index.tsx", content: { kind: "text", text: "..." } },
     ],
   });
-  console.log(result.stateHash, result.changedPaths);
+  // { head, stateHash, committed: false, status: "uncommitted", editSeq, changedPaths }
+  console.log(result.status, result.changedPaths);
+`
+})
+
+// 2. commit a deliberate snapshot
+eval({ code: `
+  const commits = await services.vcs.commit({ message: "Wire up the form" });
+  for (const c of commits) console.log(c.repoPath, c.status, c.editCount);
+`
+})
+
+// 3. push (build-gated, ff-only)
+eval({ code: `
+  const r = await services.vcs.push({ repoPaths: ["panels/my-app"] });
+  console.log(r.status); // "pushed" | "up-to-date" | "diverged" | "build-failed"
 `
 })
 ```
 
-In normal flows just use the `edit`/`write` tools; they apply through
-`vcs.applyEdits` for you. Source edits must land on the head this way — do not
-edit via `fs.writeFile` and expect it to build, since the worktree is a
-projection and builds read GAD state.
+Source edits must land on the head through `vcs.edit` (i.e. the `edit`/`write`
+tools) — do not edit via `fs.writeFile` and expect it to commit or build, since
+the worktree is a projection and VCS reads GAD state. Reads (`vcs.readFile`,
+`fs.*`, build/preview) see your **working** content (committed head + uncommitted
+edits).
 
-Raw `vcs` calls use VCS heads and state hashes, not filesystem cwd values:
+**Push outcomes** — `vcs.push` returns a discriminated union on `status`:
+
+- `"pushed"` / `"up-to-date"` → green; `main` advanced (or already matched).
+  Carries `reports` (per-repo build reports).
+- `"diverged"` → `main` moved past your context's merge-base, so a
+  fast-forward is impossible. Carries `divergences`. Reconcile with
+  `vcs.merge(repoPath)` (pulls `main` into your head as a merge commit), then
+  `vcs.commit` if conflicts needed resolving, then push again.
+- `"build-failed"` → **no head advanced.** Carries `reports` with structured
+  diagnostics (`file:line:col  severity  message`). Fix the cited lines and
+  re-push.
+
+Push **rejects (throws) if you have uncommitted edits** in a repo you're
+pushing — commit first. Push multiple repoPaths to ship them as one atomic
+group (all advance or none).
+
+```
+// Preview-build working content WITHOUT committing (dev preview; no main, no EV baseline)
+eval({ code: `
+  const reports = await services.vcs.previewBuild({ repoPaths: ["panels/my-app"] });
+  for (const rep of reports) {
+    for (const b of rep.builds) {
+      for (const d of b.diagnostics) console.log(\`\${d.file}:\${d.line}:\${d.column} \${d.message}\`);
+    }
+  }
+`
+})
+
+// Drop uncommitted edits (abort / stash-drop) — also clears a pending merge
+eval({ code: `
+  const { discarded, stateHash } = await services.vcs.discardEdits("panels/my-app");
+  console.log("dropped", discarded, "edits");
+`
+})
+```
+
+Raw `vcs` calls are **per-repo** and use repo paths + VCS heads, not filesystem
+cwd values:
 
 | Need | Runtime call |
 | --- | --- |
-| Check current context status (unpublished changes vs main) | `await vcs.status()` |
-| Check a materialized head | `await vcs.status("main")` |
-| Resolve a head to a state hash | `(await vcs.resolveHead("main")).stateHash` |
-| Compare committed states | `await vcs.diff(leftStateHash, rightStateHash)` |
-| Read a file from the current head | `await vcs.readFile("", "panels/my-app/index.tsx")` |
-| Inspect unpublished context changes | `await vcs.publishStatus()` |
-| Publish your context head into main | `await vcs.publish()` |
+| Record working edits (what `edit`/`write` call) | `await vcs.edit({ edits: [...] })` |
+| Commit working edits into a snapshot | `await vcs.commit({ message: "…" })` |
+| Drop uncommitted edits (+ clear pending merge) | `await vcs.discardEdits("panels/my-app")` |
+| A repo's unpushed changes (its committed head vs main) + `uncommitted` count | `await vcs.status("panels/my-app")` |
+| How far a repo is ahead of main + uncommitted/diverged flags | `await vcs.pushStatus(["panels/my-app"])` |
+| A repo's commit history | `await vcs.log("panels/my-app", 50)` |
+| The edit-ops a commit owns | `await vcs.commitEdits("panels/my-app", { eventId })` |
+| File history / blame (commit-lineage order) | `await vcs.fileHistory("panels/my-app", "index.tsx")` |
+| Walk a commit's ancestry (event DAG) | `await vcs.commitAncestors("panels/my-app", eventId)` |
+| Resolve a repo's head to a state hash | `(await vcs.resolveHead("main", "panels/my-app")).stateHash` |
+| Read a file from a repo's head (working content) | `await vcs.readFile("", "index.tsx", "panels/my-app")` |
+| Compare two committed states | `await vcs.diff(leftStateHash, rightStateHash)` |
+| Build-gate committed changes into main (ff-only) | `await vcs.push({ repoPaths: ["panels/my-app"] })` |
+| Preview-build working content (no commit, no main) | `await vcs.previewBuild({ repoPaths: ["panels/my-app"] })` |
+| Reconcile a diverged push (pull main into your head) | `await vcs.merge("panels/my-app")` |
+| Fork a repo to a new path (keep history) | `await vcs.forkRepo("panels/chat", "panels/mychat")` |
+| What your context has touched / drifted | `await vcs.contextStatus()` → `{repoPath, forked, uncommitted, ahead, behind, deleted}[]` |
+| Pull latest main into your context | `await vcs.rebaseContext()` |
 
-Do not pass `process.cwd()`, `/workspace`, or a repo path to `vcs.status` or
-`vcs.diff`. `vcs.status` reports unpublished changes vs `main`, not filesystem
-dirtiness. `vcs.diff` compares two state hashes.
+`vcs.status(repoPath, head?)` reports a repo subtree's committed
+`{added, removed, changed}` vs that repo's own `main` plus an `uncommitted` count
+(working edits not yet committed) — a state diff, not filesystem dirtiness.
+`vcs.diff` compares two state hashes.
 
-**`forkProject(options)`** — copies an existing workspace unit into a new one, rewrites safe metadata, and applies all files as one `vcs.applyEdits` transition on your context head (commits + projects atomically — no separate commit step).
+**Context isolation & rebase.** Your context is a *pinned snapshot* — reads don't
+drift as other contexts advance `main`. `vcs.contextStatus()` flags repos you're
+`ahead` on (commit + push them), `uncommitted` on (working edits to commit), or
+`behind` on (main moved past your pin); `vcs.rebaseContext()` merges latest
+`main` into your edited repos and re-pins your base. The context folder is
+**sparse** (a repo's files materialize on first edit/read); `vcs.*`/`fs.*` handle
+materialization for you.
+
+**Forking.** Prefer **`vcs.forkRepo(fromPath, toPath)`** to fork a repo to a new
+path **preserving history** — the new repo's `log` shows the inherited commits and
+your edits build on the forked lineage; its `package.json` name leaf is auto-rewritten
+so it's build-valid (do any deeper renames yourself, then push). The
+**`forkProject(options)`** skill is a from-scratch *source tree copy* (rewrites
+component/class names, no inherited history) when you want a clean independent
+unit. It copies only trackable workspace source and skips platform/generated
+artifacts such as `.gad/`, `.git/`, `node_modules/`, `dist/`, `.env`, and logs.
+Non-dry runs perform edit → commit → push for the new repo.
 
 ```ts
 import { forkProject } from "@workspace-skills/workspace-dev";
@@ -279,11 +394,20 @@ console.log(workerPlan.warnings);
 
 Dry runs return the planned file list, metadata rewrites, and warnings without writing anything to the head. Worker forks rewrite package metadata, obvious worker file names, source strings, and Durable Object class names; pass `classMap` when a worker has more than one class.
 
-Each context is its own VCS head (`ctx:{contextId}`), forked from the workspace
-main head when the context was created. Your edits land on YOUR context head;
-panels launched in your context build and serve from that head automatically.
-The user's `main` head is never touched by agent edits — publishing your
-context head into `main` (`vcs.publish`) is an explicit operation.
+Your edits land on your own per-repo context head (`ctx:{contextId}` on each
+repo's `vcs:repo:<path>` log), forked from that repo's `main`. Panels launched in
+your context build and serve from your head automatically. A repo's `main` is
+never touched by agent edits — shipping is the explicit, build-gated
+`vcs.push({ repoPaths })`. A brand-new repo (files created under a new
+`<section>/<name>/`) has no `main` yet; its first `vcs.push` creates `main` from
+empty.
+
+For throwaway project repos, skip scaffolding entirely: write a file such as
+`projects/tmp-name/note.md`. That creates context-local working content for repo
+`projects/tmp-name`; it remains private to the context until you explicitly
+commit and push that repo. `createProject({ projectType: "project", ... })`
+creates only a README, but it also immediately commits and pushes, so it is for
+published workspace projects rather than private scratch space.
 
 #### @workspace-extensions/typecheck-service.checkPanel (recommended)
 
@@ -454,7 +578,8 @@ You can drive panel lifecycle from eval, panel code, or an
 
 ```tsx
 import { openPanel } from "@workspace/runtime";
-// Edits made via the edit/write tools are already committed to your head.
+// Opens the main/pushed build. Plain openPanel() does not infer code provenance
+// from your contextId.
 await openPanel("panels/my-app");
 ```
 
@@ -462,13 +587,14 @@ await openPanel("panels/my-app");
 
 ```tsx
 import { openPanel } from "@workspace/runtime";
-// Your edits are already committed (edit-first); just reload the open panel.
+// Rebuilds the panel's current build ref: explicit ref if the panel was pinned,
+// otherwise main. It does not infer ctx:<contextId> from the panel context.
 const handle = await openPanel("panels/my-app");
 const lifecycle = await handle.rebuildAndReload();
 console.log(lifecycle.status, lifecycle.effectiveVersion);
 ```
 
-When iterating on an already-open panel after committed code changes, reuse its
+When iterating on an already-open panel after code changes, reuse its
 handle from `scope` or rediscover it with `listPanels()`, then call
 `handle.rebuildAndReload()`. It is target-only and does not recurse into
 children. `handle.rebuildPanel()` only invalidates/prebuilds the target bundle;

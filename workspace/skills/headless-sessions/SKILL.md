@@ -45,6 +45,11 @@ panel-hosted sessions. The only difference is the runtime environment: with no
 chat panel connected, UI-only tools simply aren't advertised on the channel and
 naturally drop out of the agent's tool list.
 
+When creating a headless session from server-side eval, a worker, or a Durable
+Object, set `config.clientId` to `rpc.selfId`. That value is the authorized
+PubSub participant id for connectionless runtime callers; arbitrary labels are
+rejected when the session subscribes to the channel.
+
 | Capability | Panel | Headless |
 |------------|-------|----------|
 | eval | Yes | Yes — runs server-side in the agent's EvalDO; no panel/sandbox needed |

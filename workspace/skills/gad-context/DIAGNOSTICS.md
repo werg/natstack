@@ -5,6 +5,11 @@ looks inconsistent. Prefer bounded inspector APIs first. Hydrated history APIs
 are for targeted follow-up after you know the exact event, envelope, digest, or
 state hash you need.
 
+Do not query raw branch tables such as `trajectory_branches`; that table is not
+part of the current public GAD schema. If an inspector points you to a specific
+artifact and SQL is still necessary, first discover the current schema with a
+bounded read and then query only the exact rows you need.
+
 ## Current Diagnostic APIs
 
 ### Publication Integrity
@@ -15,13 +20,13 @@ trajectory-to-channel publication invariant.
 It distinguishes:
 
 - `expectedMappings`: publications declared by `external.envelope_published`
-- `missingMappings`: declared publications without `trajectory_channel_publications`
+- `missingMappings`: declared publications without persisted publication joins
 - `orphanMappings`: join rows whose event or envelope no longer exists
 - `sequenceMismatches`: join rows whose `channel_seq` disagrees with the envelope
 - `channelOriginAgenticEnvelopes`: agentic channel envelopes that were not
   trajectory-published; these are usually expected and are not automatically bugs
 
-Do not count every unjoined `channel_envelopes` row as an error. Only
+Do not count every unjoined channel log row as an error. Only
 trajectory-published envelopes referenced by `external.envelope_published` must
 have join rows.
 
@@ -84,8 +89,8 @@ Use `gad.inspectStorageDiagnostics({ rowByteLimit, limit })` to find oversized
 inline rows or missing blob metadata.
 
 Large payload fields should be encoded as stored refs. If a huge eval/tool result
-appears inline in `channel_envelopes`, `trajectory_events`, or
-`trajectory_invocations`, treat that as a storage-boundary bug.
+appears inline in `log_events` or `trajectory_invocations`, treat that as a
+storage-boundary bug.
 
 ### Channel Roster
 
@@ -133,10 +138,10 @@ summary.
 
 ## Current Invariants
 
-- `trajectory_events` is the private, branchable agentic trajectory.
-- `channel_envelopes` is the transmitted PubSub history.
-- `trajectory_channel_publications` joins only trajectory-published channel
-  envelopes to their private source events.
+- `log_events` is the private, branchable agentic trajectory and channel log
+  storage.
+- Publication inspectors join only trajectory-published channel envelopes to
+  their private source events.
 - `payload_ref_json` is the storage column name even when JSON is inline; there
   is no `payload_json` column.
 - Presence envelopes project into `channel_roster`.

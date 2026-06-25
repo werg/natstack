@@ -146,7 +146,11 @@ function SessionLauncher() {
 }
 ```
 
-**Important:** Pass `contextId` in both the link options (for storage) and stateArgs (for app logic).
+**Important:** Pass `contextId` in both the link options (for storage) and
+stateArgs (for app logic). `contextId` is not a build selector. If the panel code
+itself must come from a context branch, the launch/navigation path must carry an
+explicit build `ref` such as `ctx:<contextId>`; otherwise the panel uses the
+main/default build.
 
 ---
 
@@ -269,19 +273,54 @@ async function example() {
 }
 ```
 
-### Workspace VCS
+### Workspace VCS (per-repo, build-gated)
 
-Edits are edit-first: the `edit`/`write` tools (and `vcs.applyEdits`) commit to
-your context head and project to disk atomically — there is no separate commit
-step. `vcs.status()` reports your head's unpublished changes vs `main`; publish
-with `vcs.publish()`.
+VCS is **per-repo**. Each repo — every `section/<name>` under `packages/
+panels/ workers/ extensions/ apps/ about/ skills/ templates/ projects/`, plus
+the flat `meta` repo — is a first-class versioned unit with its own log
+(`vcs:repo:<repoPath>`), `main` head, and `ctx:*` context heads. There is no
+whole-workspace version: each repo is its own versioned unit, and the **push is
+the build gate**.
+
+Edits are edit-first: the `edit`/`write` tools record working edits on your
+context head and project them to disk atomically. Seal those edits with
+`vcs.commit`, then advance a repo's `main` with **push**. `vcs.status(repoPath,
+head?)` (positional args) reports one repo's unpushed changes vs its own `main`.
+`vcs.push` is **build-gated**: it bundles + type-checks the candidate, and if
+that fails **no head advances** and you get structured diagnostics back.
+
+A **brand-new** panel needs no init: create `panels/my-panel/` files (Quick
+Start above), then the first `vcs.push({ repoPaths: ["panels/my-panel"] })`
+*creates* its `main` from empty as the repo's first commit, build-gated. To
+branch off an existing panel **keeping its history**, fork it
+(`vcs.forkRepo("panels/chat", "panels/mychat")` — preserves the log lineage and
+rewrites the `package.json` name leaf; rename the remaining component/contract
+identifiers yourself, then push).
 
 ```typescript
 import { vcs } from "@workspace/runtime";
 
-const status = await vcs.status(); // unpublished changes on your context head
-await vcs.publish(); // publish your context head into main
+// One repo's unpushed changes (context head vs that repo's main):
+const status = await vcs.status("panels/my-panel");
+
+// Build-gate the change into main. Read the result; never leave a repo red.
+const result = await vcs.push({ repoPaths: ["panels/my-panel"] });
+if (result.status === "build-failed") {
+  for (const report of result.reports)
+    for (const build of report.builds)
+      for (const d of build.diagnostics)
+        console.error(`${d.file}:${d.line}:${d.column}  ${d.severity}  [${d.source}] ${d.message}`);
+}
+// status: "pushed" | "up-to-date" → main already has the candidate state.
+// status: "diverged" → main moved; merge "main" into your head and re-push.
 ```
+
+Pass several repos (`vcs.push({ repoPaths: ["packages/ui", "panels/notes"] })`)
+for an **atomic group push** — every listed repo advances or none does — when a
+change spans repos or breaks a dependent. Content-only repos
+(`projects/<vault>`, `meta`) push ungated. The CLI mirrors this:
+`natstack vcs push --repo <p>` (repeat `--repo` for a group),
+`natstack vcs status/log --repo <p>`.
 
 ---
 

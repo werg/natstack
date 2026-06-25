@@ -123,11 +123,11 @@ These are built on first use. Pass them in the tool's `imports` parameter:
 | `@workspace-skills/*`   | auto-resolved                    | Just `import` — built on first use    |
 | `@workspace/*` packages | auto-resolved                    | Just `import` — built on first use    |
 | `@natstack/*` packages  | auto-resolved                    | Just `import` — built on first use    |
-| npm packages            | `imports: { "lodash": "npm:4" }` | Requires explicit `imports` parameter |
+| npm packages            | `imports: { "lodash": "npm:^4.17.21" }` | Requires explicit `imports` parameter |
 
 Workspace packages (`@workspace*`, `@natstack/*`) are **auto-resolved** — just write the `import` statement in your code and they're built on-demand. No `imports` parameter needed.
 
-npm packages require the `imports` parameter with `"npm:<version>"` for raw inline code. File-loaded code can infer dependency versions from the nearest `package.json`.
+npm packages require the `imports` parameter with `"npm:<version>"` for raw inline code, using registry semver/range values such as `"npm:1"`, `"npm:1.3.0"`, or `"npm:^4.17.21"`. File-loaded code can infer dependency versions from the nearest `package.json`.
 
 File-loaded package inference checks `dependencies`, `peerDependencies`,
 `optionalDependencies`, then `devDependencies`. It also supports
@@ -136,22 +136,29 @@ File-loaded package inference checks `dependencies`, `peerDependencies`,
 
 To pin a workspace package to a specific VCS ref or state hash, use the `imports` parameter explicitly: `imports: { "pkg": "ctx:agent-1" }`.
 
-In eval, reach `vcs` (and other services) through the injected `rpc`/`services`,
-not a runtime import — `import { vcs } from "@workspace/runtime"` does not
-initialize in the server-side EvalDO. Use `imports` only for npm/workspace
-*packages*:
+In eval, injected ambient globals like `services`, `ctx`, `scope`, `scopes`,
+`db`, `chat`, `agent`, and `help` are free variables, not runtime exports. For
+portable client code, `@workspace/runtime` is importable in eval and exports
+namespaces such as `vcs`, `fs`, `workspace`, `credentials`, and `panelTree`:
 
 ```
 eval({ code: `
+  import { vcs } from "@workspace/runtime";
   import { createProject } from "@workspace-skills/workspace-dev";
-  const status = await services.vcs.status(); // or rpc.call("vcs.status", [])
+  const status = await vcs.status("panels/chat"); // or services.vcs.status("panels/chat")
   // workspace packages: just import, auto-resolved
 ` })
 ```
 
-`vcs.status()` takes no filesystem path; its optional argument is a materialized VCS head such as `main` or `ctx:...`. It reports that head's unpublished changes vs `main`, not filesystem dirtiness.
-For diffs, pass state hashes from `vcs.applyEdits` or `vcs.resolveHead`, not
-workspace paths.
+`vcs.status(repoPath, head?)` takes a repo path (positional), not a filesystem
+path; its optional second argument is a materialized VCS head such as `main` or
+`ctx:...`. It reports that repo head's `uncommitted` working-edit count and its
+committed changes vs the repo's own `main`, not filesystem dirtiness. Record a
+working change with `vcs.edit({ edits })`, seal a milestone with the mandatory-
+message `vcs.commit({ message })`, then ship committed changes into `main` with
+the fast-forward-only, build-gated `vcs.push({ repoPaths: ["panels/chat"] })`.
+For diffs, pass state hashes from `vcs.edit`/`vcs.commit` or `vcs.resolveHead`,
+not workspace paths.
 
 See [EVAL.md](EVAL.md) for details. On-demand imports are not available in inline_ui/load_action_bar/feedback_custom components (use eval to preload first).
 
@@ -173,12 +180,12 @@ or `feedback_custom` rather than hand-written raw channel records.
 
 ## Critical Rules
 
-1. **Do NOT import the eval-injected variables** — `rpc`, `services`, `fs`, `ctx`, `scope`, `scopes`, `db`, and `help` are injected free variables in eval; the engine rejects importing them (and runtime imports like `import { fs } from "@workspace/runtime"` do not initialize in the server-side EvalDO). For *packages*, both static `import` and dynamic `await import(...)` work in eval. File-loaded relative imports must be static/literal.
-2. **Workspace packages are auto-resolved** — just write `import { createProject } from "@workspace-skills/workspace-dev"` and it builds on first use; npm packages require `imports: { "lodash": "npm:4" }`. (For services like vcs, use injected `services`/`rpc`, not an import.)
+1. **Do NOT import eval-only ambient variables** — `services`, `ctx`, `scope`, `scopes`, `db`, `help`, `chat`, and `agent` are injected free variables in eval and are not importable. `rpc` and `fs` are the same portable bindings exposed by panels/workers, so either use them ambiently or import them from `@workspace/runtime`. For *packages*, both static `import` and dynamic `await import(...)` work in eval. File-loaded relative imports must be static/literal.
+2. **Workspace packages are auto-resolved** — just write `import { createProject } from "@workspace-skills/workspace-dev"` and it builds on first use; npm packages require `imports: { "lodash": "npm:^4.17.21" }`. (For raw services, use `rpc.call("main", "<svc>.<method>", [...])`.)
 3. **Components must `export default`** — named exports alone won't work for inline_ui/load_action_bar/feedback_custom components
 4. **Inline UI / action-bar components receive `{ props, chat }`** (NOT `scope`/`scopes` — the eval REPL scope is server-side and is not shared into rendered components) — always default `props` (`{ props = {}, chat }`) and guard property access (`props?.items ?? []`). For maximum portability, prefer embedding small constant data in the component source.
 5. **Feedback components receive `{ onSubmit, onCancel, onError, chat }`**
-6. **Workspace code is built from the committed context head, in lockstep with your edits** — source under `packages/`, `panels/`, `workers/`, `skills/`, `apps/`, and `extensions/` is built from committed GAD states. Edits are edit-first: the `edit`/`write` tools and `vcs.applyEdits` apply each change atomically to your context head and project it to disk, so it takes effect for builds immediately — there is no separate commit step. Do NOT edit source via `fs.writeFile` and expect it to build; the worktree is a projection and builds read GAD state, so edits must go through `edit`/`write`/`vcs.applyEdits`.
+6. **Workspace code builds from your working edits, in lockstep, even before you commit** — source under `packages/`, `panels/`, `workers/`, `skills/`, `apps/`, and `extensions/` is built from your context head's working state. The model is **edit → commit → push**: the `edit`/`write` tools and `vcs.edit({ edits })` record each change as a tracked *working* edit on your context head and project it to disk, so it takes effect for builds immediately. `vcs.commit({ message })` then seals those working edits as a messaged milestone (the message is mandatory; the edit itself is NOT a commit), and `vcs.push` advances `main` (fast-forward-only, build-gated). Do NOT edit source via `fs.writeFile` and expect it to build; the worktree is a projection and builds read GAD state, so edits must go through `edit`/`write`/`vcs.edit`.
 7. **Close temporary panels you open** — when eval opens a browser/workspace panel for diagnostics, scraping, setup, or testing, keep its handle and call `await handle.close()` in `finally` when done. Reuse an existing handle instead of opening duplicates. Leave a panel open only when the user explicitly asked to inspect or continue using it, or the workflow explicitly needs it to remain open.
 
 For optional workspace probes, prefer one of these patterns:

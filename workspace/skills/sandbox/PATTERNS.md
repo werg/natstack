@@ -154,11 +154,10 @@ The general pattern: store a URL-bound credential once, then fetch through the
 runtime credential proxy.
 
 The `credentials.fetch(url, init, { credentialId })` wrapper (which returns a
-`Response`) is part of the **panel/component runtime** (`@workspace/runtime`) —
-it is not a server-side eval capability (there is no `credentials.fetch` RPC
-method; `import { credentials } from "@workspace/runtime"` does not initialize in
-the `EvalDO`). Run credential-proxied fetches from panel code or an
-`inline_ui`/`feedback_custom` component:
+`Response`) is part of the portable runtime surface from `@workspace/runtime`;
+it works from server-side eval, panels, workers, and DOs. In eval, import
+`credentials` from `@workspace/runtime` and use `credentials.fetch` for external
+requests that need stored credentials:
 
 ```tsx
 import { credentials } from "@workspace/runtime";
@@ -198,10 +197,9 @@ removing files in the caller's context. The outer runtime/host permission model
 already protects sensitive filesystem, browser, credential, git, and panel
 operations where approval is required.
 
-`approvals.request`/`approvals.revoke` come from the **panel/component runtime**
-(`@workspace/runtime`) and bind to the live caller's verified issuer identity, so
-run them from panel code or an `inline_ui`/`feedback_custom` component — not from
-server-side eval (the runtime import does not initialize in the `EvalDO`):
+`approvals.request`/`approvals.revoke` come from the portable runtime surface
+(`@workspace/runtime`) and bind to the live caller's verified issuer identity.
+They work from server-side eval, panels, workers, and DOs:
 
 ```tsx
 import { approvals } from "@workspace/runtime";
@@ -384,9 +382,9 @@ export default function SqlRunner({ props, chat }) {
 
 ## Open a Website and Import Its Cookies
 
-Both `openPanel` and `browserData` are panel/shell-context capabilities (not
-available from server-side eval), so run this from panel code or an
-`inline_ui`/`feedback_custom` component:
+`openPanel` works from server-side eval, panels, workers, and DOs. `browserData`
+goes through the browser-data extension, so this combined cookie-import recipe
+still runs from panel code or an `inline_ui`/`feedback_custom` component:
 
 ```tsx
 import { openPanel } from "@workspace/runtime";

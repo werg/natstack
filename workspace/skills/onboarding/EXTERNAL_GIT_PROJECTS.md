@@ -10,11 +10,11 @@ Use external Git projects when source should be editable inside the workspace
 while still tracking an upstream Git remote. Common examples:
 
 - a plain upstream repo under `projects/name`
-- a panel, worker, skill, package, template, agent, or about page imported from
+- a panel, worker, skill, package, template, plain project, or about page imported from
   another repository
 - a branch an agent is preparing for review outside the NatStack workspace repo
 
-Supported parent directories are `panels`, `packages`, `agents`, `workers`,
+Supported parent directories are `panels`, `packages`, `workers`,
 `skills`, `about`, `templates`, and `projects`.
 
 ## Config Shape

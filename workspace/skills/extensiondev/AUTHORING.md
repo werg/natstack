@@ -170,6 +170,32 @@ export async function activate() {
 
 Raw Node calls are silent and ambient — the user authorized them once at install. Use `ctx.fs` instead when you want the call to show up in the audit log under the extension's identity, or when you want to ask the original caller for permission per call.
 
+### Sparse context folders — materialize before reading raw disk
+
+A caller's context working folder (`.contexts/{contextId}/`) is **sparse**: it does
+not contain the whole workspace. A repo's files are written to disk only when
+something materializes them (on first edit, or on demand). Unmaterialized repos are
+simply **absent** — a raw read of one fails with `ENOENT` (or the server's loud
+`MATERIALIZE BUG` assertion), never a silent partial result.
+
+This matters when your extension reads the context folder **outside `ctx.fs`** — a
+ripgrep/find subprocess, `fs.createReadStream`, a recursive `fs.readdir`, etc.
+Before that raw read, declare the **narrowest** scope you need:
+
+```ts
+// A repo-scoped search needs only that repo — never the whole context.
+await ctx.fs.ensureMaterialized("panels/chat");        // one repo
+await ctx.fs.ensureMaterialized("panels");             // a section (its repos)
+await ctx.fs.ensureMaterialized(["packages/a", "packages/b"]); // a specific set
+await ctx.fs.ensureMaterialized("all");                // ONLY for a true workspace-wide pass
+// …then spawn rg / read the path on disk.
+```
+
+You do **not** need this for `ctx.fs.*` reads (`readFile`/`readdir`/`grep`/`glob`/…):
+those materialize the path's repo on demand automatically. The explicit call is only
+for code that touches the on-disk tree directly. Prefer the narrowest scope — reach
+for `"all"` only for a genuine whole-workspace operation, never as a lazy default.
+
 ## Health
 
 ```ts

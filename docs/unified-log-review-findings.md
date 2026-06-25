@@ -82,8 +82,9 @@ work; they do not exempt anything.
 All Part II/III findings are now addressed in this working tree.
 
 Completed coverage:
-- **Build/vcs core:** CV-1/CV-2 graph-materialized build paths and ctx→main
-  fallback; CV-3 atomic CAS materialization with existing-file validation;
+- **Build/vcs core:** CV-1 graph-materialized build paths; CV-2 is superseded
+  by the explicit-ref design ruling (`contextId` is not a build selector);
+  CV-3 atomic CAS materialization with existing-file validation;
   CV-4 unchanged snapshot fast path, stat parallelism, and ensureFresh
   coalescing.
 - **Merge/history:** MG-1 asymmetric diff3 conflicts; MG-2 merge retry guard
@@ -204,16 +205,15 @@ hash-chain integrity. The rewrite then punched four inconsistent holes in it:
 
 ### Theme 3 — Finish the ref-model migration at the edges
 
-`getBuild` accepts only HEAD / `state:…` / `ctx:…`, but the git-SHA era
+`getBuild` accepts only HEAD / `state:...` / `ctx:...`, but the git-SHA era
 survives at every boundary: the shell pin-by-commit UI, `ref:` fields in
 natstack.yml, the worker-pinning API and its docs, persisted worker instances
-(IN-1). Context heads work for panels but not for workers/DO code (IN-3), the
-ctx→main build fallback was lost in the working tree (CV-2), and the vcs RPC
-arg schemas break over JSON transports (IN-2). **Required:** one ref grammar,
-validated at every entry point, with either a translation layer or an explicit
-loud migration for git-SHA inputs; ctx-ref support for workerd code loading;
-tuple-with-optionals (not union-of-tuples) arg schemas plus a
-null-normalization fix in the dispatcher.
+(IN-1). Explicit `ctx:` refs work as targeted build selectors; `contextId`
+itself is runtime/file-state identity and must not be treated as a build ref.
+**Required:** one ref grammar, validated at every entry point, with either a
+translation layer or an explicit loud migration for git-SHA inputs;
+tuple-with-optionals (not union-of-tuples) arg schemas plus a null-normalization
+fix in the dispatcher.
 
 ### Theme 4 — Capability parity must be restored (the harness cut dropped features silently)
 
@@ -327,19 +327,17 @@ loss, IN=integration/refs, SEC=security, PF=performance, CL=cleanup.
   materialized checkout. **Re-run the boot + panel-build smoke before
   committing.**
 
-#### CV-2 (P0, CONFIRMED) — ctx-ref fallback to main was lost; never-forked contexts 404
-- **Where:** `src/server/buildV2/index.ts:384-385`.
-- **Problem:** `getBuild` with a `ctx:` ref does `resolveHead(ref)` and throws
-  `Unknown vcs ref` when null. The implementation log documents a fallback
-  ("a context that never forked builds at main HEAD") and the previously-staged
-  version had it; the working tree removed it. `panelHttpServer` defaults every
-  context panel's ref to `ctx:{contextId}` (query or referer), and
-  `ensureContextFolder` is lazy — so the first HTML request for a panel in a
-  not-yet-forked context throws, and `resolveAndServeBuild` serves the build
-  error page.
-- **Fix:** restore the fallback: `resolveHead(ctx:{id})` null → build at main
-  HEAD (pinnedState=null path). Add a regression test (HTML request with a
-  contextId that has no vcs head).
+#### CV-2 (SUPERSEDED) — contextId must not synthesize `ctx:` build refs
+- **Current ruling:** `contextId` is runtime/file-state identity, not code
+  provenance. A plain panel request with `contextId` and no `ref` must build
+  main. Only an explicit `ref=ctx:<contextId>` or `ref=state:<hash>` targets a
+  non-main build.
+- **Do not restore:** fallback behavior that converts a context-bound panel into
+  a `ctx:` build implicitly. If a `ctx:` ref is explicit and unresolvable, fail
+  loudly as an invalid targeted build instead of silently substituting main.
+- **Replacement test shape:** request a panel with only `contextId` and assert
+  `getBuild(source, undefined)`; request the same panel with
+  `ref=ctx:<contextId>` and assert `getBuild(source, "ctx:<contextId>")`.
 
 #### CV-3 (P1, CONFIRMED) — CAS materialization trusts truncated files forever
 - **Where:** `src/server/gadVcs/store.ts:502` (`materializeFileList`), also
@@ -858,26 +856,16 @@ loss, IN=integration/refs, SEC=security, PF=performance, CL=cleanup.
   protects every future service). Add a wire-shape test (JSON round-trip) to
   the service test harness so in-process tests can't mask this class again.
 
-#### IN-3 (P1, CONFIRMED) — Context commits never rebuild or restart workers/DO code
-- **Where:** `src/server/buildV2/stateTrigger.ts:173` (non-main heads
-  ignored); `workerdManager.ts:936` (`getDoCode`), `:1984` (`ensureDOClass`) —
-  `getBuild(source, undefined)`; `:841` (`loadWorkerCode` uses instance.ref,
-  never ctx-defaulted); `workerdService.ts:14-27` (createInstance takes
-  contextId but derives no ref). The only contextId→`ctx:` mapping in the tree
-  is `panelHttpServer.ts:388` — panels only.
-- **Problem:** an agent in a chat context edits a worker/agent-DO source and
-  commits to `ctx:{id}`: no rebuild fires, `onSourceRebuilt` never runs, and
-  every code load serves the **main-head** build. Under the old pipeline,
-  context `commit_and_push` advanced the shared repo and pushTrigger
-  rebuilt + restarted HEAD-tracking workers — the agentic worker-development
-  loop has silently regressed to "changes never take effect" (the worst kind
-  of agent-facing failure: no error, just stale behavior).
-- **Fix:** worker/DO instances created with a contextId default their build
-  ref to `ctx:{contextId}` (mirroring panels), and the state trigger notifies
-  `onSourceRebuilt` for ctx-head advances scoped to instances pinned to that
-  ctx ref (build-on-demand at restart is fine; the restart signal is what's
-  missing). Document that merging to main remains the path for main-head
-  instances.
+#### IN-3 (SUPERSEDED) — worker/DO code refs must be explicit
+- **Current ruling:** workers and DOs follow the same rule as panels: no `ref`
+  means main; `contextId` selects storage/files/state only. A worker or DO should
+  run context-branch code only when launched or updated with
+  `ref: "ctx:<contextId>"` (or an immutable `state:<hash>`).
+- **Do not implement:** defaulting worker/DO build refs from `contextId`.
+- **Replacement fix shape:** make the ergonomics/docs surface explicit `ref`
+  when launching code created or edited in a context, and make rebuild/restart
+  notifications target instances whose stored build ref tracks that exact head.
+  Main-tracking instances should continue to update only from main advances.
 
 #### IN-4 (P2, CONFIRMED) — Referer-less artifact serving can cross contexts; SPA catch-all masks missing chunks
 - **Where:** `src/server/panelHttpServer.ts:400` (bare-source exact key checked

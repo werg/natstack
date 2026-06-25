@@ -1,32 +1,60 @@
 # App Development Loop
 
-Workspace app source is built from the committed context head, which stays in
-lockstep with your edits. Editing files via the `edit`/`write` tools (or
-`vcs.applyEdits`) commits + projects atomically — there is no separate commit
-step — but a stray `fs.writeFile` that never lands on the head is not enough.
+The dev loop is **build-on-push**: you edit working content, optionally preview a
+dev build, then commit and push. Builds are authoritative only at push — `main`
+advances only via a build-gated, fast-forward-only push.
+
+The three layers:
+
+- **edit** (`vcs.edit`, or the `edit`/`write` tools) — applies a change to your
+  WORKING content on your context head. No commit, no build, not in `vcs.log`.
+  A stray `fs.writeFile` that never lands on the head is not an edit.
+- **commit** (`vcs.commit({ message })`) — folds your uncommitted working edits
+  into a per-repo snapshot on the context head. Still no build; `main` does not
+  move.
+- **push** (`vcs.push({ repoPaths })`) — fast-forward-only advance of `main`,
+  gated on a successful build of the committed content. This is the only step
+  that produces an authoritative app build.
+
+Between edit and commit you can run an on-demand **preview build** with
+`vcs.previewBuild({ repoPaths })` — it builds your WORKING content so you can
+catch type/build errors before committing, and it does NOT write an EV baseline
+or advance any head.
 
 ## Standard Loop
 
-1. Edit files under `apps/<name>` with the `edit`/`write` tools — each edit
-   commits to your context head and projects to disk atomically.
-2. Run focused type/tests where available.
-3. Publish the context when you are working outside `main`.
-4. Approve the app install/update/source-change prompt if the trusted identity
+1. Edit files under `apps/<name>` with the `edit`/`write` tools (which apply
+   through `vcs.edit`) — each edit lands on your context head as WORKING content.
+   No build runs.
+2. Run focused type/tests where available. Use
+   `vcs.previewBuild({ repoPaths: ["apps/<name>"] })` to dev-build your working
+   content and surface `file:line:col` diagnostics without committing.
+3. Commit the working edits: `vcs.commit({ message: "…" })`.
+4. Push the app repo into its `main` (build-gated, ff-only):
+   `vcs.push({ repoPaths: ["apps/<name>"] })`. The push triggers the
+   authoritative build; on success `main` advances.
+5. Approve the app install/update/source-change prompt if the trusted identity
    changed.
-5. Wait for rebuild/reconcile.
 6. Use the target-specific update prompt to adopt the new build, or keep the
    currently loaded build until you are ready.
 
+A `build-failed` push advances nothing and returns structured `file:line:col`
+diagnostics — fix those (edit → commit) and re-push. A `diverged` push means
+`main` moved under you; reconcile with `vcs.merge("apps/<name>")` (commit any
+conflict resolution), then push again. `vcs.push` rejects outright if you still
+have uncommitted edits — commit first.
+
 For context agents, this means making edits through the workspace `edit`/`write`
-tools (which apply through `vcs.applyEdits`) rather than direct shell file
-writes. See `workspace-dev/TOOLS.md` for common helper patterns.
+tools (which apply through `vcs.edit`) rather than direct shell file writes, then
+committing and pushing. See `workspace-dev/TOOLS.md` for common helper patterns.
 
 In development, app reconciliation prints an app status diagnostic with source,
 target, active EV, build key, source HEAD, and clean/dirty state. Here
-"dirty" means the context head has unpublished changes ahead of `main` that the
-running trusted app build does not yet include — not filesystem dirtiness. Set
-`NATSTACK_APP_DEV_STATUS=0` to silence the diagnostic, or
-`NATSTACK_APP_DEV_STATUS=1` to force it outside `NODE_ENV=development`.
+"dirty" means the repo's context head has committed changes ahead of `main` (or
+uncommitted working edits) that the running trusted app build does not yet
+include — not filesystem dirtiness. Set `NATSTACK_APP_DEV_STATUS=0` to silence
+the diagnostic, or `NATSTACK_APP_DEV_STATUS=1` to force it outside
+`NODE_ENV=development`.
 
 ## Approval Behavior
 
@@ -48,8 +76,9 @@ to be used until the update is approved, depending on the reconcile path.
 
 ## Update Errors And Rollback
 
-State-triggered rebuilds keep the previous active app build until the new build
-validates. If the build or target validation fails, the app status becomes
+Push-gated rebuilds keep the previous active app build until the new build
+validates. If the build or target validation fails, the push reports
+`build-failed`, the previous active build stays in use, the app status becomes
 `error`, `apps:status` includes the active build key and effective version that
 remain in use, and `apps:lifecycle` emits `type: "update-error"` with the
 failure message. The shell and mobile clients surface these events through their
@@ -96,7 +125,9 @@ Common failure modes:
 - missing `panel-hosting` blocks view service methods
 - missing app event subscriber breaks shell event subscriptions
 - unsupported capability rejects app loading
-- app source edited via a stray `fs.writeFile` that never landed on the head (use `edit`/`write`), so build did not change
+- app source edited via a stray `fs.writeFile` that never landed on the head (use `edit`/`write`), so the working content — and the push build — did not change
+- edits left uncommitted, so `vcs.push` rejected them (run `vcs.commit({ message })` first)
+- changes committed but never pushed, so `main` and the active build did not advance
 
 ## React Native App Loop
 
@@ -132,7 +163,7 @@ For terminal apps:
 - Expect `available` when the build is trusted but no process is running, and
   `running` when the runner has spawned the process.
 - Inspect stdout/stderr with `workspace.units.logs(appName)`.
-- Test committed updates and rollback while the terminal app is running; the runner
+- Test pushed updates and rollback while the terminal app is running; the runner
   should replace the process with the selected trusted build.
 
 Terminal app source should be written as a clean Node ESM entry that reads the

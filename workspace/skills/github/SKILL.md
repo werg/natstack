@@ -195,7 +195,7 @@ await git.importProject({
 });
 ```
 
-Supported parent directories are `panels`, `packages`, `agents`, `workers`,
+Supported parent directories are `panels`, `packages`, `workers`,
 `skills`, `about`, `templates`, and `projects`. `git.importProject()` uses one
 workspace config approval showing destination path, remote URL, and branch;
 then it records the shared remote in `meta/natstack.yml`, clones into canonical

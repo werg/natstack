@@ -48,13 +48,24 @@ eval({ code: `
 })
 ```
 
-Edit the generated files with the `edit`/`write` tools — each edit commits to
-your context head and projects to disk atomically, so it is build-ready
-immediately — then launch.
+Edit the generated files with the `edit`/`write` tools — each edit is recorded as
+an uncommitted working edit on your context head and projected to disk. Runtime
+launches do not infer code provenance from that context: no `ref` means the main
+build. Use `vcs.previewBuild({ repoPaths })` to check context-local code, and
+use an explicit `ref: \`ctx:${ctx.contextId}\`` only on APIs that expose a build
+ref. Snapshot milestones with `vcs.commit({ message })`; ship them into `main`
+with the build-gated `vcs.push({ repoPaths })`.
 
-`openPanel` is a **panel/component-runtime** API (it returns a host-mediated
-`PanelHandle`); it does not initialize in server-side eval, so run it from panel
-code or an `inline_ui`/`feedback_custom` component:
+For context-local scratch files under `projects/`, do not scaffold. Write inside
+a repo-shaped path such as `projects/tmp-name/note.md`; that repo remains private
+to the current context until you intentionally `vcs.commit` and `vcs.push` it.
+`createProject` is for published workspace units: it scaffolds, commits, and
+pushes immediately.
+
+`openPanel` returns a host-mediated `PanelHandle` and is part of the portable
+runtime surface. It works from eval, panels, workers, and DOs. It does not expose
+a build-ref option; use it for main/pushed code, and use `PanelHandle.navigate`
+or another ref-capable host path when you intentionally need a context build:
 
 ```tsx
 import { openPanel } from "@workspace/runtime";
@@ -68,8 +79,8 @@ const myApp = await openPanel("panels/my-app");
 | Create project  | `eval` — `import { createProject } from "@workspace-skills/workspace-dev"` then `createProject({ projectType, name, title })`                             |
 | Fork panel      | `eval` — `import { forkProject } from "@workspace-skills/workspace-dev"` then `forkProject({ from: "panels/chat", to: "panels/chat-experiment", title })` |
 | Fork worker     | `eval` — run `forkProject({ from, to, title, dryRun: true })` first; pass `classMap` for multi-class workers                                              |
-| Launch panel    | `eval` — `const handle = await openPanel(source)` (`openPanel` is importable/ambient in eval; edits are already committed to your head)                                                                |
-| Launch worker   | `eval` — use `services.workers.create({ source: "workers/my-worker", contextId: ctx.contextId, ref: \`ctx:${ctx.contextId}\` })` for newly created or context-edited worker code; omit `ref` only when launching the main build |
+| Launch panel    | `eval` — `const handle = await openPanel(source)` for pushed/main code. `openPanel` does not take a build ref; to run context-local panel code, first push it or use a ref-capable navigation path with `ref: \`ctx:${ctx.contextId}\``. |
+| Launch worker   | `eval` — use `workers.create({ source: "workers/my-worker", contextId: ctx.contextId, ref: \`ctx:${ctx.contextId}\` })` for newly created or context-edited worker code; omit `ref` only when launching the main build |
 | Read a file     | `Read({ file_path: "panels/my-app/index.tsx" })`                                                                                                          |
 | Edit a file     | `Edit({ file_path: "panels/my-app/index.tsx", old_string: "...", new_string: "..." })`                                                                    |
 | Check types     | `eval` — `await extensions.use("@workspace-extensions/typecheck-service").checkPanel("panels/my-app")`                                                     |
@@ -77,11 +88,16 @@ const myApp = await openPanel("panels/my-app");
 
 (`extensions` is a runtime client — the same surface bare, as `services.extensions`, or `import { extensions } from "@workspace/runtime"`. `use(name).method(...)` is typed sugar; `extensions.invoke(name, method, [args])` is the untyped equivalent. Both work everywhere — panel, worker, and server-side eval.)
 
-Edits are edit-first: the `edit`/`write` tools (and `vcs.applyEdits` directly)
-apply each change as one atomic GAD transition on your context head and project
-it to disk, triggering rebuilds. The edit *is* the commit — there is no separate
-commit, staging, or push step.
-| Vcs status | `eval` — `await services.vcs.status()` (see TOOLS.md) |
+The dev loop is **edit → commit → push**: the `edit`/`write` tools (and
+`vcs.edit` directly) record each change as an uncommitted working edit on your
+context head and project it to disk (no commit, no build). `vcs.commit({ message })`
+folds working edits into a deliberate snapshot per repo; the build-gated,
+fast-forward-only `vcs.push({ repoPaths })` is the only thing that advances
+`main`. Build happens at push (and on demand via `vcs.previewBuild`).
+| Commit working edits | `eval` — `await services.vcs.commit({ message: "..." })` |
+| Push to main (build-gated) | `eval` — `await services.vcs.push({ repoPaths: ["panels/my-app"] })` |
+| Discard uncommitted edits | `eval` — `await services.vcs.discardEdits("panels/my-app")` |
+| Vcs status (incl. `uncommitted` count) | `eval` — `await services.vcs.status("panels/my-app")` (see TOOLS.md) |
 | List workspaces | `eval` — `workspace.list()` |
 | Get workspace config | `eval` — `workspace.getConfig()` |
 | Create workspace | `eval` — `workspace.create("name", { forkFrom: "default" })` |
@@ -91,38 +107,48 @@ commit, staging, or push step.
 ## Environment Compatibility
 
 - Panel lifecycle operations (`openPanel`, `listPanels`, `panel.focusPanel`, handle `rebuildAndReload`/reload/close) require **panel context**.
-- Project scaffolding (`createProject`), vcs operations (`vcs.applyEdits`, `vcs.status`, `vcs.publish`), typecheck, and test runs work in **headless** sessions via eval + RPC.
+- Project scaffolding (`createProject`), per-repo vcs operations (`vcs.edit`, `vcs.commit`, `vcs.status`, build-gated `vcs.push`, `vcs.merge`, `vcs.previewBuild`, `vcs.forkRepo`), typecheck, and test runs work in **headless** sessions via eval + RPC.
 - Unit tests run through `@workspace-extensions/test-runner`, not shell commands.
 
 ## Provenance And Reloads
 
-Workspace runtime units are built from the committed context head, which stays
-in lockstep with your edits (each edit commits + projects atomically). If an
-agent edits a panel, worker, package, or skill and then observes unchanged
-runtime behavior, check provenance before changing the fix:
+VCS and preview builds can build your context's **working content** (committed
+head + uncommitted edits), but runtime launches are selected by build ref. If no
+`ref` is supplied, panels, workers, and DOs use the main build even when their
+`contextId` points at your editing context. If an agent edits a panel, worker,
+package, or skill and then observes unchanged runtime behavior, check provenance
+before changing the fix:
 
-- Was the edit made in the same context the runtime builds from?
-- Was the edit applied through `edit`/`write`/`vcs.applyEdits` (not a stray `fs.writeFile` that never landed on the head)?
+- Was the runtime launched or navigated with an explicit `ref` for the context
+  branch, or was the change pushed to `main` first?
+- Was the edit applied through `edit`/`write`/`vcs.edit` (not a stray `fs.writeFile` that never landed on the head)?
 - Did the build system rebuild that source?
-- For workers or DOs created/edited in this context, did the launch pass
-  `ref: \`ctx:${ctx.contextId}\``? `contextId` selects runtime storage/state;
-  `ref` selects the code build. Without `ref`, worker launches use the main
-  build and cannot see a worker scaffold that exists only on your context head.
-- Did the already-open panel run `handle.rebuildAndReload()` after the edit?
+- For panels, workers, or DOs created/edited in this context, did the launch
+  pass `ref: \`ctx:${ctx.contextId}\``? `contextId` selects runtime
+  storage/state; `ref` selects the code build. Without `ref`, runtime launches
+  use the main build and cannot see a scaffold that exists only on your context
+  head.
+- Did the already-open panel run `handle.rebuildAndReload()` after the edit, and
+  is that panel already pinned to the intended build ref?
 - In dogfood mode, did the mirror apply or skip because the host checkout was dirty?
 
-For raw runtime `vcs` calls, `vcs.status()` reports a head's unpublished changes
-vs `main` (a GAD state-diff, not filesystem dirtiness); do not pass the
-workspace root or unit path to it. Use `vcs.resolveHead(head).stateHash` or the
-`stateHash` returned by `vcs.applyEdits` when you need hashes for
-`vcs.diff(leftStateHash, rightStateHash)`.
+For raw runtime `vcs` calls, `vcs.status(repoPath, head?)` reports a repo head's
+committed unpushed changes vs that repo's own `main` (a GAD state-diff, not
+filesystem dirtiness) plus an `uncommitted` count of working edits not yet
+committed; pass a positional repo path (e.g. `panels/my-app`), not the workspace
+root. Snapshot working edits with `vcs.commit({ message })`, then ship a repo's
+commits into its `main` with the build-gated `vcs.push({ repoPaths: [...] })`. Use
+`vcs.resolveHead(head, repoPath).stateHash` or the `stateHash` returned by
+`vcs.edit`/`vcs.commit` when you need repo-rooted hashes for
+`vcs.diff(leftStateHash, rightStateHash)`. For a pinned `build.getBuild` ref,
+convert a repo hash with `vcs.workspaceViewWithRepoAt(repoPath, repoStateHash)`
+and pass the returned workspace-rooted `stateHash`.
 
-Unpublished state is context-local. A running panel's context head can stay
-ahead of `main` ("unpublished changes") even after another context published the
-same source path. `vcs.status` will not report "dirty" merely because you edited
-a file — the edit is already committed to your context head; `dirty` means the
-head is ahead of `main`. Check `contextId` when validating editor or vcs status
-symptoms.
+Unpushed state is context-local. A running panel's per-repo context head can stay
+ahead of `main` ("unpushed changes") even after another context pushed the same
+source path. `vcs.status`'s `dirty` flag means the committed head is ahead of
+`main`; its `uncommitted` count means you have working edits not yet folded into a
+commit. Check `contextId` when validating editor or vcs status symptoms.
 
 Planned hardening: expose a runtime build-provenance API that reports source,
 context id, git SHA/ref, dirty state, build timestamp, and artifact id for a

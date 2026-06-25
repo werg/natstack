@@ -79,7 +79,7 @@ identity includes:
 - target/provider metadata where applicable
 
 This means adding a capability, changing a dependency, changing the React Native
-provider, or committing app source can require a new approval before the app is
+provider, or pushing new app source can require a new approval before the app is
 active.
 
 ## Runtime Update Protocol
@@ -91,7 +91,7 @@ their own UI. Relevant event types are:
   loaded by clients. Payload includes app id, source, target, build key,
   effective version, previous build metadata, `canRollback`, and an
   `adoptionPolicy`.
-- `update-error`: a committed build failed to build or validate. The previous
+- `update-error`: a pushed build failed to build or validate. The previous
   active build remains selected. Payload includes the error and rollback
   availability.
 - `rolled-back`: the server switched the app back to a previous trusted build.
@@ -137,10 +137,13 @@ Guidelines:
 - Keep native host code outside `workspace/apps/mobile`; the workspace mobile
   app should consume native host APIs through its service wrappers.
 - Do not import server/main internals from workspace app code.
-- Edit app source via the `edit`/`write` tools (or `vcs.applyEdits`): each edit
-  commits to your context head and projects to disk atomically, so it is
-  build-ready immediately (edit-first — no separate commit step). Do not edit
-  via `fs.writeFile` and expect it to update the active build.
+- Edit app source via the `edit`/`write` tools (which apply through `vcs.edit`):
+  each edit lands on your context head as WORKING content. To make it the active
+  build, `vcs.commit({ message })` then `vcs.push({ repoPaths: ["apps/<name>"] })`
+  — the push is build-gated and is what advances `main`. Use
+  `vcs.previewBuild({ repoPaths })` to dev-build working content before
+  committing. Do not edit via `fs.writeFile` and expect it to update the active
+  build.
 
 ## Choosing Apps vs Panels vs Extensions
 

@@ -501,7 +501,7 @@ The server machine owns all state. Back these up:
 | `~/.config/natstack/config.yml`                | Models / cache config                                                                                                        |
 | `~/.config/natstack/.secrets.yml`              | API keys                                                                                                                     |
 | `~/.config/natstack/oauth-tokens.json`         | Provider OAuth credentials (user-resealable, but convenient)                                                                 |
-| `~/.config/natstack/workspaces/<name>/source/` | Workspace content (panels, agents, configs) — git-repo'd, also push elsewhere                                                |
+| `~/.config/natstack/workspaces/<name>/source/` | Workspace content (panels, workers, skills, projects, configs) — git-repo'd, also push elsewhere                            |
 | `~/.config/natstack/workspaces/<name>/state/`  | DO storage, panel persistence, build cache. The `.databases/workerd-do/` subdir is the critical piece — SQLite files per DO. |
 
 Clients are disposable: their `remote-credentials.json` can be regenerated via

@@ -76,7 +76,8 @@ Allowed callers: `panel`, `app`, `shell`, `server`, `worker`, `do`, `extension`
 |--------|-------------|
 | `build.getBuild` | Build a panel/worker/extension unit (or a library bundle) and return its artifacts. The optional ref selects the workspace state to build from: omitted = main HEAD, a head name (e.g. 'ctx:abc'), or an immutable 'state:…' hash. Results are cached by content-derived build key, so rebuilding an unchanged unit reuses the cache. |
 | `build.getBuildNpm` | Build an npm package as a CJS library bundle for sandbox use, leaving the given externals unbundled. |
-| `build.getBuildMetadata` | Cached build metadata for an immutable build key, or null if it is not cached. |
+| `build.getBuildMetadata` | Cached build metadata for an immutable build key, or null if it is not cached. Includes the unit's most recent structured build diagnostics (esbuild + tsc) when any were captured. |
+| `build.getBuildReport` | Queryable companion to the synchronous push gate: build a unit (runtime, or library targets for packages) at the given workspace state (omitted = main HEAD) and return its agent-actionable RepoBuildReport with structured esbuild + tsc diagnostics. Does NOT advance any head. |
 | `build.getEffectiveVersion` | Effective version (content-derived identity) of a workspace unit, or null if unknown. |
 | `build.inspectBuildProvenance` | Resolve a workspace build unit (by name, relative path, or basename) and report its effective version, immutable build keys, and cached artifact metadata. Reports ambiguity when a basename matches multiple units. |
 | `build.listRecentBuildEvents` | List recent state-triggered build lifecycle events and failures, optionally filtered by unit name or workspace-relative path. |
@@ -161,8 +162,8 @@ Allowed callers: `panel`, `app`, `server`, `worker`, `do`, `extension`, `shell`
 | Method | Description |
 |--------|-------------|
 | `fs.readFile` | Read a file's contents. Overloaded: with an `encoding` argument the bytes are decoded and returned as a string; without one, raw bytes are returned base64-encoded in a binary envelope. (Server/shell callers prepend a contextId as the first argument.) |
-| `fs.writeFile` | Write data to a file, replacing existing contents (creating it if absent); data may be a UTF-8 string or a base64 binary envelope. GAD-tracked context paths commit through the VCS rather than the worktree. |
-| `fs.appendFile` | Append data to the end of a file (creating it if absent); data may be a UTF-8 string or a base64 binary envelope. |
+| `fs.writeFile` | Write data to a file, replacing existing contents; context-scoped writes create missing parent directories. Data may be a UTF-8 string or a base64 binary envelope. GAD-tracked context paths commit through the VCS rather than the worktree. |
+| `fs.appendFile` | Append data to the end of a file; context-scoped appends create the file and missing parent directories when absent. Data may be a UTF-8 string or a base64 binary envelope. |
 | `fs.readdir` | List the entries of a directory; returns bare name strings, or Dirent-shaped objects with type flags when `withFileTypes` is set, optionally recursing into subdirectories. |
 | `fs.mkdir` | Create a directory; with `recursive` it creates missing parents and returns the first-created path (relative to the context root), otherwise returns undefined. |
 | `fs.rmdir` | Remove an empty directory; throws if the directory is not empty. |
@@ -175,6 +176,7 @@ Allowed callers: `panel`, `app`, `server`, `worker`, `do`, `extension`, `shell`
 | `fs.copyFile` | Copy a file from a source path to a destination path, overwriting the destination. |
 | `fs.rename` | Move or rename a file or directory from a source path to a destination path (also the atomic-write commit step for temp files moved into tracked paths). |
 | `fs.realpath` | Resolve a path to its canonical form, returning it relative to the context root (sandboxed callers) or as an absolute host path (unrestricted callers). |
+| `fs.ensureMaterialized` | Materialize the given workspace path(s)/repo(s) (or 'all') into the context working folder. Context folders are SPARSE — only what is materialized exists on disk — so call this for the narrowest scope you need (a repo path like 'panels/chat', a section like 'panels', or specific paths) before reading them OUTSIDE the fs.* API (e.g. a grep/find subprocess). fs.* reads materialize on demand automatically. |
 | `fs.truncate` | Truncate (or zero-extend) a file to the given byte length (default 0). |
 | `fs.readlink` | Read a symlink's target; absolute targets are relativized to the context root to avoid leaking host paths. |
 | `fs.chmod` | Change a path's Unix permission bits (mode). |
@@ -186,7 +188,7 @@ Allowed callers: `panel`, `app`, `server`, `worker`, `do`, `extension`, `shell`
 | `fs.handleWrite` | Write data (UTF-8 string or base64 binary envelope) to an open handle at the given position (null appends at the current offset), returning the byte count written. |
 | `fs.handleClose` | Close an open file handle and release its server-side resources; a no-op if the handle is already gone. |
 | `fs.handleStat` | Return metadata (type flags, size, mtime/ctime, mode) for the file behind an open handle. |
-| `fs.mktemp` | Create the context's `.tmp/` directory if needed and return a fresh, unused root-relative path under it (for the write-to-temp-then-rename atomic-write pattern); the file itself is not created and the prefix is sanitized. |
+| `fs.mktemp` | Create the context's `.tmp/` directory if needed and return a fresh, unused root-relative scratch path under it (for direct fs write-to-temp-then-rename patterns); the file itself is not created, the prefix is sanitized, and the path is not a tracked edit/VCS destination. |
 
 ## `gitInterop`
 
@@ -326,6 +328,7 @@ Allowed callers: `panel`, `app`, `shell`, `server`, `worker`, `do`
 | `runtime.retireEntity` | Retire a single entity, firing cleanup hooks. With removeContext, also delete the context folder when no other live entity shares the context. |
 | `runtime.listEntities` | List live entities (id, kind, source, contextId, title, createdAt). |
 | `runtime.resolveContext` | Return the contextId for an entity (or null if unknown). Cached read; falls back to DO. |
+| `runtime.createContext` | Create a full logical workspace context branch. Every context presents the whole workspace tree; per-repo ctx heads are created lazily as edits are made. Use vcs.contextStatus to inspect uncommitted changes, ahead/behind repos, and deleted refs. |
 
 ## `shellApproval`
 
@@ -374,21 +377,36 @@ Allowed callers: `shell`, `panel`, `app`, `server`, `worker`, `do`, `extension`
 
 | Method | Description |
 |--------|-------------|
-| `vcs.applyEdits` | Apply a batch of file edits as one atomic GAD commit onto the caller's head, advancing it; returns the new head state plus any merge conflicts and the changed paths. |
-| `vcs.readFile` | Read one file's content (text or base64 bytes) at a VCS ref, with its state/content hashes and mode; returns null if the path is absent. Empty ref ⇒ the caller's current head. |
-| `vcs.listFiles` | List every file (path, content hash, mode) at a VCS ref; omit the ref for the caller's current head. |
-| `vcs.revert` | Undo a prior change by forward-applying its inverse patch onto the caller's head, advancing it; target the change by state hash or event id. |
-| `vcs.status` | Unpublished changes on a head relative to its publish baseline (main): the added/removed/changed paths plus the head state and whether it is ahead of main. Not a filesystem scan. Omit the head for the caller's current context head. |
-| `vcs.unitStatus` | Status scoped to a single workspace unit (repo path): the unit's head, state hash, dirty flag, and per-file changes. Omit the head for the caller's current context head. |
-| `vcs.log` | Commit log for a head, most recent first, capped by limit (default 50). Omit the head for the caller's current context head. |
+| `vcs.edit` | Record a batch of file edits as UNCOMMITTED WORKING changes on the caller's context head — tracked durably with full provenance, but NOT a commit: no commit-log entry, no head advance, no build, and they never appear in vcs.log. Edits route to their owning repo by path. Make deliberate milestones with vcs.commit. Edits target a `ctx:*` head; `main` advances only via push. |
+| `vcs.commit` | Fold the caller context's uncommitted working edits into ONE deliberate, messaged snapshot per repo, advancing each repo's context head and owning exactly those edits (queryable via commitEdits). `message` is mandatory. `exclude` leaves listed paths uncommitted (the inverse of `git add`). A repo with a pending merge commits the resolution. `main` is rejected (push only). |
+| `vcs.discardEdits` | Drop a repo's uncommitted working edits on the caller's context head AND clear any in-progress merge, restoring the committed head on disk (abort / stash-drop). |
+| `vcs.commitEdits` | List the edit-ops a commit owns (commit → its edits), by commit event id. Index-backed; ordered by the edit replay order. |
+| `vcs.fileHistory` | File history / blame: every edit to a path in COMMIT-lineage order (committed commits first, then the uncommitted working tail on the given head). Index-backed. |
+| `vcs.commitAncestors` | Walk a commit's ancestry in the event-keyed commit DAG (by commit event id, not state hash — distinct commits can share content). Returns each commit's parents. |
+| `vcs.editsByActor` | Every edit authored by an actor (author provenance), across commits — index-backed. |
+| `vcs.editsByTurn` | Every edit authored in an agent turn (causal provenance — ties VCS edits to the agentic trajectory). Index-backed. |
+| `vcs.editsByInvocation` | Every edit authored in a single tool-call invocation (causal provenance). Index-backed. |
+| `vcs.previewBuild` | On-demand build of the caller context's WORKING content (committed head + uncommitted edits), scoped to specific repos or units. Does NOT touch the published EV baseline — builds happen authoritatively only at push. Use for a dev preview without committing. |
+| `vcs.readFile` | Read one file's content (text or base64 bytes) at a VCS ref, with its state/content hashes and mode; returns null if the path is absent. Empty ref ⇒ the caller's current head. Pass repoPath to read from a specific repo's head (path repo-relative). |
+| `vcs.listFiles` | List every file (path, content hash, mode) at a VCS ref; omit the ref for the caller's current head. Pass repoPath to list a single repo's head. |
+| `vcs.revert` | Undo a prior change by forward-applying its inverse patch onto the caller's head, advancing it; target the change by state hash or event id. Pass repoPath to revert on a specific repo's log. |
+| `vcs.status` | Unpushed changes on a repo's head relative to that repo's main: the added/removed/changed paths plus the head state and whether it is ahead of main. Not a filesystem scan. repoPath is required (per-repo VCS). |
+| `vcs.log` | Commit log for a repo's head, most recent first, capped by limit (default 50). repoPath is required (per-repo VCS). |
 | `vcs.diff` | Diff two GAD states by their `state:…` hashes, returning the added/removed/changed files between them. |
-| `vcs.resolveHead` | Resolve a ref to its head name and current `state:…` hash. Omit the ref for the caller's current context head; pass "main"/"ctx:…" for an explicit ref. |
-| `vcs.merge` | Merge a source head into a target head (default: the caller's own head), advancing the target; returns up-to-date/merged/conflicted plus any conflicts. The target is a head write. |
-| `vcs.abortMerge` | Abort a pending (conflicted) merge on a head, restoring its pre-merge tree; this is itself a head write. Omit the head for the caller's current context head. |
-| `vcs.pendingMerge` | Inspect a head's in-progress merge, if any: the source head being merged and its unresolved conflicts; null when no merge is pending. Omit the head for the caller's current context head. |
-| `vcs.publishStatus` | How far a head is ahead of main: the unpublished commit count and the per-file changes that a publish would carry. Omit the head for the caller's current context head. |
-| `vcs.publish` | Publish the caller's own context head into main by merging it (the one sanctioned ctx→main escalation; autonomous agents are user-approval gated). Returns merged/conflicted; a conflicted publish is rolled back, leaving main untouched. |
-| `vcs.recall` | Semantic recall over the workspace's VCS memory (log summaries, file snippets) matching a query; returns ranked snippets with their head/event/path anchors. |
+| `vcs.resolveHead` | Resolve a ref to its head name and current `state:…` hash on a repo's log. Omit the ref for the caller's current context head; pass "main"/"ctx:…" for an explicit ref, and repoPath to scope to a repo. |
+| `vcs.workspaceViewWithRepoAt` | Compose a workspace-rooted state view with one repo replaced by a repo-rooted state hash (or removed when null). Use this to convert a repo state from vcs.log/vcs.commit/vcs.resolveHead into the immutable state ref that build.getBuild expects. |
+| `vcs.merge` | Reconcile divergence: pull `main` into the caller's context head on a repo, producing a MERGE COMMIT. Clean (no overlaps) commits with no file resolution; in-file conflicts materialize markers into the context filesystem — resolve via vcs.edit, then vcs.commit seals the merge. Returns the upstream commits + clean/conflict + conflictPaths. After merging, the context head descends from main so push fast-forwards. |
+| `vcs.mergeGroup` | Coordinated multi-repo pull: merge each repo's source head into its target (default main). Best-effort per-repo (not the atomic group-push path). |
+| `vcs.abortMerge` | Abort a pending (conflicted) merge on a repo's head, restoring its pre-merge tree; this is itself a head write. repoPath is required; omit head for the caller's own context head. |
+| `vcs.pendingMerge` | Inspect a repo head's in-progress merge, if any: the source head being merged and its unresolved conflicts; null when no merge is pending. repoPath is required; omit head for the caller's own context head. |
+| `vcs.push` | Publish one or more repos from the caller's context head to their main heads — the ONLY way main advances. FAST-FORWARD-ONLY, atomic across repos (all advance or none), build-gated. REJECTS (throws) if the source has uncommitted edits (vcs.commit or vcs.discardEdits first). Returns `pushed`/`up-to-date` with build reports; `diverged` with per-repo structured divergences (upstream commits + clean/conflict + conflictPaths) when main advanced past your base — reconcile with vcs.merge then re-push; or `build-failed` with diagnostics (no head advanced — fix and re-push). Shell/server may pass sourceHead explicitly; context callers may only push their own ctx head. |
+| `vcs.pushStatus` | How far each repo's head is ahead of that repo's main: the unpushed change count and per-file changes a push would carry. |
+| `vcs.forkRepo` | Fork a repo to a new path, preserving history: the new repo's log descends from the source's lineage (its `log` shows the inherited commits), so you can edit on top of the forked history. The package.json `name` leaf is rewritten to the new path so the fork is build-valid; deeper renames (component/class names) are yours to make, then push. |
+| `vcs.deleteRepo` | SEVERE, global-state action: permanently remove a whole repo from the workspace. Distinct from edits — it archives the repo's history (moved to a recoverable archive head) and drops the repo from workspace main, deleting its working tree. Requires explicit user approval every time (a dedicated per-repo deletion grant that the ordinary write grant never covers). REFUSES if other repos depend on this one unless `force` is set (their builds will break). Rejects the `meta` repo and any path with no committed main. |
+| `vcs.restoreRepo` | Recover a previously deleted repo by re-pointing its main at its archived history. FAILS if a different repo now occupies that path (re-created since the deletion) rather than clobbering it, and if there is nothing archived to restore. Requires user approval (re-adds the repo to workspace main). |
+| `vcs.contextStatus` | Summarize the repos where your full workspace context branch differs from main or needs attention. `forked` = your branch has a committed ctx head for this repo; `uncommitted` = it carries uncommitted WORKING edits (vcs.commit them, or vcs.discardEdits); `ahead` = the committed head has commits not yet in main (push them); `behind` = main advanced past your pinned base (rebase/merge to pick it up); `deleted` = the repo was removed from the workspace (vcs.deleteRepo) while your branch still references it — a push will be refused, so drop/rebase your context or restore the repo. Only repos with changes or drift are returned. |
+| `vcs.rebaseContext` | Pull the latest main into your context: 3-way merges main into each repo you've edited, then re-pins your context's base to the current workspace so unedited repos also advance to latest. Use when contextStatus shows repos `behind`. Returns each edited repo's merge status. |
+| `vcs.recall` | Semantic recall over the workspace's VCS memory (log summaries, file snippets) matching a query; pass repoPaths to scope to selected repos. Returns ranked snippets with their head/event/path anchors. |
 
 ## `webhookIngress`
 

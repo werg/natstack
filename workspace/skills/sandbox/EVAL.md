@@ -42,14 +42,15 @@ name.
 
 ## Injected Variables
 
-These are **injected as free variables** in eval code. Use them directly — do
-NOT `import` them:
+These are available in eval code. `services`, `ctx`, `scope`, `scopes`, `db`,
+`help`, `chat`, and `agent` are eval-only ambient variables. `rpc` and `fs` are
+the same portable bindings used by panels/workers; use them ambiently or import
+them from `@workspace/runtime`.
 
 | Variable | What it is |
 | --- | --- |
-| `rpc.call(method, args)` | Raw RPC to the server: `await rpc.call("vcs.status", ["ctx:" + ctx.contextId])` |
-| `rpc.callTarget(targetId, method, args)` | Call a runtime entity (DO/worker) by target id, e.g. after `rpc.call("workers.resolveService", [...])` |
-| `services` | The COMPLETE service namespace — EVERY registered RPC service is reachable as `services.<name>.<method>(...)`, no gaps. For a rich runtime binding (`vcs`, `fs`, `credentials`, `blobstore`, …) `services.<name>` is the SAME object as the bare `vcs` / `import { vcs }` (e.g. `await services.extensions.use("@workspace-extensions/typecheck-service").checkPanel("panels/app")`); any other server service is reached uniformly via the same `services.<name>.<method>(...)` (it dispatches through `callMain`). Access is still gated server-side by each method's policy. Use `help()` to list services. |
+| `rpc.call(targetId, method, args)` | Portable RPC client, same shape as panels/workers. Raw server services target `"main"`: `await rpc.call("main", "vcs.status", ["ctx:" + ctx.contextId])` |
+| `services` | Convenience namespace for server services. If the service name is also a rich runtime binding (`workers`, `vcs`, `fs`, `credentials`, `blobstore`, …), `services.<name>` is that ergonomic runtime client, not the raw service catalog. Raw catalog methods are always reachable with `rpc.call("main", "<svc>.<method>", [...])`; non-colliding services are also reachable as `services.<svc>.<method>(...)`. Access is still gated server-side by each method's policy. Use `help()` to list services and `help("workers")` to inspect a runtime binding. |
 | `fs` | Context-scoped filesystem — the EvalDO resolves your context, so you do NOT pass a contextId: `await fs.readdir("/")`, `await fs.readFile("src/index.ts", "utf-8")` |
 | `ctx` | `{ contextId, objectKey }` for the current eval session |
 | `scope` | Persistent REPL scope (see below); `scope.x = …` survives across calls in the same channel |
@@ -157,13 +158,20 @@ returned to the agent in the result's `console` field.
 `eval.run` returns `{ success, console, returnValue?, error?, scopeKeys? }`:
 
 - `success` — whether the run completed without throwing.
-- `console` — captured console output.
+- `console` — captured console output. Oversized output is windowed in the
+  terminal result; a bounded saved copy is available as `scope.$lastConsole`.
 - `returnValue` — the `return` value (or last expression), safe-serialized.
+  Oversized values may be replaced with a structured truncation summary pointing
+  at `scope.$lastReturn`.
 - `error` — present on failure.
 - `scopeKeys` — the keys currently held in the persistent `scope`.
 
 Non-serializable values (functions, symbols, circular refs) are safely converted
 to string representations in `returnValue`.
+
+Terminal eval results are always bounded so a huge return cannot strand the
+turn in `eval:pending`. For large data, return a compact summary and keep the
+full value in `scope`, `db`, or `blobstore` for follow-up paging/grep.
 
 ## Imports
 
@@ -192,7 +200,7 @@ surface** as panels and workers — so the same code runs on any target:
 ```
 eval({ code: `
   import { vcs, workspace, gad, credentials, openPanel, panelTree } from "@workspace/runtime";
-  const head = await vcs.resolveHead("main");
+  const head = await vcs.resolveHead("main", "panels/my-panel");
   const off = vcs.subscribeHead(head, (advance) => console.log("head advanced", advance));
 ` })
 ```
@@ -250,9 +258,9 @@ The map value is a *ref*, not a package name: `"latest"` or a git ref
 library bundles, including subpath exports (e.g.
 `{ "@workspace/testkit/profiling": "latest" }`).
 
-**Important:** Workspace runtime units are built from the committed context head, which is always in lockstep with your edits. Edits are edit-first: the `edit`/`write` tools and `vcs.applyEdits` apply each change to source under `apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, or `skills/` as one atomic GAD transition on your context head and project it to disk, so the change takes effect for builds immediately — there is no separate commit step. Do not edit source via `fs.writeFile` and expect it to build: the worktree is a projection, builds read GAD state, and there is no commit step to ingest stray `fs` writes.
+**Important:** Workspace runtime units are built from your context head's working state, which is always in lockstep with your edits. The model is **edit → commit → push**: the `edit`/`write` tools and `vcs.edit({ edits })` record each change to source under `apps/`, `extensions/`, `packages/`, `panels/`, `workers/`, or `skills/` as one tracked working edit on your context head and project it to disk, so the change takes effect for builds immediately (a working edit is NOT a commit — `vcs.commit({ message })` seals working edits as a messaged milestone, and `vcs.push` advances `main`). Do not edit source via `fs.writeFile` and expect it to build: the worktree is a projection, builds read GAD state, and stray `fs` writes are not recorded as working edits.
 
-Context folders are isolated working trees backed by context-local VCS heads. Do not assume another context's edits reset your current context. An "unpublished changes" count shown by a running panel is the unpublished state of that panel's own context head (changes ahead of `main`), not a global workspace state.
+Context folders are isolated working trees backed by per-repo context-local VCS heads. Do not assume another context's edits reset your current context. An "unpushed changes" count shown by a running panel is the unpushed state of that panel's own per-repo context head (changes ahead of that repo's `main`), not a global workspace state.
 
 ### npm packages
 
@@ -276,11 +284,16 @@ eval({
     console.log("mean:", d3.mean(data));
     console.log("deviation:", d3.deviation(data));
   `,
-  imports: { "d3-array": "npm:3" }
+  imports: { "d3-array": "npm:^3.0.0" }
 })
 ```
 
-Version values follow npm semver conventions: `"npm:^1.0.0"`, `"npm:~2.3.0"`, `"npm:3"`, `"npm:latest"`.
+Version values follow registry semver/range conventions accepted by the build
+service: `"npm:1"`, `"npm:1.3.0"`, `"npm:^1.0.0"`, `"npm:~2.3.0"`,
+`"npm:latest"`, or `"npm:*"`.
+The import-map key is the package name; prefer version-only values such as
+`imports: { "left-pad": "npm:1.3.0" }`. Package-qualified values like
+`"npm:left-pad@1.3.0"` are accepted only when the package name matches the key.
 
 Packages are installed with `--ignore-scripts` for security (no postinstall hooks). Specifiers are validated against npm naming rules — only standard package names are accepted (no URLs, file paths, or git refs). Native addon packages (those requiring `.node` binary files) are not supported.
 
@@ -367,7 +380,7 @@ non-serializable values are lost.
 
 To start with an empty scope and empty `db`, reset the eval context. The agent
 `eval` tool does not take a reset flag; reset is exposed as the `eval.reset` RPC
-(`rpc.call("eval.reset", [])` resets your own session, since the owner is your
+(`rpc.call("main", "eval.reset", [])` resets your own session, since the owner is your
 verified identity). `eval.reset` drops your user `db` tables and the persistent
 scope, preserving only reserved/base tables.
 
@@ -419,34 +432,37 @@ Pass an encoding such as `"utf-8"` when reading text. Without an encoding,
 
 Available methods: `readFile`, `writeFile`, `readdir`, `stat`, `mkdir`, `rm`,
 `exists`, `rename`. (Note: source edits that must take effect for builds go
-through the `edit`/`write` tools or `vcs.applyEdits`, not `fs.writeFile` — see
+through the `edit`/`write` tools or `vcs.edit`, not `fs.writeFile` — see
 the VCS note below.)
 
 ## Calling Services
 
-Use `services.<svc>.<method>(...)` or `rpc.call("<svc>.<method>", [...])` to
-reach server/main services. `services` is a proxy: `services.git.status(...)`
-is `rpc.call("git.status", [...])`.
+Use `rpc.call("main", "<svc>.<method>", [...])` to reach raw server/main service
+catalog methods from eval. `services.<svc>.<method>(...)` is available for
+service names that do not collide with runtime bindings, but rich runtime
+bindings win on collision: `services.workers` is the ergonomic `workers` client,
+so raw `workers.listSources` is `rpc.call("main", "workers.listSources", [])`.
 
 ```
 eval({ code: `
-  const tree = await rpc.call("workspace.sourceTree", []);
+  const tree = await rpc.call("main", "workspace.sourceTree", []);
   console.log("Workspace tree:", tree);
-  // or, equivalently:
-  const tree2 = await services.workspace.sourceTree();
+  // Use the ergonomic runtime binding when available:
+  const tree2 = await workspace.sourceTree();
 ` })
 ```
 
-Use `await help()` for the live service catalog and `await help("vcs")` for one
-service's surface.
+Use `await help()` for live discovery and `await help("vcs")` or
+`await help("workers")` for one runtime binding's actual eval surface. Pass the
+name as a string; do not call `help(workers)`.
 
 ## Worker Management
 
 ```
 eval({ code: `
-  const sources = await services.workers.listInstanceSources();
+  const sources = await workers.listInstanceSources();
   console.log("Available worker sources:", sources);
-  const instances = await services.workers.list();
+  const instances = await workers.list();
   console.log("Running instances:", instances);
 ` })
 ```
@@ -456,33 +472,60 @@ eval({ code: `
 Use the `vcs` service for workspace source changes:
 `rpc.call("vcs.<method>", [...])` or `services.vcs.<method>(...)`.
 
-Edits are edit-first: applying an edit commits it to your context head and
-projects it to disk atomically. The `edit`/`write` tools do this for you;
-`vcs.applyEdits` does the same directly and returns the new `stateHash`.
+The model is **edit → commit → push**, and `main` advances ONLY via push:
+
+- `vcs.edit({ edits })` records a *working* change on your context head and
+  projects it to disk so it builds immediately. It returns a `VcsEditResult`
+  (`{ head, stateHash, committed: false, status: "uncommitted", editSeq,
+  changedPaths }`). It is **not** a commit, has no message, and does not appear
+  in `vcs.log`. The `edit`/`write` tools do exactly this for you.
+- `vcs.commit({ message })` folds your uncommitted working edits into a per-repo
+  snapshot — a deliberate, messaged milestone. The `message` is **mandatory**.
+  It returns a `VcsCommitResult[]` (`{ repoPath, head, stateHash, eventId,
+  editCount, status: "committed" | "unchanged", changedPaths }`).
+- `vcs.push({ repoPaths })` advances `main`. Push is **fast-forward-only** and
+  **build-gated** (see below).
+
+So edit ≠ commit: accumulate working edits, then seal them as named commits.
 
 VCS tracks workspace **source**: every path must live under a tracked directory
 (`projects/`, `panels/`, `packages/`, `apps/`, `workers/`, `skills/`,
-`extensions/`). A *temporary* file you commit still goes under one of those (e.g.
-`projects/tmp-foo.txt`) — `vcs.applyEdits` rejects platform-ignored paths
+`extensions/`). A *temporary* file you write still goes under one of those (e.g.
+`projects/tmp-foo/note.txt`) — `vcs.edit` rejects platform-ignored paths
 (`.natstack`, `.tmp`, `.git`, `.gad`, `node_modules`, `dist`, `.env`, `*.log`),
-so never use an `fs.mktemp()` path here. `vcs.readFile("", path)` returns
+so never use an `fs.mktemp()` path here. In container sections such as
+`projects/`, `section/name` is the repo root; write `section/name/file`, not the
+repo root itself. `vcs.readFile("", path)` returns
 `{ content, stateHash, ... }` (no `baseStateHash` field) — pass its `stateHash`
-as the `baseStateHash` of a later `applyEdits`. `content` is a tagged union:
+as the `baseStateHash` of a later `vcs.edit`. `content` is a tagged union:
 use `content.text` only after checking `content.kind === "text"`; binary reads
 return `{ kind: "bytes", base64 }`.
 
+No scaffold is required for a temporary project repo. Writing
+`projects/tmp-foo/note.txt` is enough to create context-local working content for
+repo `projects/tmp-foo`. It stays private to the current context until you
+explicitly `vcs.commit` and `vcs.push` that repo. `createProject` is for
+published workspace units and pushes immediately.
+
 ```
 eval({ code: `
-  const before = (await services.vcs.resolveHead()).stateHash;
-  const result = await services.vcs.applyEdits({
+  const before = (await services.vcs.resolveHead("main", "panels/my-panel")).stateHash;
+  const result = await services.vcs.edit({
     baseStateHash: before,
     edits: [
       { kind: "write", path: "panels/my-panel/index.tsx", content: { kind: "text", text: "..." } },
     ],
   });
-  console.log("New state:", result.stateHash);
-  const status = await services.vcs.status();
-  console.log("Changed files:", [...status.added, ...status.changed, ...status.removed]);
+  console.log("Working state:", result.stateHash, "committed:", result.committed); // false
+  const status = await services.vcs.status("panels/my-panel");
+  console.log("Uncommitted edits:", status.uncommitted);
+
+  // Seal the working edits as a milestone (message is mandatory):
+  const [commit] = await services.vcs.commit({
+    message: "Wire up my-panel index",
+    repoPaths: ["panels/my-panel"],
+  });
+  console.log("Committed:", commit.eventId, commit.changedPaths);
 ` })
 ```
 
@@ -490,8 +533,9 @@ When editing based on a prior read, unwrap text content explicitly:
 
 ```
 eval({ code: `
-  const path = \`projects/tmp-\${Date.now()}.txt\`;
-  await services.vcs.applyEdits({
+  const repoPath = \`projects/tmp-\${Date.now()}\`;
+  const path = \`\${repoPath}/note.txt\`;
+  await services.vcs.edit({
     edits: [{ kind: "write", path, content: { kind: "text", text: "initial\\n" } }],
   });
 
@@ -499,7 +543,7 @@ eval({ code: `
   if (!read) throw new Error(\`Missing file: \${path}\`);
   if (read.content.kind !== "text") throw new Error(\`Not a text file: \${path}\`);
 
-  await services.vcs.applyEdits({
+  await services.vcs.edit({
     baseStateHash: read.stateHash,
     edits: [{
       kind: "write",
@@ -507,23 +551,64 @@ eval({ code: `
       content: { kind: "text", text: read.content.text + "\\nupdated\\n" },
     }],
   });
+
+  // Drop the working edits if you change your mind (also clears a pending merge):
+  // await services.vcs.discardEdits(repoPath);
 ` })
 ```
 
-`vcs.status()` takes no workspace-root or repo-path argument. Its optional
-argument is a materialized VCS head such as `"main"` or `"ctx:..."`. It reports
-that head's unpublished changes vs `main`, not filesystem dirtiness. To compare
-two committed states, use state hashes returned by `vcs.applyEdits` or
-`resolveHead`:
+`vcs.status(repoPath, head?)` scopes to one repo (a positional repo path like
+`"panels/my-panel"`, not a workspace root or filesystem path). Its optional
+second argument is a materialized VCS head such as `"main"` or `"ctx:..."`. It
+reports that repo head's `uncommitted` working-edit count and its committed
+changes vs the repo's own `main`, not filesystem dirtiness. Ship a repo's
+**committed** changes into its `main` with the fast-forward-only, build-gated
+`vcs.push({ repoPaths: ["panels/my-panel"] })` (push throws if working edits are
+uncommitted — commit or `vcs.discardEdits` first). To compare two committed
+states, use state hashes returned by `vcs.edit`/`vcs.commit` or `resolveHead`:
 
 ```
 eval({ code: `
-  const before = (await services.vcs.resolveHead("main")).stateHash;
-  const after = (await services.vcs.resolveHead()).stateHash;
+  const before = (await services.vcs.resolveHead("main", "panels/my-panel")).stateHash;
+  const after = (await services.vcs.resolveHead(undefined, "panels/my-panel")).stateHash;
   const diff = before ? await services.vcs.diff(before, after) : null;
   console.log({ before, after, diff });
 ` })
 ```
+
+### Push, divergence, and merge
+
+`vcs.push` builds the candidate (esbuild + tsc) before any head moves and
+fast-forwards `main` only if your base is still its tip. Its result is a
+discriminated union on `status`: `"pushed"` / `"up-to-date"` (success),
+`"build-failed"` (no head advanced — `reports[].builds[].diagnostics[]` carry the
+structured `{ source, severity, file, line, column, message }` errors), or
+`"diverged"` (`main` moved past your base; `divergences[]` name the repos). On
+`diverged`, fold `main` into your head with `vcs.merge(repoPath)`:
+
+```
+eval({ code: `
+  const result = await services.vcs.push({ repoPaths: ["panels/my-panel"] });
+  if (result.status === "diverged") {
+    const merge = await services.vcs.merge("panels/my-panel");
+    if (merge.mergeable === "clean") {
+      // clean merge auto-commits — just re-push
+      await services.vcs.push({ repoPaths: ["panels/my-panel"] });
+    } else {
+      // conflict markers were written into merge.conflictPaths; resolve them
+      // with vcs.edit, then seal and re-push:
+      // await services.vcs.edit({ edits: [/* resolved files */] });
+      // await services.vcs.commit({ message: "Resolve merge", repoPaths: ["panels/my-panel"] });
+      // await services.vcs.push({ repoPaths: ["panels/my-panel"] });
+      console.log("Conflicts to resolve:", merge.conflictPaths);
+    }
+  }
+` })
+```
+
+To dry-run a build of your **working** content before committing (same structured
+diagnostics, no head advance and no EV baseline written), use
+`vcs.previewBuild({ repoPaths: ["panels/my-panel"] })`.
 
 ## Large Results And Diagnostics
 
@@ -532,13 +617,27 @@ dumps, or full GAD payloads from `eval`. Large values are intentionally stored a
 blob refs in trajectory/channel storage; broad hydrated reads can pull them back
 into the transcript and hide the useful part of the report.
 
+Eval has a safety net for accidental large output: terminal console/return data
+is windowed before it is persisted or delivered. The tool result will point to
+`scope.$lastConsole` or `scope.$lastReturn` when a bounded saved copy exists.
+Read those values in pages, for example:
+
+```ts
+return scope.$lastReturn.slice(0, 40_000);
+// or
+return /needle/.test(scope.$lastConsole);
+```
+
+That fallback is for recovery, not a reporting pattern. Prefer compact
+summaries first.
+
 Prefer compact inspectors first:
 
 ```ts
-return await rpc.call("gad.inspectChannelEnvelopes", [{ channelId, limit: 50 }]);
-return await rpc.call("gad.inspectTurnState", [{ branchId }]);
-return await rpc.call("gad.inspectInvocationState", [{ transportCallId }]);
-return await rpc.call("gad.inspectPublicationIntegrity", [{ channelId }]);
+return await rpc.call("main", "gad.inspectChannelEnvelopes", [{ channelId, limit: 50 }]);
+return await rpc.call("main", "gad.inspectTurnState", [{ branchId }]);
+return await rpc.call("main", "gad.inspectInvocationState", [{ transportCallId }]);
+return await rpc.call("main", "gad.inspectPublicationIntegrity", [{ channelId }]);
 ```
 
 If you need a large artifact, store the full bytes/text in the **blobstore** and
@@ -549,7 +648,8 @@ The blobstore is a curated runtime binding — reach it as `services.blobstore`
 (equivalently `import { blobstore } from "@workspace/runtime"`, or the raw
 `rpc.call("blobstore.<method>", [...])`). Read/write methods
 (`putText`/`putBase64`/`getText`/`getRange`/`grep`/…) work from agent eval; the
-admin methods (`delete`/`list`/`pruneUnreferenced`) are server-only. A binary
+admin methods (`delete`/`list`/`pruneUnreferenced`) are server-only. Raw calls
+use `rpc.call("main", "blobstore.<method>", [...])`. A binary
 artifact (e.g. a screenshot you captured) goes in as base64:
 
 ```ts
@@ -585,24 +685,29 @@ with `services.blobstore.grep(digest, pattern)`.
 ```
 eval({ code: `
   // Build a panel at the current head and get its bundle
-  const build = await rpc.call("build.getBuild", ["panels/my-app"]);
+  const build = await rpc.call("main", "build.getBuild", ["panels/my-app"]);
   console.log("Build artifacts:", Object.keys(build));
 
   // Build at a specific context branch when you intentionally want to test
   // edits made in that context. `contextId` alone never selects code provenance.
-  const branchBuild = await rpc.call("build.getBuild", ["panels/my-app", \`ctx:\${ctx.contextId}\`]);
+  const branchBuild = await rpc.call("main", "build.getBuild", ["panels/my-app", \`ctx:\${ctx.contextId}\`]);
   console.log("Context branch build:", branchBuild.sourceStateHash);
 
-  // Build at a specific immutable GAD state ref (second arg) — e.g. an
-  // outputStateHash from vcs.log(), or (await vcs.resolveHead("main")).stateHash.
-  // The returned build's sourceStateHash echoes the requested ref.
-  const [{ outputStateHash }] = await services.vcs.log(1);
-  const pinned = await rpc.call("build.getBuild", ["panels/my-app", outputStateHash]);
+  // Build at a specific immutable GAD state ref (second arg). build.getBuild
+  // needs a workspace-rooted composed state. vcs.log/vcs.commit/resolveHead
+  // return repo-rooted states, so compose the repo state into a workspace view
+  // before passing it to the build service.
+  const [{ outputStateHash }] = await services.vcs.log("panels/my-app", 1);
+  const { stateHash: workspaceStateHash } = await services.vcs.workspaceViewWithRepoAt(
+    "panels/my-app",
+    outputStateHash
+  );
+  const pinned = await rpc.call("main", "build.getBuild", ["panels/my-app", workspaceStateHash]);
   console.log("Built at:", pinned.sourceStateHash);
 
   // Runtime launches use main code unless `ref` is explicit. This creates a
   // worker that reads/writes ctx-1 but still runs the main build:
-  await rpc.call("runtime.createEntity", [{
+  await rpc.call("main", "runtime.createEntity", [{
     kind: "worker",
     source: "workers/agent-worker",
     key: "agent-main-code",
@@ -610,7 +715,7 @@ eval({ code: `
   }]);
 
   // Targeted branch launch for testing code edited in ctx-1:
-  await rpc.call("runtime.createEntity", [{
+  await rpc.call("main", "runtime.createEntity", [{
     kind: "worker",
     source: "workers/agent-worker",
     key: "agent-ctx-code",
@@ -619,7 +724,7 @@ eval({ code: `
   }]);
 
   // Check effective version
-  const ev = await rpc.call("build.getEffectiveVersion", ["panels/my-app"]);
+  const ev = await rpc.call("main", "build.getEffectiveVersion", ["panels/my-app"]);
   console.log("Effective version:", ev);
 `
 })

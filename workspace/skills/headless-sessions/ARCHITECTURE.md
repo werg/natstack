@@ -95,7 +95,8 @@ transcript UX.
 HeadlessSession provides two teardown paths:
 
 - **`dispose(): void`** — synchronous best-effort: aborts the message consumer and disconnects. Use when the surrounding context is being torn down hard.
-- **`close(): Promise<void>`** — awaitable: unsubscribes and retires the agent it subscribed (when created via `createWithAgent`), then disposes. Use for headless consumers (workers, tests, servers).
+- **`close(): Promise<void>`** — awaitable: unsubscribes and retires the agent it subscribed (when created via `createWithAgent`), then disposes. Use for ordinary headless consumers.
+- **`close({ waitForRemoteCleanup: false })`** — detach mode for harnesses: disposes local state immediately and starts remote unsubscribe/retire cleanup best-effort without awaiting it. Use this instead of wrapping session cleanup in a timeout.
 - **`Symbol.asyncDispose`** — supports `await using session = ...` syntax (calls `close()`).
 
 ## Eval, scope, and db ownership

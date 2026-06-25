@@ -182,13 +182,11 @@ execution, and no user session. For paywalled articles, sites that
 require login, or apps that need client-side rendering, route the
 fetch through a real browser panel instead:
 
-`openPanel`/`panelTree` are **panel/component-runtime** capabilities —
-`import { openPanel } from "@workspace/runtime"` does not initialize in the
-`EvalDO`, so acquire the browser handle from panel code or an
-`inline_ui`/`feedback_custom` component (there, `rpc.call(target, method, args)`
-is the 3-arg panel-runtime form). The `handle.cdp.lightweightPage()` automation
-itself is workerd-native and runs over a WebSocket to the panel's CDP endpoint,
-so it also works in server-side eval once you hold the handle:
+`openPanel`/`panelTree` are part of the portable runtime surface from
+`@workspace/runtime`; they work from server-side eval, panels, workers, and DOs.
+The `handle.cdp.lightweightPage()` automation is workerd-native and runs over a
+WebSocket to the panel's CDP endpoint, so a browser panel opened from eval can be
+driven there directly:
 
 ```tsx
 import { openPanel } from "@workspace/runtime";

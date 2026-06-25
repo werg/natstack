@@ -6,13 +6,14 @@ The simplest way to spawn an agent and drive it from code:
 
 ```typescript
 import { HeadlessSession } from "@workspace/agentic-session";
+import { contextId, rpc } from "@workspace/runtime";
 
 const session = await HeadlessSession.createWithAgent({
-  config: { serverUrl: gatewayUrl, token, clientId: "my-harness" },
-  rpcCall: (t, m, a) => rpcClient.call(t, m, a),
+  config: { clientId: rpc.selfId, rpc },
+  rpcCall: (t, m, a) => rpc.call(t, m, a),
   source: "workers/agent-worker",
   className: "AiChatWorker",
-  contextId: myContextId,
+  contextId,
 });
 
 // Send a message and wait for the agent's response
@@ -32,6 +33,11 @@ This automatically:
   inline_ui, load_action_bar, and feedback_form simply aren't advertised, so the agent naturally
   falls back to plain message replies
 
+For server-side eval, worker, and Durable Object callers, `clientId` is the
+PubSub participant id and must be the caller's runtime identity (`rpc.selfId`).
+Do not use an arbitrary harness label such as `"my-harness"`; PubSub rejects a
+connectionless caller that tries to subscribe as a different participant.
+
 The agent's `eval` (with its persistent `scope`/`db`) needs no setup here: it
 runs server-side in the agent's own per-channel `EvalDO`, so it works even though
 no panel is connected. You do not register an eval method or wire a sandbox for
@@ -43,24 +49,25 @@ For more control over channel/subscription setup:
 
 ```typescript
 import { HeadlessSession, subscribeHeadlessAgent } from "@workspace/agentic-session";
+import { contextId, rpc } from "@workspace/runtime";
 
 // Create session
 const session = HeadlessSession.create({
-  config: { serverUrl: gatewayUrl, token, clientId: "my-harness" },
+  config: { clientId: rpc.selfId, rpc },
 });
 
 // Subscribe agent separately
 const sub = await subscribeHeadlessAgent({
-  rpcCall: (t, m, a) => rpcClient.call(t, m, a),
+  rpcCall: (t, m, a) => rpc.call(t, m, a),
   source: "workers/agent-worker",
   className: "AiChatWorker",
   objectKey: "my-specific-do",
   channelId: "my-channel",
-  contextId: myContextId,
+  contextId,
 });
 
 // Connect (registers the default set_title method)
-await session.connect("my-channel", { contextId: myContextId });
+await session.connect("my-channel", { contextId });
 ```
 
 ## 3. ConnectionManager Directly (no headless defaults)
@@ -69,16 +76,17 @@ For maximum control — no agent subscription, no `set_title`, no wait helpers:
 
 ```typescript
 import { ConnectionManager } from "@workspace/agentic-core";
+import { contextId, rpc } from "@workspace/runtime";
 
 const manager = new ConnectionManager({
-  config: { serverUrl: gatewayUrl, token, clientId: "raw-client" },
+  config: { clientId: rpc.selfId, rpc },
   callbacks: { onEvent: (event) => console.log("event", event.type) },
 });
 
 const client = await manager.connect({
   channelId: "existing-channel",
   methods: { /* your custom methods */ },
-  contextId: myContextId,
+  contextId,
 });
 
 await client.send("Hello from a raw connection");
@@ -91,11 +99,11 @@ When you only need to drive the conversation:
 
 ```typescript
 const session = await HeadlessSession.createWithAgent({
-  config: { serverUrl: gatewayUrl, token, clientId: "messaging-only" },
-  rpcCall: (t, m, a) => rpcClient.call(t, m, a),
+  config: { clientId: rpc.selfId, rpc },
+  rpcCall: (t, m, a) => rpc.call(t, m, a),
   source: "workers/agent-worker",
   className: "AiChatWorker",
-  contextId: myContextId,
+  contextId,
 });
 ```
 
@@ -109,7 +117,7 @@ From inside a Durable Object or worker:
 
 ```typescript
 const session = await HeadlessSession.createWithAgent({
-  config: { serverUrl: gatewayUrl, token, clientId: `worker-${objectKey}` },
+  config: { clientId: rpc.selfId, rpc },
   rpcCall: (t, m, a) => rpc.call(t, m, a),
   source: "workers/agent-worker",
   className: "AiChatWorker",

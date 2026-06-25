@@ -7,11 +7,12 @@ description: Query NatStack's canonical trajectory model for conversation contex
 
 Use the `gad` runtime namespace. The storage model is canonical trajectory-first:
 
-- Agent context lives in `trajectory_events` plus projections such as `trajectory_messages`, `trajectory_message_blocks`, `trajectory_invocations`, and `trajectory_approvals`.
-- Channel delivery lives in `channel_envelopes`.
-- Published trajectory events are joined to transmitted channel messages through
-  `trajectory_channel_publications`. Do not infer this relationship by matching
-  payload text or timestamps.
+- Agent context lives in `log_events` plus projections such as `trajectory_messages`, `trajectory_message_blocks`, `trajectory_invocations`, and `trajectory_approvals`.
+- Channel delivery also lives in `log_events`; use the channel inspector APIs to
+  read it.
+- Published trajectory events are validated through dedicated inspector APIs.
+  Do not infer trajectory-to-channel publication health by matching payload text
+  or timestamps.
 - Worktree state lives in `gad_worktree_states`, manifest tables, file versions, state transitions, mutations, observations, and hunks.
 
 Use only the canonical tables above; older event/session table families do not exist in this schema.
@@ -48,7 +49,9 @@ Current implemented hardening:
 - `trajectory_turns.opened_at` is no longer silently overwritten by duplicate
   opens.
 - Presence envelopes project into `channel_roster`.
-- `gad.query` accepts read-only CTEs and still rejects write CTEs.
+- `gad.query` accepts read-only CTEs and still rejects write CTEs, but it is a
+  schema-level escape hatch after bounded inspectors have found the exact table
+  or artifact you need.
 - Manifest/state hashes are synchronous SHA-256 over stable JSON.
 - Standard agent workers expose `inspectMethodSuspensions` to join local
   suspension rows with GAD invocation state.
@@ -57,39 +60,39 @@ Current implemented hardening:
 - Inspector APIs return summaries and byte counts so agents do not need to dump
   hydrated history into eval results.
 
-For SQL reads, prefer:
+For first-pass diagnostics from eval, prefer inspectors and let
+`inspectAgentHealth` derive the default channel branch:
 
-```sql
-SELECT trajectory_id, branch_id, head_event_id, head_event_hash, head_state_hash, updated_at
-FROM trajectory_branches
-ORDER BY updated_at DESC;
+```ts
+const channelId = chat.channelId;
+const health = await gad.inspectAgentHealth({ channelId, limit: 50 });
+const publication = await gad.inspectPublicationIntegrity({ channelId });
+const turn = await gad.inspectTurnState({ channelId });
+const invocation = await gad.inspectInvocationState({ branchId: health.branchId });
+const storage = await gad.inspectStorageDiagnostics({ channelId, limit: 25 });
 ```
 
+Do not query `trajectory_branches`; it is not a public table in the current GAD
+schema. If you need SQL after an inspector points to a concrete artifact, first
+confirm the table exists with a bounded schema read and keep the result small.
+
 ```sql
-SELECT seq, event_id, event_hash, prev_event_hash, kind,
-       causality_json, created_at
-FROM trajectory_events
+SELECT seq, envelope_id, payload_kind, head, appended_at
+FROM log_events
 ORDER BY seq DESC
 LIMIT 100;
 ```
 
 To connect what an agent privately did to what users or other agents actually
-received, query the publication join:
-
-```sql
-SELECT p.channel_id, p.channel_seq, p.envelope_id,
-       te.branch_id, te.turn_id, te.kind, te.event_id
-FROM trajectory_channel_publications p
-JOIN trajectory_events te ON te.event_id = p.event_id
-ORDER BY p.channel_id, p.channel_seq;
-```
+received, use `gad.inspectPublicationIntegrity(...)` and targeted envelope or
+lineage APIs after that summary identifies a concrete envelope or event.
 
 Keep the distinction clear:
 
-- `trajectory_events` is the private, branchable agentic trajectory.
-- `channel_envelopes` is the transmitted PubSub history.
-- `trajectory_channel_publications` makes the two queryable together without
-  making them the same record.
+- `log_events` is the private, branchable agentic trajectory and channel log
+  storage.
+- Publication inspectors make trajectory/channel relationships queryable without
+  asking agents to stitch rows together from raw tables.
 
 Large values are stored by reference. Do not run broad hydrated reads and return
 them from `eval`; use `inspect*` APIs first, then fetch one digest or envelope

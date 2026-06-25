@@ -25,7 +25,7 @@ HeadlessSession.createWithAgent(config: HeadlessWithAgentConfig): Promise<Headle
 
 ```typescript
 interface HeadlessSessionConfig {
-  config: ConnectionConfig;             // serverUrl/token/clientId, or { clientId, rpc }
+  config: ConnectionConfig;             // { clientId, rpc }, where rpc is the full portable RpcClient
   metadata?: ChatParticipantMetadata;   // defaults to { name: "Headless Client", type: "headless", handle: "headless" }
   sandbox?: SandboxConfig;              // optional; only backs local chat-sandbox helpers (callMethod, etc.) — NOT the agent's eval
 }
@@ -34,6 +34,15 @@ interface HeadlessSessionConfig {
 `sandbox` is optional and does not enable or disable the agent's eval. The agent
 evaluates code in its own server-side `EvalDO` whether or not a session sandbox
 is provided.
+
+When passing `config: { clientId, rpc }`, `rpc` must be the normal runtime
+client shape used by panels/workers/eval: it includes `selfId`,
+`call(target, method, args)`, and event subscription support such as `on(...)`.
+For server-side eval, worker, and Durable Object callers, pass
+`clientId: rpc.selfId`. PubSub authorizes those connectionless callers by their
+runtime identity, so an arbitrary client id will be rejected during channel
+subscription. Panel integrations that have a distinct stable panel slot id may
+use that slot id as their participant id.
 
 ### HeadlessWithAgentConfig
 
@@ -71,7 +80,7 @@ To customize the agent's system prompt for a session, pass `systemPrompt` and
 | `connect(channelId, options?)` | Connect to a PubSub channel. Options: `channelConfig`, `contextId`, `methods` |
 | `disconnect()` | Abort the message consumer and disconnect the client |
 | `dispose()` | Sync best-effort teardown (disconnect + clear listeners) |
-| `close()` | Async teardown: unsubscribe + retire the agent subscribed by `createWithAgent`, then dispose |
+| `close(opts?)` | Async teardown: unsubscribe + retire the agent subscribed by `createWithAgent`, then dispose. Pass `{ waitForRemoteCleanup: false }` to detach local state immediately while remote cleanup continues best-effort. |
 | `[Symbol.asyncDispose]()` | Supports `await using session = ...` (calls `close()`) |
 
 ### Communication
@@ -180,4 +189,7 @@ interface HeadlessAgentSubscription {
 `subscribeHeadlessAgent` creates the agent entity and subscribes it; pair it with
 `unsubscribeHeadlessAgent({ rpcCall, targetId, channelId })` and
 `retireHeadlessAgent({ rpcCall, entityId })` for cleanup. `createWithAgent` /
-`close()` do this wiring for you.
+`close()` do this wiring for you. Harnesses that must not be held by a wedged
+remote agent can call `close({ waitForRemoteCleanup: false })`; this disposes
+the local PubSub connection synchronously and starts unsubscribe/retire cleanup
+without awaiting it.

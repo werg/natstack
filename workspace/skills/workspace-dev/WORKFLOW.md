@@ -1,6 +1,31 @@
 # Agent Panel Workflow
 
-Use one runtime concept: `PanelHandle`. `openPanel(source, options)` opens both workspace panels and URLs and returns a handle. In userland, opening a panel is a structural tree mutation and may prompt on first use for the requester entity and parent/root target. `listPanels()` rediscovers existing handles. Keep the handle, then call `rebuildAndReload()` after committed code changes so the named panel rebuilds and its renderer fetches the rebuilt bundle.
+Use one runtime concept: `PanelHandle`. `openPanel(source, options)` opens both workspace panels and URLs and returns a handle. In userland, opening a panel is a structural tree mutation and may prompt on first use for the requester entity and parent/root target. `listPanels()` rediscovers existing handles. Keep the handle, then use it to reload the running panel for **runtime/visual** iteration *after* your code is green.
+
+## Versioning is per-repo: edit → commit → push
+
+Each repo (`panels/my-app`, `packages/ui`, `projects/vault`, `meta`) versions
+itself on its own log. The dev loop has three layers:
+
+- **edit** (`vcs.edit`, what the `edit`/`write` tools call) records **uncommitted
+  working edits** on your context head — tracked and projected to disk, but not a
+  commit: no log entry, no head advance, no build.
+- **commit** (`vcs.commit({ message })`) folds your working edits into a
+  deliberate, messaged snapshot per repo, advancing your context head. `message`
+  is mandatory.
+- **push** (`vcs.push({ repoPaths: [repo] })`) advances a repo's `main`. `main`
+  moves **only** via push. Push is **fast-forward-only** and **build-gated**: it
+  builds + type-checks the candidate; if it fails, **no head advances** and you
+  get structured diagnostics back (`file:line:col  severity  message`). That
+  report is the **primary build signal** — read it and fix the cited lines.
+
+`rebuildAndReload()` is NOT the build gate. It rebuilds and reloads a *running*
+panel's renderer for visual iteration at that panel's current build ref:
+explicit `ref` if the panel was pinned, otherwise main. It does not infer
+`ctx:<contextId>` from the panel context, does not advance `main`, and is not
+where you find compile/type errors. Use the push report (or `vcs.previewBuild`)
+for "does it build?"; use `rebuildAndReload()` for "what does it look like
+running?".
 
 Agents are responsible for panels they open. Keep the primary development panel
 open when the user is reviewing it, but close temporary browser panels,
@@ -17,11 +42,74 @@ import { createProject } from "@workspace-skills/workspace-dev";
 await createProject({ projectType: "panel", name: "my-app", title: "My App" });
 ```
 
-2. Edit files with the `edit`/`write` filesystem tools, not eval. Each edit
-   commits to your context head and projects to disk atomically (edit-first) —
-   there is no separate commit step.
+Skip this scaffold step for throwaway project repos. To keep temporary files
+context-local, write a file inside a repo-shaped path such as
+`projects/tmp-name/note.md`. You can leave it uncommitted, commit it as a local
+snapshot, or push it later; `createProject({ projectType: "project" })`
+immediately commits and pushes a README.
 
-3. Open once:
+2. Edit files with the `edit`/`write` filesystem tools, not eval. Each edit is
+   recorded as an **uncommitted working edit** on your context head and projected
+   to disk. It is tracked but not yet a commit.
+
+3. **Commit a deliberate snapshot.** When the change is a milestone, fold your
+   working edits into a commit with `vcs.commit({ message })`. `message` is
+   mandatory. You can keep editing and commit several times before shipping.
+
+```ts
+import { vcs } from "@workspace/runtime";
+
+const commits = await vcs.commit({ message: "Wire up the form" });
+for (const c of commits) console.log(c.repoPath, c.status, c.editCount);
+```
+
+   To check what's uncommitted without committing, use `vcs.status(repoPath)`
+   (its `uncommitted` count) or preview-build working content with
+   `vcs.previewBuild({ repoPaths: [repo] })`. To throw away uncommitted edits,
+   `vcs.discardEdits(repoPath)`.
+
+4. **Push to build-gate the change into `main`.** Push is fast-forward-only and
+   build-gated: it builds + type-checks the committed candidate; if it fails,
+   **no head advances**. Read the report; fix the cited `file:line:col` and push
+   again. Do this *before* opening/reloading for the user — a red repo has
+   nothing worth shipping. (Push **rejects** if a repo still has uncommitted
+   edits — commit first.)
+
+   For a **brand-new** project there is no init: this first push *creates* the
+   repo's `main` from empty (the create-project step already did edit→commit→push
+   for the scaffold; this is for your subsequent commits). A typo'd `repoPaths`
+   entry fails with `unknown repo … has no main and no content`.
+
+```ts
+import { vcs } from "@workspace/runtime";
+
+const result = await vcs.push({ repoPaths: ["panels/my-app"] });
+if (result.status === "build-failed") {
+  // No head advanced. The diagnostics are your task list.
+  for (const report of result.reports) {
+    for (const build of report.builds) {
+      for (const d of build.diagnostics) {
+        console.error(`${d.file}:${d.line}:${d.column}  ${d.severity}  [${d.source}] ${d.message}`);
+      }
+    }
+  }
+} else if (result.status === "diverged") {
+  // main moved past your base — a fast-forward is impossible.
+  // Reconcile, then re-commit (if conflicts) and re-push.
+  for (const repoPath of result.divergences.map((d) => d.repoPath)) {
+    await vcs.merge(repoPath); // pulls main into your head as a merge commit
+  }
+}
+// result.status === "pushed" | "up-to-date" → green; proceed.
+```
+
+A `diverged` result means `main` moved past your context's base, so the push
+can't fast-forward. Pull `main` into your head with `vcs.merge(repoPath)`; if it
+reports conflicts, the markers land in your context files — fix them via
+`edit`/`write`, `vcs.commit` to seal the merge, then re-push. A `build-failed`
+result means **no head advanced**; never leave the repo red.
+
+5. Open once (after a green push):
 
 ```ts
 import { openPanel } from "@workspace/runtime";
@@ -30,23 +118,23 @@ scope.myApp = await openPanel("panels/my-app", { focus: true });
 await scope.myApp.snapshot();
 ```
 
-4. Iterate by editing, then rebuilding and reloading the same handle:
+6. Iterate visually by reloading the same handle:
 
 ```ts
-// Edits made via the edit/write tools are already committed to your head.
+// For runtime/visual iteration of this panel's current build ref. If the panel
+// is not explicitly ref-pinned, this is main. rebuildAndReload does not commit,
+// does not advance main, and is not the build gate — use vcs.commit + vcs.push
+// to ship, or vcs.previewBuild to check a working build.
 const lifecycle = await scope.myApp.rebuildAndReload();
 console.log(lifecycle);
 await scope.myApp.snapshot();
 ```
 
-Edits are edit-first: applying an edit commits it to your context head and
-projects it to disk atomically, triggering rebuilds; there is no separate
-commit or push step. `rebuildAndReload()` is the canonical operation after
-edits when the
-panel is already open. It targets exactly the panel named by the handle's `id`.
-It does not unload the target's runtime lease and does not rebuild or reload
-child panels. If the eval is running inside the target being reloaded, the eval
-can be cancelled after the reload command is sent.
+`rebuildAndReload()` is the canonical operation to refresh a *running* panel
+after edits at the panel's current build ref. It targets exactly the panel named
+by the handle's `id`. It does not unload the target's runtime lease and does not
+rebuild or reload child panels. If the eval is running inside the target being
+reloaded, the eval can be cancelled after the reload command is sent.
 
 Lifecycle method semantics:
 
@@ -69,7 +157,7 @@ running in that panel's active runtime entity. Lifecycle calls return a
 structured result with `operation`, `status`, `panelId`, `loaded`, `rebuilt`,
 `reloaded`, `buildRevision`, and `effectiveVersion` when the host can report it.
 
-5. Tune running state without reopening:
+7. Tune running state without reopening:
 
 ```ts
 await scope.myApp.stateArgs.set({ theme: "dark", mode: "fixture" });
@@ -132,6 +220,17 @@ Use `handle.snapshot()` for an agent-readable view of the running panel. Use `ha
 
 ## Forking Existing Projects
 
+A fork copies an existing repo to a new path **preserving history** — the new
+repo's log descends from the source's lineage, so your edits build on top of the
+inherited commits (contrast a from-scratch new project, whose first push starts
+a clean empty history). `forkProject` is the workspace-dev helper that copies
+only trackable workspace source, skips platform/generated artifacts such as
+`.gad/`, and rewrites the obvious references. A non-dry run performs edit →
+commit → push for the new repo. The lower-level `vcs.forkRepo(fromPath, toPath)`
+/ `natstack vcs fork-repo FROM TO` preserves history and rewrites only the
+`package.json` `name` leaf so the fork is build-valid, leaving deeper renames
+(component/class names, contract sources, DO class bindings) to you.
+
 For panels, inspect the source, dry-run if the source is unfamiliar, then fork:
 
 ```ts
@@ -158,4 +257,4 @@ const plan = await forkProject({
 console.log(plan);
 ```
 
-If the worker has multiple Durable Object classes, apply with an explicit `classMap`. After the fork, typecheck, launch the panel or worker; follow-up edits via the `edit`/`write` tools commit to your context head automatically (edit-first).
+If the worker has multiple Durable Object classes, apply with an explicit `classMap`. After the fork, `vcs.commit({ message })` then `vcs.push({ repoPaths: [repo] })` to build-gate it (read the report; fix any diagnostics and re-push), then launch the panel or worker. Follow-up edits via the `edit`/`write` tools are uncommitted working edits; `vcs.commit` then `vcs.push` to advance `main`.
