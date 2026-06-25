@@ -6,16 +6,25 @@
  * sidecar (`CHECKOUT.json`) is a P1 cache — derivation "stat() of every
  * file at the last snapshot/materialize"; deleting it only costs a rescan.
  *
- * Workspace identity: the whole workspace is ONE log (`vcs:workspace`),
- * head `main`; context folders are `forkLog` children on head
- * `ctx:{contextId}` (same lineage rules as every other log — P5).
+ * Workspace identity: per-repo VCS. There is no whole-tree log — every repo
+ * (`packages/foo`, `panels/chat`, `projects/<vault>`, `meta`) is a first-class
+ * versioned unit with its own GAD log (`vcs:repo:<relativePath>`, see
+ * {@link logIdForRepo}) and heads (`main`, `ctx:*`). The workspace state is the
+ * live union of every repo's `main`; a context overlays its `ctx:{contextId}`
+ * head on its writable repos. The primitives here (`snapshotDir`, `forkContext`,
+ * `resolveWorktreeRef`) is keyed by an explicit
+ * `logId` — there is no default workspace log.
  */
 
 import * as fs from "node:fs";
 import * as fsp from "node:fs/promises";
 import * as path from "node:path";
 
-import { buildWorktreeManifest, type WorktreeManifest } from "@workspace/agentic-protocol";
+import {
+  buildWorktreeManifest,
+  EMPTY_STATE_HASH,
+  type WorktreeManifest,
+} from "@workspace/agentic-protocol";
 import { blobPath, ensureLayout, putFile } from "../services/blobstoreService.js";
 
 /** Narrow call surface onto the GadWorkspaceDO (DODispatch server-side, the DO instance in tests). */
@@ -23,15 +32,57 @@ export interface GadCaller {
   call<T = unknown>(method: string, input: unknown): Promise<T>;
 }
 
-export const VCS_LOG_ID = "vcs:workspace";
+export interface WorktreeHeadRef {
+  logId: string;
+  head: string;
+  stateHash: string;
+  commitEventId: string | null;
+  updatedAt: string;
+}
+
 export const VCS_MAIN_HEAD = "main";
+
+/** Head-name prefix for an archived (deleted) repo's preserved history. A repo
+ *  log carrying an `archived:*` head was retired through `vcs.deleteRepo`: its
+ *  `main` is gone but its lineage is parked here (recoverable). Used to refuse
+ *  silent resurrection of a deleted repo by a stale-context push. */
+export const VCS_ARCHIVE_HEAD_PREFIX = "archived:";
+
+/** Log-id prefix for per-repo VCS logs (`vcs:repo:<path>`). */
+export const VCS_REPO_LOG_PREFIX = "vcs:repo:";
+
+/**
+ * Per-repo VCS log id. Each workspace repo (`packages/foo`, `panels/chat`,
+ * `projects/<vault>`, `meta`) is a first-class versioned unit with its own GAD
+ * log and heads (`main`, `ctx:*`); the workspace state is the live union of
+ * every repo's `main` (see `composeRepoStates`). A repo's state is
+ * subtree-rooted (paths relative to the repo).
+ */
+export function logIdForRepo(repoPath: string): string {
+  return `vcs:repo:${normalizeRepoPathForLog(repoPath)}`;
+}
+
+/** Inverse of {@link logIdForRepo}: the repo path for a `vcs:repo:<path>` log id,
+ *  or null for a non-repo log id. */
+export function repoPathFromLogId(logId: string): string | null {
+  return logId.startsWith(VCS_REPO_LOG_PREFIX) ? logId.slice(VCS_REPO_LOG_PREFIX.length) : null;
+}
+
+/**
+ * Normalize a workspace-relative repo path for use as a log id. Most repos are
+ * `section/key` (2 segments); flat sections that hold files directly rather than
+ * repo subdirs (today `meta`) are single-segment repos.
+ */
+export function normalizeRepoPathForLog(repoPath: string): string {
+  const normalized = repoPath.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "");
+  if (!normalized || normalized.includes("..")) {
+    throw new Error(`Invalid workspace repo path: ${repoPath}`);
+  }
+  return normalized;
+}
 
 export function vcsContextHead(contextId: string): string {
   return `ctx:${contextId}`;
-}
-
-export function vcsWorktreeRefName(head: string): string {
-  return `worktree:${VCS_LOG_ID}:${head}`;
 }
 
 /**
@@ -77,8 +128,12 @@ export const MERGE_CONFLICTS_FILE = "MERGE_CONFLICTS.md";
  * GAD state. (Snapshot scans produce safe relative paths by construction.)
  */
 export function assertSafeVcsPath(p: string): void {
+  if (p.length === 0) {
+    throw new Error(
+      "vcs path is empty; edit paths must name a file inside the repo, not the repo root."
+    );
+  }
   if (
-    p.length === 0 ||
     p.includes("\0") ||
     p.startsWith("/") ||
     path.isAbsolute(p) ||
@@ -94,7 +149,7 @@ let platformIgnoreMatcher: { ignores: (s: string) => boolean } | null = null;
  * Reject a new state path that the snapshot scan would itself exclude — VCS
  * internals (`.git`, `.gad`), generated dirs (`node_modules`, `dist`), and
  * secret/env files (`.env`, `.npmrc`, `.secrets.yml`, …). Without this, an
- * edit-ingress caller (vcs.applyEdits) could write such a path into GAD state
+ * edit-ingress caller (vcs.edit) could write such a path into GAD state
  * (the scan denylist only runs on disk→state, not on caller→state), and
  * materializeState would write it to disk — e.g. planting `.git/hooks/*` or a
  * `.env`, or shadowing internal VCS state. Only platform-invariant exclusions
@@ -126,9 +181,9 @@ export async function assertWritableVcsPath(p: string): Promise<void> {
 }
 
 /**
- * Whether `p` is a GAD-trackable path — i.e. exactly the set `applyEdits`
+ * Whether `p` is a GAD-trackable path — i.e. exactly the set `edit`
  * accepts (safe + not platform-ignored). The fs-service reroute uses this to
- * decide whether a context mutation must go through GAD (`applyEdits`) or is a
+ * decide whether a context mutation must go through GAD (`edit`) or is a
  * scratch/ignored path (`.tmp`, `.testkit`, `node_modules`, `*.log`, …) that
  * stays a direct disk write.
  */
@@ -140,6 +195,12 @@ export async function isWritableVcsPath(p: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Prefix a repo-relative path back to its workspace-relative location. */
+export function joinRepoPrefix(repoPath: string, relPath: string): string {
+  const norm = normalizeRepoPathForLog(repoPath);
+  return relPath ? `${norm}/${relPath}` : norm;
 }
 
 /**
@@ -244,6 +305,9 @@ export function vcsLogActor(actor: VcsActor): VcsLogActor {
 
 export interface SnapshotOptions {
   head?: string;
+  /** Repo log id the head lives on (per-repo VCS). Required — every snapshot
+   *  targets a specific repo's log. */
+  logId: string;
   actor?: VcsActor;
   summary?: string;
   metadata?: Record<string, unknown>;
@@ -253,6 +317,8 @@ export interface SnapshotOptions {
   force?: boolean;
   /** Extra transition parents (merge-resolution commits). */
   parentStateHashes?: string[];
+  /** Event IDs corresponding to parentStateHashes. */
+  parentEventIds?: string[];
   /** Transition kind override (merge-resolution commits). */
   eventKind?: "state.snapshot_ingested" | "state.merge_applied";
   beforeIngest?(candidate: {
@@ -277,6 +343,51 @@ export interface MaterializeOptions {
 
 export interface MaterializeResult {
   stateHash: string;
+  written: number;
+  deleted: number;
+  unchanged: number;
+}
+
+/** A target file to materialize, in the listStateFiles shape. */
+export interface TargetFile {
+  path: string;
+  content_hash: string;
+  mode: number;
+}
+
+/**
+ * The single materialize primitive's behavior knobs. All three consumers
+ * (full workspace/context checkout, per-state build-source checkout, git-bridge
+ * export) drive {@link GadVcs.materializeInto} with these.
+ */
+export interface MaterializeIntoOptions {
+  /** Only materialize files under these path prefixes (a prefix matches the
+   *  path itself or any `prefix/...` descendant). Empty/omitted = whole tree. */
+  prefixes?: string[];
+  /** Track presence in a `.gad/CHECKOUT.json` sidecar, enabling cross-call
+   *  incremental reuse and stale-file deletion. Disabled for immutable per-state
+   *  build-source dirs (an existing file is trusted as already-correct). */
+  sidecar?: boolean;
+  /** Where to keep the sidecar (defaults to `dir`). Only meaningful with
+   *  `sidecar`. The git bridge keeps it outside the checked-out tree. */
+  sidecarDir?: string;
+  /** Delete sidecar-tracked files absent from the target (requires `sidecar`).
+   *  Off for sparse/prefix checkouts that only add their subtrees. */
+  deleteStale?: boolean;
+  /** Also delete untracked files not in the target (full clean checkout). */
+  clean?: boolean;
+  /** Hardlink from the CAS instead of copying. Build sources are never edited,
+   *  so linking makes per-state checkouts nearly free; editable worktrees copy
+   *  so an editor can't corrupt the shared CAS inode. */
+  link?: boolean;
+  /** State hash to record in the sidecar (requires `sidecar`). The sidecar's
+   *  `stateHash` is the worktree's last-agreed state; only a full checkout
+   *  (`prefixes` empty) sets it, since a partial write doesn't make the whole
+   *  tree agree with one state. */
+  stateHash?: string;
+}
+
+export interface MaterializeIntoResult {
   written: number;
   deleted: number;
   unchanged: number;
@@ -444,11 +555,35 @@ export class GadVcs {
 
   /**
    * Snapshot a working directory as a `state.snapshot_ingested` transition
-   * on the workspace log (the vcs commit). No-ops (without appending) when
-   * the scan reproduces the sidecar's last agreed state hash.
+   * on a repo's log (the vcs commit). No-ops (without appending) when
+   * the scan reproduces the sidecar's last agreed state hash. `opts.logId`
+   * is required — every snapshot targets a specific repo log.
    */
-  async snapshotDir(dir: string, opts: SnapshotOptions = {}): Promise<SnapshotResult> {
+  async snapshotDir(dir: string, opts: SnapshotOptions): Promise<SnapshotResult> {
     const head = opts.head ?? VCS_MAIN_HEAD;
+    const logId = opts.logId;
+    // A missing working dir is treated as a no-op against the head's current
+    // state. We must NOT scan-and-ingest an "empty" tree — that would wipe the
+    // head. Note the deliberate limitation: "dir absent" is ambiguous between a
+    // sparse context that simply never materialized this repo (the common case —
+    // must NOT delete) and a genuinely removed repo subtree. We cannot tell them
+    // apart from disk alone, and erring toward deletion would wipe every
+    // unmaterialized repo on every scan, so a whole-repo deletion is its own
+    // explicit, approval-gated action (`vcs.deleteRepo` → WorkspaceVcs.deleteRepo,
+    // which archives the repo's history and drops it from main) — never inferred
+    // from an `rm -rf` of this disposable on-disk projection.
+    try {
+      await fsp.access(dir);
+    } catch {
+      const refStateHash0 = await this.resolveWorktreeRef(head, logId);
+      return {
+        stateHash: refStateHash0 ?? EMPTY_STATE_HASH,
+        eventId: "",
+        headHash: "",
+        fileCount: 0,
+        unchanged: true,
+      };
+    }
     const sidecar = await this.readSidecar(dir);
     const scanned = await this.scanDir(dir);
     const { files, entries } = await this.hashFiles(scanned, sidecar);
@@ -460,7 +595,7 @@ export class GadVcs {
     // state, not the sidecar, so it survives sidecar amnesia (P3). The local
     // manifest hash is byte-identical to the DO state hash, avoiding a full
     // state-file table fetch on every unchanged HTML/build request.
-    const refStateHash = await this.resolveWorktreeRef(head);
+    const refStateHash = await this.resolveWorktreeRef(head, logId);
     if (!opts.force) {
       if (refStateHash && refStateHash === manifest.stateHash) {
         await this.writeSidecar(dir, { version: 1, stateHash: refStateHash, files: entries });
@@ -503,7 +638,7 @@ export class GadVcs {
       eventId: string;
       headHash: string;
     }>("ingestWorktreeState", {
-      logId: VCS_LOG_ID,
+      logId,
       head,
       logKind: "vcs",
       actor: vcsLogActor(opts.actor ?? { id: "user", kind: "user" }),
@@ -519,6 +654,7 @@ export class GadVcs {
         ? { expectedRefStateHash: opts.expectedRefStateHash }
         : {}),
       ...(opts.parentStateHashes ? { parentStateHashes: opts.parentStateHashes } : {}),
+      ...(opts.parentEventIds ? { parentEventIds: opts.parentEventIds } : {}),
       ...(opts.eventKind ? { eventKind: opts.eventKind } : {}),
     });
 
@@ -531,25 +667,51 @@ export class GadVcs {
   // -------------------------------------------------------------------------
 
   /**
-   * Write a worktree state into a directory. Incremental: files whose
-   * sidecar entry already matches the target hash are left untouched;
-   * previously-materialized files absent from the target are deleted.
-   * Untracked files are preserved unless `clean`.
+   * THE materialize primitive — "write these subtree(s) of `target` into `dir`,
+   * tracking what's present". Every checkout path funnels through here; the
+   * three historical variants are now just option presets:
+   *
+   *  - **full editable checkout** (workspace root, context-repo subtree, merge
+   *    dirs, git-bridge export): `{ sidecar: true, deleteStale: true }` (+
+   *    `clean` for a pristine tree, `sidecarDir` for the git bridge). Tracks a
+   *    `.gad/CHECKOUT.json` sidecar for incremental reuse and stale-file
+   *    deletion; copies (not links) so editors can't corrupt the CAS.
+   *  - **per-state build source** ({@link materializeSubtrees}): `{ prefixes,
+   *    sidecar: false, link: true }`. The dir is immutable + per-state, so an
+   *    existing file is trusted as already-correct (no sidecar, no deletions)
+   *    and files hardlink from the CAS.
+   *
+   * Invariants preserved across all callers:
+   *  - Deletions run FIRST, before any write, so no rm ever traverses a
+   *    half-transitioned file→dir / dir→file path and no fresh write is clobbered.
+   *  - Stale deletion only happens with a sidecar (`deleteStale`); a sparse
+   *    prefix checkout never deletes outside its subtrees.
+   *  - `clean` additionally removes untracked files (requires a scan).
    */
-  async materializeState(
-    stateHash: string,
+  async materializeInto(
+    target: TargetFile[],
     dir: string,
-    opts: MaterializeOptions = {}
-  ): Promise<MaterializeResult> {
-    const target = await this.deps.gad.call<
-      Array<{ path: string; content_hash: string; mode: number }>
-    >("listStateFiles", { stateHash });
+    opts: MaterializeIntoOptions = {}
+  ): Promise<MaterializeIntoResult> {
+    const useSidecar = opts.sidecar ?? false;
+    const link = opts.link ?? false;
+    const prefixes = opts.prefixes ?? [];
+    const wanted =
+      prefixes.length === 0
+        ? target
+        : target.filter((file) =>
+            prefixes.some((prefix) => file.path === prefix || file.path.startsWith(`${prefix}/`))
+          );
+    const targetPaths = new Set(target.map((file) => file.path));
+
     await fsp.mkdir(dir, { recursive: true });
-    const sidecar = await this.readSidecar(dir, opts.sidecarDir);
+    const sidecar = useSidecar
+      ? await this.readSidecar(dir, opts.sidecarDir)
+      : { version: 1 as const, stateHash: null, files: {} as Record<string, SidecarEntry> };
     const entries: Record<string, SidecarEntry> = {};
     let written = 0;
     let unchanged = 0;
-    const targetPaths = new Set(target.map((file) => file.path));
+    let deleted = 0;
 
     // Deletions FIRST — before any writes. A path can transition type between
     // states (file→dir: old file `foo` becomes the parent of target
@@ -557,54 +719,73 @@ export class GadVcs {
     // stale paths up front, while the on-disk tree still reflects the previous
     // state, means no rm ever traverses a half-transitioned path, and the write
     // loop's freshly-written subtree can't be clobbered by a later deletion of
-    // a now-directory path.
-    let deleted = 0;
-    for (const relPath of Object.keys(sidecar.files)) {
-      if (!targetPaths.has(relPath)) {
-        await this.rmTolerant(safeWorktreeJoin(dir, relPath));
-        deleted += 1;
+    // a now-directory path. Only with a sidecar (we track what we wrote) —
+    // sparse prefix checkouts never delete.
+    if (opts.deleteStale) {
+      for (const relPath of Object.keys(sidecar.files)) {
+        if (!targetPaths.has(relPath)) {
+          await this.rmTolerant(safeWorktreeJoin(dir, relPath));
+          deleted += 1;
+        }
       }
     }
 
-    for (const file of target) {
+    for (const file of wanted) {
       const relPath = file.path;
       const absPath = safeWorktreeJoin(dir, relPath);
-      const prev = sidecar.files[relPath];
-      let reusable = false;
-      if (prev && prev.contentHash === file.content_hash && prev.mode === file.mode) {
+      const executable = file.mode === 33261;
+      const source = blobPath(this.deps.blobsDir, file.content_hash);
+
+      if (useSidecar) {
+        // Sidecar reuse: trust an on-disk file whose tracked (hash, mode) match
+        // and whose (size, mtime) still match what we recorded.
+        const prev = sidecar.files[relPath];
+        let reusable = false;
+        if (prev && prev.contentHash === file.content_hash && prev.mode === file.mode) {
+          try {
+            const stat = await fsp.stat(absPath);
+            reusable = stat.size === prev.size && stat.mtimeMs === prev.mtimeMs;
+          } catch {
+            reusable = false;
+          }
+        }
+        if (reusable && prev) {
+          entries[relPath] = prev;
+          unchanged += 1;
+          continue;
+        }
+      } else {
+        // No sidecar (immutable per-state dir): trust an existing file whose
+        // size matches the source blob — it can only be this content.
         try {
-          const stat = await fsp.stat(absPath);
-          reusable = stat.size === prev.size && stat.mtimeMs === prev.mtimeMs;
+          const [sourceStat, existing] = await Promise.all([fsp.stat(source), fsp.stat(absPath)]);
+          if (existing.isFile() && existing.size === sourceStat.size) {
+            unchanged += 1;
+            continue;
+          }
         } catch {
-          reusable = false;
+          // Missing/unreadable target (or source) — fall through to write.
         }
       }
-      if (reusable && prev) {
-        entries[relPath] = prev;
-        unchanged += 1;
-        continue;
-      }
+
       // An ancestor path component may currently exist on disk as a
       // non-directory (a now-stale file at a path that must become a directory,
       // whether sidecar-tracked or untracked/external) — remove it so the
       // recursive mkdir below can create the directory chain.
       await this.clearNonDirAncestors(dir, relPath);
       await fsp.mkdir(path.dirname(absPath), { recursive: true });
-      const source = blobPath(this.deps.blobsDir, file.content_hash);
-      // Copy (not hardlink) into the worktree: worktree files are editable
-      // and a hardlink would let an editor corrupt the CAS in place.
-      await fsp.rm(absPath, { force: true, recursive: true });
-      await fsp.copyFile(source, absPath);
-      const executable = file.mode === 33261;
-      await fsp.chmod(absPath, executable ? 0o755 : 0o644);
-      const stat = await fsp.stat(absPath);
-      entries[relPath] = {
-        contentHash: file.content_hash,
-        size: stat.size,
-        mtimeMs: stat.mtimeMs,
-        mode: file.mode,
-      };
+      await this.writeMaterializedFile(source, absPath, { executable, link });
       written += 1;
+
+      if (useSidecar) {
+        const stat = await fsp.stat(absPath);
+        entries[relPath] = {
+          contentHash: file.content_hash,
+          size: stat.size,
+          mtimeMs: stat.mtimeMs,
+          mode: file.mode,
+        };
+      }
     }
 
     if (opts.clean) {
@@ -617,10 +798,75 @@ export class GadVcs {
         }
       }
     }
-    await this.pruneEmptyDirs(dir);
 
-    await this.writeSidecar(dir, { version: 1, stateHash, files: entries }, opts.sidecarDir);
+    if (useSidecar) {
+      await this.pruneEmptyDirs(dir);
+      await this.writeSidecar(
+        dir,
+        { version: 1, stateHash: opts.stateHash ?? sidecar.stateHash, files: entries },
+        opts.sidecarDir
+      );
+    }
+    return { written, deleted, unchanged };
+  }
+
+  /**
+   * Full editable checkout of a state into a directory (workspace root,
+   * context-repo subtree, merge dirs, git-bridge export). Thin preset over
+   * {@link materializeInto}: sidecar-tracked + stale-file deletion, copies (not
+   * links). See that method for the invariants.
+   */
+  async materializeState(
+    stateHash: string,
+    dir: string,
+    opts: MaterializeOptions = {}
+  ): Promise<MaterializeResult> {
+    const target = await this.listStateFiles(stateHash);
+    const { written, deleted, unchanged } = await this.materializeInto(target, dir, {
+      sidecar: true,
+      deleteStale: true,
+      stateHash,
+      ...(opts.clean ? { clean: true } : {}),
+      ...(opts.sidecarDir ? { sidecarDir: opts.sidecarDir } : {}),
+    });
     return { stateHash, written, deleted, unchanged };
+  }
+
+  /**
+   * Materialize only the given path prefixes of a state into `dir`
+   * (build-source checkouts). The dir is per-state and immutable, so an
+   * existing file is trusted as already-correct — no sidecar, no deletions.
+   * Hardlinks from the CAS by default. Thin preset over {@link materializeInto}.
+   */
+  async materializeSubtrees(
+    stateHash: string,
+    dir: string,
+    prefixes: string[],
+    opts: { link?: boolean } = {}
+  ): Promise<{ written: number }> {
+    const target = await this.listStateFiles(stateHash);
+    return this.materializeFileList(target, dir, prefixes, opts);
+  }
+
+  /** Same as {@link materializeSubtrees} but over an explicit file list
+   *  (bootstrap path: the list comes from a local scan, not the DO). */
+  async materializeFileList(
+    target: TargetFile[],
+    dir: string,
+    prefixes: string[],
+    opts: { link?: boolean } = {}
+  ): Promise<{ written: number }> {
+    const { written } = await this.materializeInto(target, dir, {
+      prefixes,
+      sidecar: false,
+      link: opts.link ?? true,
+    });
+    return { written };
+  }
+
+  /** The DO's listStateFiles in the {@link TargetFile} shape. */
+  async listStateFiles(stateHash: string): Promise<TargetFile[]> {
+    return this.deps.gad.call<TargetFile[]>("listStateFiles", { stateHash });
   }
 
   /** Recursive remove that tolerates a missing path or an ancestor that is not
@@ -654,61 +900,6 @@ export class GadVcs {
     }
   }
 
-  /**
-   * Materialize only the given path prefixes of a state into `dir`
-   * (build-source checkouts). The dir is per-state and immutable, so an
-   * existing file is trusted as already-correct — no sidecar, no deletions.
-   * Hardlinks from the CAS by default: build sources are never edited, and
-   * linking makes per-state checkouts nearly free.
-   */
-  async materializeSubtrees(
-    stateHash: string,
-    dir: string,
-    prefixes: string[],
-    opts: { link?: boolean } = {}
-  ): Promise<{ written: number }> {
-    const target = await this.deps.gad.call<
-      Array<{ path: string; content_hash: string; mode: number }>
-    >("listStateFiles", { stateHash });
-    return this.materializeFileList(target, dir, prefixes, opts);
-  }
-
-  /** Same as {@link materializeSubtrees} but over an explicit file list
-   *  (bootstrap path: the list comes from a local scan, not the DO). */
-  async materializeFileList(
-    target: Array<{ path: string; content_hash: string; mode: number }>,
-    dir: string,
-    prefixes: string[],
-    opts: { link?: boolean } = {}
-  ): Promise<{ written: number }> {
-    const link = opts.link ?? true;
-    const wanted =
-      prefixes.length === 0
-        ? target
-        : target.filter((file) =>
-            prefixes.some((prefix) => file.path === prefix || file.path.startsWith(`${prefix}/`))
-          );
-    let written = 0;
-    for (const file of wanted) {
-      const absPath = safeWorktreeJoin(dir, file.path);
-      const source = blobPath(this.deps.blobsDir, file.content_hash);
-      const sourceStat = await fsp.stat(source);
-      try {
-        const existing = await fsp.stat(absPath);
-        if (existing.isFile() && existing.size === sourceStat.size) continue;
-      } catch {
-        // Missing or unreadable: rewrite below.
-      }
-      await fsp.mkdir(path.dirname(absPath), { recursive: true });
-      const executable = file.mode === 33261;
-      // Executables are copied (chmod on a hardlink would mutate the shared
-      // CAS inode); regular files hardlink with copy fallback.
-      await this.writeMaterializedFile(source, absPath, { executable, link });
-      written += 1;
-    }
-    return { written };
-  }
-
   private async writeMaterializedFile(
     source: string,
     absPath: string,
@@ -732,6 +923,10 @@ export class GadVcs {
       await fsp.copyFile(source, tmp);
       await fsp.chmod(tmp, opts.executable ? 0o755 : 0o644);
     }
+    // The target may exist as a directory (dir→file transition) — rename onto a
+    // directory fails (EISDIR/ENOTEMPTY), so clear it first. (rename atomically
+    // replaces a pre-existing regular file, so no rm needed in that case.)
+    await fsp.rm(absPath, { force: true, recursive: true }).catch(() => {});
     await fsp.rename(tmp, absPath);
   }
 
@@ -764,29 +959,40 @@ export class GadVcs {
   // Refs / log / diff passthroughs
   // -------------------------------------------------------------------------
 
-  async resolveWorktreeRef(head: string): Promise<string | null> {
-    const ref = await this.deps.gad.call<{ target?: { stateHash?: string } } | null>("resolveRef", {
-      refName: vcsWorktreeRefName(head),
-    });
-    return ref?.target?.stateHash ?? null;
+  async resolveWorktreeRef(head: string, logId: string): Promise<string | null> {
+    const resolved = await this.resolveWorktreeHead(head, logId);
+    return resolved?.stateHash ?? null;
   }
 
-  /** Fork the workspace main head into a context head (no-copy forkLog). */
-  async forkContext(contextId: string): Promise<{ head: string; stateHash: string | null }> {
+  async resolveWorktreeHead(head: string, logId: string): Promise<WorktreeHeadRef | null> {
+    const resolved = await this.deps.gad.call<WorktreeHeadRef | null>("resolveWorktreeHead", {
+      logId,
+      head,
+    });
+    return resolved ?? null;
+  }
+
+  /** Fork a repo's main head into a context head on that repo's log (no-copy
+   *  forkLog). Per-repo VCS: contexts edit a repo via `ctx:{id}` on
+   *  `vcs:repo:<path>`. */
+  async forkContext(
+    contextId: string,
+    logId: string
+  ): Promise<{ head: string; stateHash: string | null }> {
     const head = vcsContextHead(contextId);
     const existing = await this.deps.gad.call<unknown>("getLogHead", {
-      logId: VCS_LOG_ID,
+      logId,
       head,
     });
     if (!existing) {
       await this.deps.gad.call("forkLog", {
-        fromLogId: VCS_LOG_ID,
+        fromLogId: logId,
         fromHead: VCS_MAIN_HEAD,
-        toLogId: VCS_LOG_ID,
+        toLogId: logId,
         toHead: head,
       });
     }
-    return { head, stateHash: await this.resolveWorktreeRef(head) };
+    return { head, stateHash: await this.resolveWorktreeRef(head, logId) };
   }
 
   async diffStates(

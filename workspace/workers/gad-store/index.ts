@@ -51,6 +51,8 @@ const GAD_REQUIRED_TABLES = [
   "log_heads",
   "log_events",
   "log_blob_refs",
+  "gad_worktree_heads",
+  "vcs_context_bases",
   "refs",
   "ref_log",
   "trajectory_turns",
@@ -187,14 +189,22 @@ export interface RefRecord {
   updatedAt: string;
 }
 
+export interface WorktreeHeadRecord {
+  logId: string;
+  head: string;
+  stateHash: string;
+  commitEventId: string | null;
+  updatedAt: string;
+}
+
 export interface IngestWorktreeStateInput {
   files: Array<{ path: string; contentHash: string; size?: number | null; mode?: number | null }>;
   baseStateHash?: string | null;
   parentStateHashes?: string[] | null;
+  parentEventIds?: string[] | null;
   logId: string;
   head: string;
   logKind?: LogKind | string | null;
-  ref?: string | null;
   expectedRefStateHash?: string | null;
   actor: ParticipantRef;
   summary?: string | null;
@@ -203,7 +213,9 @@ export interface IngestWorktreeStateInput {
   /** Transition kind: ordinary snapshot (default) or a completed merge. */
   eventKind?: "state.snapshot_ingested" | "state.merge_applied" | null;
   /** The op union that authored this commit (provenance/intent), recorded in
-   *  gad_worktree_edit_ops keyed to the transition event. */
+   *  gad_worktree_edit_ops keyed to the transition event as COMMITTED rows
+   *  (used by bootstrap/merge/fork commits — the working edit→commit path
+   *  re-keys existing rows via {@link commitRepo} instead). */
   editOps?: Array<{
     kind: "replace" | "write" | "create" | "delete" | "chmod";
     path: string;
@@ -212,6 +224,10 @@ export interface IngestWorktreeStateInput {
     hunks?: unknown;
     mode?: number | null;
   }> | null;
+  /** Causality (agent turn / tool-call that authored this commit) — recorded on
+   *  the edit-op rows so VCS provenance ties to the agentic trajectory. */
+  invocationId?: string | null;
+  turnId?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -487,6 +503,17 @@ function quoteIdentifier(identifier: string): string {
   return `"${identifier.replace(/"/gu, '""')}"`;
 }
 
+function stringPrefixUpperBound(prefix: string): string | null {
+  const codePoints = Array.from(prefix);
+  for (let index = codePoints.length - 1; index >= 0; index -= 1) {
+    const value = codePoints[index]!.codePointAt(0)!;
+    if (value < 0x10ffff) {
+      return `${codePoints.slice(0, index).join("")}${String.fromCodePoint(value + 1)}`;
+    }
+  }
+  return null;
+}
+
 function normalizePath(path: string): string {
   const normalized = path.replace(/\\/gu, "/").replace(/\/+/gu, "/").replace(/^\.\//u, "");
   if (!normalized || normalized.startsWith("/") || normalized.split("/").includes("..")) {
@@ -616,6 +643,50 @@ function findPrivateParticipantMetadataPath(value: unknown, path = "$"): string 
   return null;
 }
 
+function sanitizeRosterMethodSummaries(methods: unknown): unknown[] {
+  const publicMethods = publicParticipantMetadata({ methods })?.methods;
+  return publicMethods ?? [];
+}
+
+function sanitizeRosterSnapshotPayload(payload: unknown): unknown {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return payload;
+  const record = payload as Record<string, unknown>;
+  const details = record["details"];
+  if (!details || typeof details !== "object" || Array.isArray(details)) return payload;
+  const detailsRecord = details as Record<string, unknown>;
+  if (detailsRecord["kind"] !== "roster.snapshot" && record["kind"] !== "roster.snapshot") {
+    return payload;
+  }
+  const roster = detailsRecord["roster"];
+  if (!roster || typeof roster !== "object" || Array.isArray(roster)) return payload;
+  const rosterRecord = roster as Record<string, unknown>;
+  if (!Array.isArray(rosterRecord["participants"])) return payload;
+
+  return {
+    ...record,
+    details: {
+      ...detailsRecord,
+      roster: {
+        ...rosterRecord,
+        participants: rosterRecord["participants"].map((participant) => {
+          if (!participant || typeof participant !== "object" || Array.isArray(participant)) {
+            return participant;
+          }
+          const participantRecord = participant as Record<string, unknown>;
+          const ref = participantRecord["ref"];
+          return {
+            ...participantRecord,
+            ...(ref && typeof ref === "object" && !Array.isArray(ref)
+              ? { ref: publicParticipantRef(ref as ParticipantRef) }
+              : {}),
+            methods: sanitizeRosterMethodSummaries(participantRecord["methods"]),
+          };
+        }),
+      },
+    },
+  };
+}
+
 function sanitizeAudience(
   audience: ParticipantRef[] | ParticipantSelector | null | undefined
 ): ParticipantRef[] | ParticipantSelector | undefined {
@@ -713,9 +784,23 @@ interface ProjectionKey {
 }
 
 export class GadWorkspaceDO extends DurableObjectBase {
+  // v21: worktree heads carry explicit commit_event_id, so commit ancestry is
+  // keyed by event identity instead of reverse-looking-up a producer by state
+  // hash.
+  // v20: schema cut for structured heads. Current log pointers live on
+  // log_heads(current_*), worktree states live in gad_worktree_heads, and
+  // context base pins live in vcs_context_bases. VCS no longer stores or
+  // discovers head state through encoded generic refs.
+  // v19: VCS edits→commits→push re-architecture. gad_worktree_edit_ops gains
+  // working-edit provenance (log_id, head, committed_event_id, committed_seq,
+  // edit_seq, created_at, actor_id, actor_json, invocation_id, turn_id) and makes
+  // output_state_hash NULLABLE (NULL ⇒ uncommitted/working row); event_id stays
+  // NOT NULL (synthetic per-edit-call id for working rows). gad_transition_parents
+  // gains parent_event_id (event-keyed commit DAG, so distinct commits with
+  // identical content states don't conflate).
   // v18: schema cut removes unimplemented knowledge sidecar projection tables.
   // v17 changed envelope hash preimage format v2 (length-prefixed fields).
-  static override schemaVersion = 18;
+  static override schemaVersion = 21;
 
   constructor(ctx: ConstructorParameters<typeof DurableObjectBase>[0], env: unknown) {
     super(ctx, env);
@@ -745,7 +830,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
            AND (
              name LIKE 'trajectory_%' OR name LIKE 'channel_%' OR name LIKE 'gad_%'
              OR name LIKE 'log_%'
-             OR name IN ('refs', 'ref_log', 'branches', 'sessions', 'conversation_turns',
+             OR name IN ('vcs_context_bases', 'refs', 'ref_log', 'branches', 'sessions', 'conversation_turns',
                          'tool_calls', 'file_versions', 'tracked_files', 'blobs')
            )`
       )
@@ -785,6 +870,9 @@ export class GadWorkspaceDO extends DurableObjectBase {
         parent_head TEXT,
         fork_seq INTEGER,
         fork_hash TEXT,
+        current_seq INTEGER NOT NULL DEFAULT 0,
+        current_hash TEXT NOT NULL DEFAULT '${GENESIS_EVENT_HASH}',
+        current_envelope_id TEXT,
         created_at TEXT NOT NULL,
         PRIMARY KEY (log_id, head)
       )
@@ -834,6 +922,29 @@ export class GadWorkspaceDO extends DurableObjectBase {
       )
     `);
     this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_log_blob_refs_digest ON log_blob_refs(digest)`);
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS gad_worktree_heads (
+        log_id TEXT NOT NULL,
+        head TEXT NOT NULL,
+        state_hash TEXT NOT NULL,
+        commit_event_id TEXT,
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (log_id, head)
+      )
+    `);
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_gad_worktree_heads_head ON gad_worktree_heads(head, log_id)`
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_gad_worktree_heads_commit ON gad_worktree_heads(commit_event_id)`
+    );
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS vcs_context_bases (
+        context_id TEXT PRIMARY KEY,
+        state_hash TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+      )
+    `);
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS refs (
         ref_name TEXT PRIMARY KEY,
@@ -910,6 +1021,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
     `);
     this.sql.exec(
       `CREATE INDEX IF NOT EXISTS idx_trajectory_invocations_transport ON trajectory_invocations(transport_call_id)`
+    );
+    // invocation→turn traversal (file → edit → invocation → turn): editsByTurn
+    // joins edit-op rows to their invocation's turn through this.
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_trajectory_invocations_turn ON trajectory_invocations(turn_id)`
     );
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS trajectory_invocation_outputs (
@@ -1050,10 +1166,21 @@ export class GadWorkspaceDO extends DurableObjectBase {
       CREATE TABLE IF NOT EXISTS gad_transition_parents (
         event_id TEXT NOT NULL,
         parent_state_hash TEXT NOT NULL,
+        parent_event_id TEXT,
         ordinal INTEGER NOT NULL,
         PRIMARY KEY (event_id, ordinal)
       )
     `);
+    // Event-keyed commit DAG: walk child→parents (idx_event) and parent→children
+    // (idx_parent_event). Commit identity is event_id, never output_state_hash
+    // (content dedupes, so a clean-merge commit can share a state with an
+    // existing commit) — so ancestry traverses parent_event_id.
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_gad_transition_parents_event ON gad_transition_parents(event_id)`
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_gad_transition_parents_parent_event ON gad_transition_parents(parent_event_id)`
+    );
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS gad_file_observations (
         observation_id TEXT PRIMARY KEY,
@@ -1117,18 +1244,51 @@ export class GadWorkspaceDO extends DurableObjectBase {
       CREATE TABLE IF NOT EXISTS gad_worktree_edit_ops (
         id INTEGER PRIMARY KEY,
         event_id TEXT NOT NULL,
-        output_state_hash TEXT NOT NULL,
+        log_id TEXT,
+        head TEXT,
+        committed_event_id TEXT,
+        committed_seq INTEGER,
+        edit_seq INTEGER,
+        output_state_hash TEXT,
         ordinal INTEGER NOT NULL,
         kind TEXT NOT NULL,
         path TEXT NOT NULL,
         old_content_hash TEXT,
         new_content_hash TEXT,
         hunks_json TEXT,
-        mode INTEGER
+        mode INTEGER,
+        actor_id TEXT,
+        actor_json TEXT,
+        invocation_id TEXT,
+        turn_id TEXT,
+        created_at TEXT
       )
     `);
+    // Two sequencing orders: edit_seq is per edit CALL on a (log_id, head) and
+    // defines working REPLAY order (edit_seq, ordinal); committed_seq is the
+    // owning commit's log seq and defines COMMIT-lineage order for blame.
+    // committed_event_id NULL ⇒ uncommitted/working; output_state_hash NULL for
+    // working rows (set to the commit state at commit).
     this.sql.exec(
-      `CREATE INDEX IF NOT EXISTS idx_gad_edit_ops_event ON gad_worktree_edit_ops(event_id)`
+      `CREATE INDEX IF NOT EXISTS idx_edit_ops_commit ON gad_worktree_edit_ops(committed_event_id)` // commit→edits
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_edit_ops_working ON gad_worktree_edit_ops(log_id, head, committed_event_id, edit_seq, ordinal)`
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_edit_ops_path ON gad_worktree_edit_ops(log_id, path, committed_seq, edit_seq, ordinal)` // file blame in COMMIT-lineage order
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_edit_ops_actor ON gad_worktree_edit_ops(actor_id)`
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_edit_ops_turn ON gad_worktree_edit_ops(turn_id)` // causal: edits in a turn
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_edit_ops_invoc ON gad_worktree_edit_ops(invocation_id)` // causal: edits in a tool-call
+    );
+    this.sql.exec(
+      `CREATE INDEX IF NOT EXISTS idx_gad_edit_ops_output ON gad_worktree_edit_ops(output_state_hash)` // legacy listWorktreeEditOps
     );
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS gad_claims (
@@ -1179,7 +1339,138 @@ export class GadWorkspaceDO extends DurableObjectBase {
   }
 
   // -------------------------------------------------------------------------
-  // Refs — the only mutable pointers (P1). Every update is CAS + reflog.
+  // Structured mutable heads
+  // -------------------------------------------------------------------------
+
+  private mapWorktreeHead(row: JsonRecord): WorktreeHeadRecord {
+    return {
+      logId: String(row["log_id"]),
+      head: String(row["head"]),
+      stateHash: String(row["state_hash"]),
+      commitEventId: asString(row["commit_event_id"]),
+      updatedAt: String(row["updated_at"]),
+    };
+  }
+
+  private resolveWorktreeHeadInternal(logId: string, head: string): WorktreeHeadRecord | null {
+    const row = this.sql
+      .exec(`SELECT * FROM gad_worktree_heads WHERE log_id = ? AND head = ?`, logId, head)
+      .toArray()[0] as JsonRecord | undefined;
+    return row ? this.mapWorktreeHead(row) : null;
+  }
+
+  private setWorktreeHead(
+    logId: string,
+    head: string,
+    stateHash: string,
+    commitEventId: string | null
+  ): WorktreeHeadRecord {
+    const updatedAt = nowIso();
+    this.sql.exec(
+      `INSERT INTO gad_worktree_heads (log_id, head, state_hash, commit_event_id, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(log_id, head) DO UPDATE SET
+         state_hash = excluded.state_hash,
+         commit_event_id = excluded.commit_event_id,
+         updated_at = excluded.updated_at`,
+      logId,
+      head,
+      stateHash,
+      commitEventId,
+      updatedAt
+    );
+    return { logId, head, stateHash, commitEventId, updatedAt };
+  }
+
+  private deleteWorktreeHeadInternal(logId: string, head: string): { deleted: number } {
+    const existed = this.resolveWorktreeHeadInternal(logId, head) != null;
+    this.sql.exec(`DELETE FROM gad_worktree_heads WHERE log_id = ? AND head = ?`, logId, head);
+    return { deleted: existed ? 1 : 0 };
+  }
+
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  resolveWorktreeHead(input: { logId: string; head: string }): WorktreeHeadRecord | null {
+    this.ensureReady();
+    return this.resolveWorktreeHeadInternal(input.logId, input.head);
+  }
+
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  listWorktreeHeads(
+    input: { logId?: string | null; logIdPrefix?: string | null; head?: string | null } = {}
+  ): WorktreeHeadRecord[] {
+    this.ensureReady();
+    const clauses: string[] = [];
+    const bindings: SqlBinding[] = [];
+    if (input.logId) {
+      clauses.push("log_id = ?");
+      bindings.push(input.logId);
+    }
+    if (input.logIdPrefix) {
+      const upper = stringPrefixUpperBound(input.logIdPrefix);
+      clauses.push(upper ? "(log_id >= ? AND log_id < ?)" : "log_id >= ?");
+      bindings.push(input.logIdPrefix);
+      if (upper) bindings.push(upper);
+    }
+    if (input.head) {
+      clauses.push("head = ?");
+      bindings.push(input.head);
+    }
+    const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+    return (
+      this.sql
+        .exec(`SELECT * FROM gad_worktree_heads ${where} ORDER BY log_id ASC, head ASC`, ...bindings)
+        .toArray() as JsonRecord[]
+    ).map((row) => this.mapWorktreeHead(row));
+  }
+
+  @rpc({ callers: ["do", "server"] })
+  deleteWorktreeHead(input: { logId: string; head: string }): { deleted: number } {
+    this.ensureReady();
+    return this.deleteWorktreeHeadInternal(input.logId, input.head);
+  }
+
+  @rpc({ callers: ["do", "server"] })
+  setContextBase(input: { contextId: string; stateHash: string }): {
+    contextId: string;
+    stateHash: string;
+    updatedAt: string;
+  } {
+    this.ensureReady();
+    const updatedAt = nowIso();
+    this.sql.exec(
+      `INSERT INTO vcs_context_bases (context_id, state_hash, updated_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT(context_id) DO UPDATE SET
+         state_hash = excluded.state_hash,
+         updated_at = excluded.updated_at`,
+      input.contextId,
+      input.stateHash,
+      updatedAt
+    );
+    return { contextId: input.contextId, stateHash: input.stateHash, updatedAt };
+  }
+
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  getContextBase(input: { contextId: string }): { contextId: string; stateHash: string } | null {
+    this.ensureReady();
+    const row = this.sql
+      .exec(`SELECT context_id, state_hash FROM vcs_context_bases WHERE context_id = ?`, input.contextId)
+      .toArray()[0] as JsonRecord | undefined;
+    return row
+      ? { contextId: String(row["context_id"]), stateHash: String(row["state_hash"]) }
+      : null;
+  }
+
+  @rpc({ callers: ["do", "server"] })
+  deleteContextBase(input: { contextId: string }): { deleted: number } {
+    this.ensureReady();
+    const existed = this.getContextBase(input) != null;
+    this.sql.exec(`DELETE FROM vcs_context_bases WHERE context_id = ?`, input.contextId);
+    return { deleted: existed ? 1 : 0 };
+  }
+
+  // -------------------------------------------------------------------------
+  // Generic refs — tag-style mutable pointers. VCS heads do not live here.
   // -------------------------------------------------------------------------
 
   @rpc({ callers: ["panel", "do", "worker", "server"] })
@@ -1247,8 +1538,182 @@ export class GadWorkspaceDO extends DurableObjectBase {
     return { refName: input.refName, kind: input.kind, target: input.target, updatedAt: now };
   }
 
-  private deleteRefInternal(refName: string): void {
-    this.sql.exec(`DELETE FROM refs WHERE ref_name = ?`, refName);
+  @rpc({ callers: ["do", "server"] })
+  deleteRef(input: { refName: string }): { deleted: number } {
+    this.ensureReady();
+    const existed = this.resolveRef({ refName: input.refName }) != null;
+    this.sql.exec(`DELETE FROM refs WHERE ref_name = ?`, input.refName);
+    return { deleted: existed ? 1 : 0 };
+  }
+
+  /**
+   * Fully retire a log head: delete its own log_events (post-fork events only —
+   * inherited events live on the parent), its log_heads row, BOTH its refs
+   * (log-head pointer + worktree), and its edit-op rows. Deleting only the refs
+   * (leaving the log_heads row + chain) leaves headPointer falling back to a
+   * stale fork pointer that disagrees with the chain — the dropContext
+   * integrity hazard. Atomic; idempotent.
+   */
+  @rpc({ callers: ["do", "server"] })
+  deleteLogHead(input: { logId: string; head: string }): { deleted: boolean } {
+    this.ensureReady();
+    return this.transaction(() => {
+      const existed = this.logHeadRow(input.logId, input.head) != null;
+      // This head's OWN events (post-fork; inherited ones live on the parent).
+      const eventIds = (
+        this.sql
+          .exec(
+            `SELECT envelope_id FROM log_events WHERE log_id = ? AND head = ?`,
+            input.logId,
+            input.head
+          )
+          .toArray() as JsonRecord[]
+      )
+        .map((r) => asString(r["envelope_id"]))
+        .filter((id): id is string => !!id);
+      // Drop the commit transitions these events produced — else they orphan
+      // (validateGadHashes flags "transition event is missing"). The STATES they
+      // produced are content-addressed and survive (also produced by the main
+      // push commit + GC-refcounted); committed edit-op rows survive too (blame
+      // is keyed by log_id+path, not the dropped head's events).
+      for (const eventId of eventIds) {
+        this.sql.exec(`DELETE FROM gad_transition_parents WHERE event_id = ?`, eventId);
+        this.sql.exec(`DELETE FROM gad_state_transitions WHERE event_id = ?`, eventId);
+      }
+      this.sql.exec(
+        `DELETE FROM log_events WHERE log_id = ? AND head = ?`,
+        input.logId,
+        input.head
+      );
+      this.sql.exec(`DELETE FROM log_heads WHERE log_id = ? AND head = ?`, input.logId, input.head);
+      // Drop only this head's UNCOMMITTED edit-ops (its committed rows are blame
+      // provenance keyed by log_id+path and must survive context teardown — they
+      // still resolve via fileHistory even after the head's log is gone).
+      this.sql.exec(
+        `DELETE FROM gad_worktree_edit_ops WHERE log_id = ? AND head = ? AND committed_event_id IS NULL`,
+        input.logId,
+        input.head
+      );
+      this.deleteWorktreeHeadInternal(input.logId, input.head);
+      this.deleteStateValue(`merge:${input.logId}:${input.head}`);
+      return { deleted: existed };
+    });
+  }
+
+  @rpc({ callers: ["do", "server"] })
+  deleteRefsByPrefix(input: { prefix: string }): { deleted: number } {
+    this.ensureReady();
+    const upper = stringPrefixUpperBound(input.prefix);
+    const rows = this.sql
+      .exec(
+        upper
+          ? `SELECT ref_name FROM refs WHERE ref_name >= ? AND ref_name < ?`
+          : `SELECT ref_name FROM refs WHERE ref_name >= ?`,
+        ...(upper ? [input.prefix, upper] : [input.prefix])
+      )
+      .toArray() as JsonRecord[];
+    for (const row of rows) {
+      this.sql.exec(`DELETE FROM refs WHERE ref_name = ?`, String(row["ref_name"]));
+    }
+    return { deleted: rows.length };
+  }
+
+  /**
+   * Archive a repo log's `main` head: move its ENTIRE lineage — the `log_heads`
+   * row, every `log_events`/`log_blob_refs` row, and the worktree + log-head refs
+   * — onto a fresh, non-`main` archive head, then drop the repo's derived recall
+   * index. The repo thereby leaves the live worktree-ref set (so it drops out of
+   * the composed workspace view / global state), while its full history is
+   * preserved under `archiveHead` and stays restorable (re-point `main` at it).
+   *
+   * Moving only the `head` column is integrity-safe: events are linked by content
+   * hash (`hash`/`prev_hash`), not by head name, so the chain is unchanged. A
+   * future repo created at the same path gets a clean `main` (no inherited
+   * history). Idempotent: returns `archived:false` when there is no `main`
+   * worktree head. `archiveHead` must be unique (the caller derives it).
+   */
+  @rpc({ callers: ["do", "server"] })
+  archiveRepoMain(input: { logId: string; archiveHead: string }): {
+    archived: boolean;
+    archiveHead: string | null;
+    stateHash: string | null;
+    headHash: string | null;
+  } {
+    this.ensureReady();
+    const { logId, archiveHead } = input;
+    const MAIN = "main";
+    if (!archiveHead || archiveHead === MAIN) {
+      throw new Error(`archiveRepoMain: invalid archive head ${JSON.stringify(archiveHead)}`);
+    }
+    const mainWorktree = this.resolveWorktreeHeadInternal(logId, MAIN);
+    if (!mainWorktree) {
+      return { archived: false, archiveHead: null, stateHash: null, headHash: null };
+    }
+    if (this.logHeadRow(logId, archiveHead) || this.resolveWorktreeHeadInternal(logId, archiveHead)) {
+      throw new Error(`archiveRepoMain: archive head already exists: ${logId}:${archiveHead}`);
+    }
+    const stateHash = mainWorktree.stateHash;
+    const mainLog = this.headPointer(logId, MAIN);
+    const headHash = mainLog.hash;
+
+    // Re-key the head's lineage main → archiveHead (events/blobs keep their
+    // content hashes — the parent chain is hash-linked, not head-linked).
+    this.sql.exec(`UPDATE log_heads SET head = ? WHERE log_id = ? AND head = ?`, archiveHead, logId, MAIN);
+    this.sql.exec(`UPDATE log_events SET head = ? WHERE log_id = ? AND head = ?`, archiveHead, logId, MAIN);
+    this.sql.exec(`UPDATE log_blob_refs SET head = ? WHERE log_id = ? AND head = ?`, archiveHead, logId, MAIN);
+    this.sql.exec(`UPDATE gad_worktree_heads SET head = ? WHERE log_id = ? AND head = ?`, archiveHead, logId, MAIN);
+
+    // The recall index is a derived projection — drop the repo's `main` rows so an
+    // archived repo never surfaces in recall (re-foldable if it is ever restored).
+    // ensureMemoryIndex first: the FTS table is created lazily on first use.
+    this.ensureMemoryIndex();
+    this.sql.exec(`DELETE FROM gad_memory_fts WHERE log_id = ? AND head = ?`, logId, MAIN);
+
+    return { archived: true, archiveHead, stateHash, headHash };
+  }
+
+  /**
+   * Reverse of {@link archiveRepoMain}: move an archived head's lineage back onto
+   * `main`, recovering a deleted repo. Atomic on the single-threaded DO, so the
+   * "no live main" guard and the move cannot interleave — it THROWS if a `main`
+   * already exists (a different repo was slotted in at this path since deletion)
+   * rather than clobbering it. Returns `restored:false` when `archiveHead` is
+   * absent (nothing to restore).
+   */
+  @rpc({ callers: ["do", "server"] })
+  restoreRepoMain(input: { logId: string; archiveHead: string }): {
+    restored: boolean;
+    archiveHead: string | null;
+    stateHash: string | null;
+    headHash: string | null;
+  } {
+    this.ensureReady();
+    const { logId, archiveHead } = input;
+    const MAIN = "main";
+    if (!archiveHead || archiveHead === MAIN) {
+      throw new Error(`restoreRepoMain: invalid archive head ${JSON.stringify(archiveHead)}`);
+    }
+    // Concurrency guard: refuse to clobber a repo that now occupies this path.
+    if (this.resolveWorktreeHeadInternal(logId, MAIN)) {
+      throw new Error(
+        `restoreRepoMain: ${logId} already has a live main — a different repo occupies this path`
+      );
+    }
+    const archWorktree = this.resolveWorktreeHeadInternal(logId, archiveHead);
+    if (!archWorktree) {
+      return { restored: false, archiveHead: null, stateHash: null, headHash: null };
+    }
+    const stateHash = archWorktree.stateHash;
+    const archLog = this.headPointer(logId, archiveHead);
+    const headHash = archLog.hash;
+
+    // Re-key the archive head's lineage back to `main`.
+    this.sql.exec(`UPDATE log_heads SET head = ? WHERE log_id = ? AND head = ?`, MAIN, logId, archiveHead);
+    this.sql.exec(`UPDATE log_events SET head = ? WHERE log_id = ? AND head = ?`, MAIN, logId, archiveHead);
+    this.sql.exec(`UPDATE log_blob_refs SET head = ? WHERE log_id = ? AND head = ?`, MAIN, logId, archiveHead);
+    this.sql.exec(`UPDATE gad_worktree_heads SET head = ? WHERE log_id = ? AND head = ?`, MAIN, logId, archiveHead);
+
+    return { restored: true, archiveHead, stateHash, headHash };
   }
 
   @rpc({ callers: ["panel", "do", "worker", "server"] })
@@ -1261,8 +1726,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
       bindings.push(input.kind);
     }
     if (input.prefix) {
-      clauses.push("ref_name LIKE ?");
-      bindings.push(`${input.prefix}%`);
+      const upper = stringPrefixUpperBound(input.prefix);
+      clauses.push(upper ? "(ref_name >= ? AND ref_name < ?)" : "ref_name >= ?");
+      bindings.push(input.prefix);
+      if (upper) bindings.push(upper);
     }
     const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
     return (
@@ -1288,14 +1755,6 @@ export class GadWorkspaceDO extends DurableObjectBase {
         limit
       )
       .toArray() as JsonRecord[];
-  }
-
-  private logHeadRefName(logId: string, head: string): string {
-    return `log:${logId}:${head}`;
-  }
-
-  private worktreeRefName(logId: string, head: string): string {
-    return `worktree:${logId}:${head}`;
   }
 
   // -------------------------------------------------------------------------
@@ -1337,21 +1796,12 @@ export class GadWorkspaceDO extends DurableObjectBase {
     head: string,
     headRow?: JsonRecord | null
   ): { seq: number; hash: string; envelopeId: string | null } {
-    const ref = this.resolveRef({ refName: this.logHeadRefName(logId, head) });
-    if (ref && ref.target && typeof ref.target === "object") {
-      const target = ref.target as Record<string, unknown>;
-      return {
-        seq: asNumber(target["seq"]),
-        hash: String(target["hash"] ?? GENESIS_EVENT_HASH),
-        envelopeId: asString(target["envelopeId"]),
-      };
-    }
     const row = headRow ?? this.logHeadRow(logId, head);
-    if (row && row["fork_seq"] != null) {
+    if (row) {
       return {
-        seq: asNumber(row["fork_seq"]),
-        hash: asString(row["fork_hash"]) ?? GENESIS_EVENT_HASH,
-        envelopeId: null,
+        seq: asNumber(row["current_seq"]),
+        hash: asString(row["current_hash"]) ?? GENESIS_EVENT_HASH,
+        envelopeId: asString(row["current_envelope_id"]),
       };
     }
     return { seq: 0, hash: GENESIS_EVENT_HASH, envelopeId: null };
@@ -1785,11 +2235,16 @@ export class GadWorkspaceDO extends DurableObjectBase {
 
     if (appended.length > 0) {
       const last = appended[appended.length - 1]!;
-      this.updateRefInternal({
-        refName: this.logHeadRefName(input.logId, input.head),
-        kind: "log-head",
-        target: { seq: last.seq, hash: last.hash, envelopeId: String(last.envelopeId) },
-      });
+      this.sql.exec(
+        `UPDATE log_heads
+            SET current_seq = ?, current_hash = ?, current_envelope_id = ?
+          WHERE log_id = ? AND head = ?`,
+        last.seq,
+        last.hash,
+        String(last.envelopeId),
+        input.logId,
+        input.head
+      );
     }
 
     const finalPointer = this.headPointer(input.logId, input.head);
@@ -1881,7 +2336,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       }) as AgenticEvent;
       const sanitized = sanitizeAgenticEventParticipantRefs(reconstructed);
       assertAgenticEventStoredValuesEncoded(sanitized);
-      payload = sanitized.payload;
+      payload = sanitizeRosterSnapshotPayload(sanitized.payload);
       if (STATE_TRANSITION_KINDS.has(input.payloadKind)) {
         this.assertStateTransitionPayloadValid(input.payloadKind, payload);
       }
@@ -1892,7 +2347,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
       const parsed = storedAgenticEventSchema.parse(payload) as AgenticEvent;
       const sanitized = sanitizeAgenticEventParticipantRefs(parsed);
       assertAgenticEventStoredValuesEncoded(sanitized);
-      payload = sanitized;
+      payload = {
+        ...sanitized,
+        payload: sanitizeRosterSnapshotPayload(sanitized.payload),
+      };
     }
 
     return {
@@ -2027,8 +2485,8 @@ export class GadWorkspaceDO extends DurableObjectBase {
       this.sql.exec(
         `INSERT INTO log_heads (
            log_id, head, log_kind, owner_json, parent_log_id, parent_head,
-           fork_seq, fork_hash, created_at
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           fork_seq, fork_hash, current_seq, current_hash, current_envelope_id, created_at
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         input.toLogId,
         input.toHead,
         logKind,
@@ -2037,14 +2495,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
         input.fromHead,
         forkSeq,
         forkHash,
+        forkSeq,
+        forkHash,
+        forkEnvelopeId,
         nowIso()
       );
-      this.updateRefInternal({
-        refName: this.logHeadRefName(input.toLogId, input.toHead),
-        kind: "log-head",
-        target: { seq: forkSeq, hash: forkHash, envelopeId: forkEnvelopeId },
-        expected: null,
-      });
 
       // Seed the child's projection caches (P1: caches, rebuildable) by folding
       // the inherited lineage view under the child key. No log rows are copied.
@@ -2152,8 +2607,8 @@ export class GadWorkspaceDO extends DurableObjectBase {
       const lastHash = rows.length > 0 ? String(rows[rows.length - 1]!["hash"]) : startHash;
       if (pointer.seq !== lastSeq || pointer.hash !== lastHash) {
         errors.push({
-          type: "log-head-ref",
-          message: `log head ref disagrees with the stored chain for ${logId}:${head}`,
+          type: "log-head-pointer",
+          message: `log head pointer disagrees with the stored chain for ${logId}:${head}`,
           logId,
           head,
         });
@@ -2542,6 +2997,10 @@ export class GadWorkspaceDO extends DurableObjectBase {
     const extraParents = Array.isArray(payload["parentStateHashes"])
       ? (payload["parentStateHashes"] as unknown[]).map((value) => String(value))
       : [];
+    const extraParentEventIds = Array.isArray(payload["parentEventIds"])
+      ? (payload["parentEventIds"] as unknown[]).map((value) => String(value))
+      : [];
+    const previousHead = this.resolveWorktreeHeadInternal(envelope.logId, envelope.head);
 
     let outputStateHash: string;
     let beforeContentHash: string | null = null;
@@ -2598,13 +3057,26 @@ export class GadWorkspaceDO extends DurableObjectBase {
       JSON.stringify(payload),
       envelope.appendedAt
     );
-    const parents = [inputStateHash, ...extraParents];
-    parents.forEach((parentStateHash, ordinal) => {
+    const parents = [
+      {
+        stateHash: inputStateHash,
+        eventId:
+          previousHead?.stateHash === inputStateHash
+            ? previousHead.commitEventId
+            : this.latestProducerEventId(inputStateHash),
+      },
+      ...extraParents.map((parentStateHash, index) => ({
+        stateHash: parentStateHash,
+        eventId: extraParentEventIds[index] ?? this.latestProducerEventId(parentStateHash),
+      })),
+    ];
+    parents.forEach((parent, ordinal) => {
       this.sql.exec(
-        `INSERT OR IGNORE INTO gad_transition_parents (event_id, parent_state_hash, ordinal)
-         VALUES (?, ?, ?)`,
+        `INSERT OR IGNORE INTO gad_transition_parents (event_id, parent_state_hash, parent_event_id, ordinal)
+         VALUES (?, ?, ?, ?)`,
         eventId,
-        parentStateHash,
+        parent.stateHash,
+        parent.eventId,
         ordinal
       );
     });
@@ -2681,11 +3153,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       }
     }
 
-    this.updateRefInternal({
-      refName: this.worktreeRefName(envelope.logId, envelope.head),
-      kind: "worktree-branch",
-      target: { stateHash: outputStateHash },
-    });
+    this.setWorktreeHead(envelope.logId, envelope.head, outputStateHash, eventId);
   }
 
   private projectKnowledge(envelope: LogEnvelope): void {
@@ -2835,12 +3303,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
   // -------------------------------------------------------------------------
 
   private latestStateHash(logId: string, head: string): string {
-    const ref = this.resolveRef({ refName: this.worktreeRefName(logId, head) });
-    if (ref && ref.target && typeof ref.target === "object") {
-      const stateHash = asString((ref.target as Record<string, unknown>)["stateHash"]);
-      if (stateHash) return stateHash;
-    }
-    return EMPTY_STATE_HASH;
+    return this.resolveWorktreeHeadInternal(logId, head)?.stateHash ?? EMPTY_STATE_HASH;
   }
 
   private ensureFileVersion(path: string, contentHash: string, mode: number): number {
@@ -3231,14 +3694,13 @@ export class GadWorkspaceDO extends DurableObjectBase {
   }
 
   private latestStateHashByHeadOnly(head: string): string {
-    const rows = this.listRefs({ kind: "worktree-branch" });
-    for (const ref of rows) {
-      if (ref.refName.endsWith(`:${head}`)) {
-        const stateHash = asString((ref.target as Record<string, unknown>)["stateHash"]);
-        if (stateHash) return stateHash;
-      }
-    }
-    return EMPTY_STATE_HASH;
+    const row = this.sql
+      .exec(
+        `SELECT state_hash FROM gad_worktree_heads WHERE head = ? ORDER BY updated_at DESC LIMIT 1`,
+        head
+      )
+      .toArray()[0] as JsonRecord | undefined;
+    return row ? String(row["state_hash"]) : EMPTY_STATE_HASH;
   }
 
   @rpc({ callers: ["panel", "do", "worker", "server"] })
@@ -3360,6 +3822,16 @@ export class GadWorkspaceDO extends DurableObjectBase {
     );
   }
 
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  getGadStateTransition(input: { eventId: string }): JsonRecord | null {
+    this.ensureReady();
+    return (
+      (this.sql
+        .exec(`SELECT * FROM gad_state_transitions WHERE event_id = ?`, input.eventId)
+        .toArray()[0] as JsonRecord | undefined) ?? null
+    );
+  }
+
   /** The op union (provenance/intent) that authored a worktree state. */
   @rpc({ callers: ["panel", "do", "worker", "server"] })
   listWorktreeEditOps(input: { outputStateHash: string }): JsonRecord[] {
@@ -3473,18 +3945,25 @@ export class GadWorkspaceDO extends DurableObjectBase {
     headHash: string;
   }> {
     this.ensureReady();
-    return this.transaction(() => {
-      const refName = input.ref ?? this.worktreeRefName(input.logId, input.head);
-      const current = this.resolveRef({ refName });
-      const currentStateHash = current
-        ? (asString((current.target as Record<string, unknown>)["stateHash"]) ?? EMPTY_STATE_HASH)
-        : EMPTY_STATE_HASH;
+    return this.transaction(() => this.ingestWorktreeStateInTxn(input));
+  }
+
+  /** Body of a single worktree-state ingest, runnable inside an already-open
+   *  transaction so a batch of ingests (ingestRepoGroup) commits all-or-none. */
+  private ingestWorktreeStateInTxn(input: IngestWorktreeStateInput): {
+    stateHash: string;
+    eventId: string;
+    headHash: string;
+    headSeq: number;
+  } {
+      const currentHead = this.resolveWorktreeHeadInternal(input.logId, input.head);
+      const currentStateHash = currentHead?.stateHash ?? EMPTY_STATE_HASH;
       if (
         input.expectedRefStateHash !== undefined &&
         input.expectedRefStateHash !== null &&
         input.expectedRefStateHash !== currentStateHash
       ) {
-        throw new Error(`ref CAS conflict: ${refName}`);
+        throw new Error(`worktree head CAS conflict: ${input.logId}:${input.head}`);
       }
       const baseStateHash = input.baseStateHash ?? currentStateHash;
       const files = input.files.map((file) => {
@@ -3523,6 +4002,9 @@ export class GadWorkspaceDO extends DurableObjectBase {
               ...(input.parentStateHashes && input.parentStateHashes.length > 0
                 ? { parentStateHashes: input.parentStateHashes }
                 : {}),
+              ...(input.parentEventIds && input.parentEventIds.length > 0
+                ? { parentEventIds: input.parentEventIds }
+                : {}),
               ...(input.summary ? { summary: input.summary } : {}),
               ...(input.metadata ? { metadata: input.metadata } : {}),
             },
@@ -3530,13 +4012,25 @@ export class GadWorkspaceDO extends DurableObjectBase {
         ],
       });
       if (input.editOps && input.editOps.length > 0) {
+        // editOps passed to an ingest are COMMITTED rows (bootstrap/merge/fork
+        // commits). The working edit→commit path does NOT pass editOps — it
+        // re-keys pre-existing working rows in commitRepo.
+        const now = nowIso();
+        const actorId = asString((input.actor as unknown as Record<string, unknown>)?.["id"]) ?? null;
+        const actorJson = input.actor ? JSON.stringify(input.actor) : null;
         input.editOps.forEach((op, ordinal) => {
           this.sql.exec(
             `INSERT INTO gad_worktree_edit_ops (
-               event_id, output_state_hash, ordinal, kind, path,
-               old_content_hash, new_content_hash, hunks_json, mode
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+               event_id, log_id, head, committed_event_id, committed_seq,
+               edit_seq, output_state_hash, ordinal, kind, path,
+               old_content_hash, new_content_hash, hunks_json, mode,
+               actor_id, actor_json, invocation_id, turn_id, created_at
+             ) VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
             eventId,
+            input.logId,
+            input.head,
+            eventId,
+            result.headSeq,
             stateHash,
             ordinal,
             op.kind,
@@ -3544,19 +4038,551 @@ export class GadWorkspaceDO extends DurableObjectBase {
             op.oldContentHash ?? null,
             op.newContentHash ?? null,
             op.hunks !== undefined ? JSON.stringify(op.hunks) : null,
-            typeof op.mode === "number" ? op.mode : null
+            typeof op.mode === "number" ? op.mode : null,
+            actorId,
+            actorJson,
+            input.invocationId ?? null,
+            input.turnId ?? null,
+            now
           );
         });
       }
-      if (refName !== this.worktreeRefName(input.logId, input.head)) {
-        this.updateRefInternal({
-          refName,
-          kind: "worktree-branch",
-          target: { stateHash },
+      return { stateHash, eventId, headHash: result.headHash, headSeq: result.headSeq };
+  }
+
+  /**
+   * Atomic multi-head advance: ingest N worktree states across N (logId, head)
+   * pairs inside ONE transaction. Every entry's CAS (expectedRefStateHash) +
+   * state-create + log-append happens together — all heads advance or none do.
+   * This is the store-level transaction boundary that backs per-repo GROUP
+   * pushes; orchestrating N separate ingestWorktreeState RPCs could partially
+   * commit and cannot give the all-or-none guarantee.
+   */
+  @rpc({ callers: ["do", "server"] })
+  async ingestRepoGroup(input: { entries: IngestWorktreeStateInput[] }): Promise<{
+    results: Array<{
+      logId: string;
+      head: string;
+      stateHash: string;
+      eventId: string;
+      headHash: string;
+    }>;
+  }> {
+    this.ensureReady();
+    return this.transaction(() => ({
+      results: input.entries.map((entry) => ({
+        logId: entry.logId,
+        head: entry.head,
+        ...this.ingestWorktreeStateInTxn(entry),
+      })),
+    }));
+  }
+
+  // -------------------------------------------------------------------------
+  // Working edits → commits (the edit/commit/push re-architecture)
+  // -------------------------------------------------------------------------
+
+  /** The committed state a `(logId, head)` ref currently points at, or null
+   *  (no ref). The CAS anchor for working-edit inserts: a commit/merge that
+   *  advances the head changes this WITHOUT changing MAX(edit_seq). */
+  private resolveCommittedHeadState(logId: string, head: string): string | null {
+    return this.resolveWorktreeHeadInternal(logId, head)?.stateHash ?? null;
+  }
+
+  /** The most-recent commit EVENT that produced a state (or null for the empty
+   *  base / an unproduced state) — resolves a parent STATE to its parent EVENT
+   *  for the event-keyed commit DAG. */
+  private latestProducerEventId(stateHash: string): string | null {
+    if (!stateHash || stateHash === EMPTY_STATE_HASH) return null;
+    const row = this.sql
+      .exec(
+        `SELECT event_id FROM gad_state_transitions WHERE output_state_hash = ? ORDER BY created_at DESC LIMIT 1`,
+        stateHash
+      )
+      .toArray()[0] as { event_id?: string } | undefined;
+    return row?.event_id ?? null;
+  }
+
+  /**
+   * EDIT persist (single DO txn). Insert precomputed edit-op rows as WORKING
+   * (committed_event_id = NULL, output_state_hash = NULL) with a shared per-call
+   * `edit_seq = MAX+1` per (log_id, head) and a synthetic per-call `event_id`.
+   * CAS on BOTH `expectedEditSeq` (the uncommitted sequence) AND
+   * `expectedCommitHead` (the committed ctx-head state, null if none) — a
+   * concurrent commit/merge can move the committed head without changing
+   * MAX(edit_seq), so checking only the seq would let a stale-base edit slip
+   * through. On conflict the caller recomputes the ops + retries. Blobs are put
+   * to CAS by the caller (idempotent) before this call.
+   */
+  @rpc({ callers: ["do", "server"] })
+  insertWorkingEditOps(input: {
+    logId: string;
+    head: string;
+    actorId: string;
+    actorJson: string;
+    invocationId?: string | null;
+    turnId?: string | null;
+    eventId: string;
+    ops: Array<{
+      kind: string;
+      path: string;
+      oldContentHash?: string | null;
+      newContentHash?: string | null;
+      hunks?: unknown;
+      mode?: number | null;
+    }>;
+    expectedEditSeq: number;
+    expectedCommitHead: string | null;
+  }): { editSeq: number } {
+    this.ensureReady();
+    return this.transaction(() => {
+      const curEditSeq = Number(
+        (
+          this.sql
+            .exec(
+              `SELECT COALESCE(MAX(edit_seq), 0) AS m FROM gad_worktree_edit_ops
+               WHERE log_id = ? AND head = ? AND committed_event_id IS NULL`,
+              input.logId,
+              input.head
+            )
+            .toArray()[0] as { m: number }
+        ).m ?? 0
+      );
+      if (curEditSeq !== input.expectedEditSeq) {
+        throw new Error(
+          `edit CAS conflict on ${input.head}: editSeq ${curEditSeq} != expected ${input.expectedEditSeq}`
+        );
+      }
+      const curHead = this.resolveCommittedHeadState(input.logId, input.head);
+      const expectedHead = input.expectedCommitHead ?? null;
+      if ((curHead ?? null) !== expectedHead) {
+        throw new Error(
+          `edit CAS conflict on ${input.head}: committed head ${curHead ?? "∅"} != expected ${expectedHead ?? "∅"}`
+        );
+      }
+      const editSeq = curEditSeq + 1;
+      const now = nowIso();
+      input.ops.forEach((op, ordinal) => {
+        this.sql.exec(
+          `INSERT INTO gad_worktree_edit_ops (
+             event_id, log_id, head, committed_event_id, committed_seq,
+             edit_seq, output_state_hash, ordinal, kind, path,
+             old_content_hash, new_content_hash, hunks_json, mode,
+             actor_id, actor_json, invocation_id, turn_id, created_at
+           ) VALUES (?, ?, ?, NULL, NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          input.eventId,
+          input.logId,
+          input.head,
+          editSeq,
+          ordinal,
+          op.kind,
+          normalizePath(op.path),
+          op.oldContentHash ?? null,
+          op.newContentHash ?? null,
+          op.hunks !== undefined ? JSON.stringify(op.hunks) : null,
+          typeof op.mode === "number" ? op.mode : null,
+          input.actorId,
+          input.actorJson,
+          input.invocationId ?? null,
+          input.turnId ?? null,
+          now
+        );
+      });
+      return { editSeq };
+    });
+  }
+
+  /**
+   * COMMIT one repo (single DO txn): ingest the composed committed-state files
+   * onto the ctx head (state + commit log event @ new seq + head advance, CAS on
+   * `expectedCommitState`); if `parentStateHashes` is present this is a
+   * merge-resolution commit (records parent_event_id via the transition
+   * recorder) and any pending merge on the head is consumed. RE-KEY the included
+   * working rows → committed (set committed_event_id, committed_seq = the
+   * commit's log seq, output_state_hash = commit state). Re-keys; NEVER
+   * re-inserts (no duplicate edit-op rows).
+   */
+  @rpc({ callers: ["do", "server"] })
+  async commitRepo(input: {
+    logId: string;
+    head: string;
+    files: Array<{ path: string; contentHash: string; size?: number | null; mode?: number | null }>;
+    baseStateHash: string;
+    expectedCommitState: string | null;
+    summary: string;
+    actor: ParticipantRef;
+    invocationId?: string | null;
+    turnId?: string | null;
+    parentStateHashes?: string[] | null;
+    parentEventIds?: string[] | null;
+    includeEditRowIds: number[];
+  }): Promise<{
+    stateHash: string;
+    eventId: string;
+    headHash: string;
+    committedSeq: number;
+    editCount: number;
+  }> {
+    this.ensureReady();
+    return this.transaction(() => {
+      const hasParents = !!(input.parentStateHashes && input.parentStateHashes.length > 0);
+      const ingest = this.ingestWorktreeStateInTxn({
+        logId: input.logId,
+        head: input.head,
+        logKind: "vcs",
+        actor: input.actor,
+        files: input.files,
+        baseStateHash: input.baseStateHash,
+        expectedRefStateHash: input.expectedCommitState ?? EMPTY_STATE_HASH,
+        eventKind: hasParents ? "state.merge_applied" : "state.snapshot_ingested",
+        summary: input.summary,
+        ...(input.invocationId ? { invocationId: input.invocationId } : {}),
+        ...(input.turnId ? { turnId: input.turnId } : {}),
+        ...(hasParents ? { parentStateHashes: input.parentStateHashes! } : {}),
+        ...(input.parentEventIds && input.parentEventIds.length > 0
+          ? { parentEventIds: input.parentEventIds }
+          : {}),
+        // No editOps — re-key the pre-existing working rows below (NEVER re-insert).
+      });
+      for (const id of input.includeEditRowIds) {
+        this.sql.exec(
+          `UPDATE gad_worktree_edit_ops
+             SET committed_event_id = ?, committed_seq = ?, output_state_hash = ?
+           WHERE id = ? AND committed_event_id IS NULL`,
+          ingest.eventId,
+          ingest.headSeq,
+          ingest.stateHash,
+          id
+        );
+      }
+      const editCount = Number(
+        (
+          this.sql
+            .exec(
+              `SELECT COUNT(*) AS c FROM gad_worktree_edit_ops WHERE committed_event_id = ?`,
+              ingest.eventId
+            )
+            .toArray()[0] as { c: number }
+        ).c ?? 0
+      );
+      // A commit on a head with a pending merge IS the resolution — consume it.
+      this.deleteStateValue(`merge:${input.logId}:${input.head}`);
+      return {
+        stateHash: ingest.stateHash,
+        eventId: ingest.eventId,
+        headHash: ingest.headHash,
+        committedSeq: ingest.headSeq,
+        editCount,
+      };
+    });
+  }
+
+  /** Drop a repo's uncommitted edit-op rows AND clear any pending merge on the
+   *  head (abort an in-progress reconcile). Single txn. */
+  @rpc({ callers: ["do", "server"] })
+  discardWorkingEdits(input: { logId: string; head: string }): { discarded: number } {
+    this.ensureReady();
+    return this.transaction(() => {
+      const discarded = Number(
+        (
+          this.sql
+            .exec(
+              `SELECT COUNT(*) AS c FROM gad_worktree_edit_ops
+               WHERE log_id = ? AND head = ? AND committed_event_id IS NULL`,
+              input.logId,
+              input.head
+            )
+            .toArray()[0] as { c: number }
+        ).c ?? 0
+      );
+      this.sql.exec(
+        `DELETE FROM gad_worktree_edit_ops
+         WHERE log_id = ? AND head = ? AND committed_event_id IS NULL`,
+        input.logId,
+        input.head
+      );
+      this.deleteStateValue(`merge:${input.logId}:${input.head}`);
+      return { discarded };
+    });
+  }
+
+  // ── Read-only traversal of the edit/commit graph (all index-backed) ────────
+
+  /** commit → its edits, in working-replay order. */
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  listCommitEdits(input: { commitEventId: string }): JsonRecord[] {
+    this.ensureReady();
+    return this.sql
+      .exec(
+        `SELECT * FROM gad_worktree_edit_ops WHERE committed_event_id = ? ORDER BY edit_seq, ordinal`,
+        input.commitEventId
+      )
+      .toArray() as JsonRecord[];
+  }
+
+  /** A head's uncommitted (working) edits, in replay order. */
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  listWorkingEdits(input: { logId: string; head: string }): JsonRecord[] {
+    this.ensureReady();
+    return this.sql
+      .exec(
+        `SELECT * FROM gad_worktree_edit_ops
+         WHERE log_id = ? AND head = ? AND committed_event_id IS NULL
+         ORDER BY edit_seq, ordinal`,
+        input.logId,
+        input.head
+      )
+      .toArray() as JsonRecord[];
+  }
+
+  /** Repos (logIds) that carry uncommitted edits on a head — discovery for
+   *  dropContext (a repo with uncommitted-ONLY edits has no ctx head). */
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  listContextWorkingRepos(input: { head: string }): Array<{ logId: string }> {
+    this.ensureReady();
+    return (
+      this.sql
+        .exec(
+          `SELECT DISTINCT log_id FROM gad_worktree_edit_ops
+           WHERE head = ? AND committed_event_id IS NULL AND log_id IS NOT NULL`,
+          input.head
+        )
+        .toArray() as JsonRecord[]
+    ).map((r) => ({ logId: String(r["log_id"]) }));
+  }
+
+  private commitAncestorEventIds(eventId: string, limit: number): string[] {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const queue: string[] = [eventId];
+    while (queue.length > 0 && out.length < limit) {
+      const id = queue.shift()!;
+      if (seen.has(id)) continue;
+      seen.add(id);
+      out.push(id);
+      const parents = (
+        this.sql
+          .exec(
+            `SELECT parent_event_id FROM gad_transition_parents WHERE event_id = ? ORDER BY ordinal`,
+            id
+          )
+          .toArray() as Array<{ parent_event_id?: string | null }>
+      )
+        .map((p) => p.parent_event_id)
+        .filter((p): p is string => !!p);
+      for (const parent of parents) if (!seen.has(parent)) queue.push(parent);
+    }
+    return out;
+  }
+
+  /** File history / blame: every edit to a path in COMMIT-lineage order
+   *  (committed_seq — NOT raw edit_seq, which is per-head). The uncommitted tail
+   *  (working rows for `head`, default `main` ⇒ none) sorts last. */
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  fileHistory(input: {
+    logId: string;
+    path: string;
+    head?: string | null;
+    limit?: number | null;
+  }): JsonRecord[] {
+    this.ensureReady();
+    const head = input.head ?? "main";
+    const limit = input.limit ?? 500;
+    const path = normalizePath(input.path);
+    const tip = this.resolveWorktreeHeadInternal(input.logId, head)?.commitEventId ?? null;
+    const ancestorIds = tip ? this.commitAncestorEventIds(tip, Math.max(limit * 20, limit)) : [];
+    const commitOrder = new Map(
+      ancestorIds.slice().reverse().map((eventId, index) => [eventId, index])
+    );
+    const committedRows =
+      ancestorIds.length === 0
+        ? []
+        : (this.sql
+            .exec(
+              `SELECT * FROM gad_worktree_edit_ops
+               WHERE log_id = ? AND path = ?
+                 AND committed_event_id IN (${ancestorIds.map(() => "?").join(", ")})`,
+              input.logId,
+              path,
+              ...ancestorIds
+            )
+            .toArray() as JsonRecord[]);
+    committedRows.sort((a, b) => {
+      const aEvent = asString(a["committed_event_id"]) ?? "";
+      const bEvent = asString(b["committed_event_id"]) ?? "";
+      const byCommit = (commitOrder.get(aEvent) ?? 0) - (commitOrder.get(bEvent) ?? 0);
+      if (byCommit !== 0) return byCommit;
+      const bySeq = Number(a["edit_seq"] ?? 0) - Number(b["edit_seq"] ?? 0);
+      if (bySeq !== 0) return bySeq;
+      return Number(a["ordinal"] ?? 0) - Number(b["ordinal"] ?? 0);
+    });
+    const workingRows = this.sql
+      .exec(
+        `SELECT * FROM gad_worktree_edit_ops
+         WHERE log_id = ? AND head = ? AND path = ? AND committed_event_id IS NULL
+         ORDER BY edit_seq, ordinal`,
+        input.logId,
+        head,
+        path
+      )
+      .toArray() as JsonRecord[];
+    return [...committedRows, ...workingRows].slice(0, limit);
+  }
+
+  /** Edits authored by an actor, newest-lineage last. */
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  editsByActor(input: { actorId: string; limit?: number | null }): JsonRecord[] {
+    this.ensureReady();
+    return this.sql
+      .exec(
+        `SELECT * FROM gad_worktree_edit_ops WHERE actor_id = ?
+         ORDER BY (committed_seq IS NULL), committed_seq, edit_seq, ordinal LIMIT ?`,
+        input.actorId,
+        input.limit ?? 500
+      )
+      .toArray() as JsonRecord[];
+  }
+
+  /**
+   * Causal: every edit authored in an agent turn. Turn is reached by TRAVERSAL
+   * — edit-op rows carry `invocation_id` (the trajectory edge), and the
+   * invocation→turn mapping lives in `trajectory_invocations` (single source of
+   * truth, not denormalized onto the edit). Also includes any rows tagged with
+   * `turn_id` directly (bootstrap/merge commits that supplied it).
+   */
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  editsByTurn(input: { turnId: string }): JsonRecord[] {
+    this.ensureReady();
+    return this.sql
+      .exec(
+        `SELECT eo.* FROM gad_worktree_edit_ops eo
+         WHERE eo.turn_id = ?1
+            OR EXISTS (
+              SELECT 1 FROM trajectory_invocations ti
+              WHERE ti.invocation_id = eo.invocation_id AND ti.turn_id = ?1
+            )
+         ORDER BY (eo.committed_seq IS NULL), eo.committed_seq, eo.edit_seq, eo.ordinal`,
+        input.turnId
+      )
+      .toArray() as JsonRecord[];
+  }
+
+  /** Causal: every edit authored in a single tool-call invocation. */
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  editsByInvocation(input: { invocationId: string }): JsonRecord[] {
+    this.ensureReady();
+    return this.sql
+      .exec(
+        `SELECT * FROM gad_worktree_edit_ops WHERE invocation_id = ?
+         ORDER BY (committed_seq IS NULL), committed_seq, edit_seq, ordinal`,
+        input.invocationId
+      )
+      .toArray() as JsonRecord[];
+  }
+
+  /** Commit DAG ancestry by EVENT id (walks parent_event_id). Distinguishes two
+   *  distinct commits that share an identical output_state_hash (clean-merge
+   *  content collision) — commit identity is event_id, never the state hash. */
+  @rpc({ callers: ["panel", "do", "worker", "server"] })
+  commitAncestors(input: {
+    eventId: string;
+    limit?: number | null;
+  }): Array<{ eventId: string; stateHash: string | null; parentEventIds: string[] }> {
+    this.ensureReady();
+    const limit = input.limit ?? 200;
+    const out: Array<{ eventId: string; stateHash: string | null; parentEventIds: string[] }> = [];
+    for (const id of this.commitAncestorEventIds(input.eventId, limit)) {
+      const t = this.sql
+        .exec(`SELECT output_state_hash FROM gad_state_transitions WHERE event_id = ?`, id)
+        .toArray()[0] as { output_state_hash?: string } | undefined;
+      const parents = (
+        this.sql
+          .exec(
+            `SELECT parent_event_id FROM gad_transition_parents WHERE event_id = ? ORDER BY ordinal`,
+            id
+          )
+          .toArray() as Array<{ parent_event_id?: string | null }>
+      )
+        .map((p) => p.parent_event_id)
+        .filter((p): p is string => !!p);
+      out.push({ eventId: id, stateHash: t?.output_state_hash ?? null, parentEventIds: parents });
+    }
+    return out;
+  }
+
+  /**
+   * Mint a repo-rooted state from a subtree of a workspace-rooted state: keep
+   * only files under `prefix`, re-root their paths relative to `prefix`, and
+   * stage the result as a fresh content-addressed state. GAD is file-only
+   * (empty dirs are not represented), so this round-trips losslessly w.r.t.
+   * what GAD tracks.
+   */
+  @rpc({ callers: ["do", "server"] })
+  getSubtreeAsState(input: { stateHash: string; prefix: string }): { stateHash: string } {
+    this.ensureReady();
+    const prefix = normalizePath(input.prefix);
+    const within = (p: string): boolean => p === prefix || p.startsWith(`${prefix}/`);
+    const rerooted = this.filesForState(input.stateHash)
+      .filter((f) => within(String(f["path"])))
+      .map((f) => {
+        const full = String(f["path"]);
+        const rel = full === prefix ? full.slice(full.lastIndexOf("/") + 1) : full.slice(prefix.length + 1);
+        return { path: rel, contentHash: String(f["content_hash"]), mode: asNumber(f["mode"]) };
+      });
+    return this.transaction(() => ({
+      stateHash: this.createWorktreeState(
+        rerooted.map((file) => {
+          const path = normalizePath(file.path);
+          this.ensureBlob(file.contentHash, 0);
+          return {
+            path,
+            contentHash: file.contentHash,
+            mode: file.mode,
+            fileVersionId: this.ensureFileVersion(path, file.contentHash, file.mode),
+          };
+        }),
+        { subtreeOf: input.stateHash, prefix }
+      ),
+    }));
+  }
+
+  /**
+   * Compose N repo-rooted states into one workspace-rooted state by re-rooting
+   * each repo's files back under its `repoPath` and staging the union. This is
+   * the derived "live workspace view" used by whole-tree consumers (build
+   * discovery, materialize, diff, git export). Inverse of getSubtreeAsState.
+   */
+  @rpc({ callers: ["do", "server"] })
+  composeRepoStates(input: {
+    repos: Array<{ repoPath: string; stateHash: string }>;
+  }): { stateHash: string } {
+    this.ensureReady();
+    const composed: Array<{ path: string; contentHash: string; mode: number }> = [];
+    for (const repo of input.repos) {
+      const repoPath = normalizePath(repo.repoPath);
+      for (const f of this.filesForState(repo.stateHash)) {
+        composed.push({
+          path: `${repoPath}/${String(f["path"])}`,
+          contentHash: String(f["content_hash"]),
+          mode: asNumber(f["mode"]),
         });
       }
-      return { stateHash, eventId, headHash: result.headHash };
-    });
+    }
+    return this.transaction(() => ({
+      stateHash: this.createWorktreeState(
+        composed.map((file) => {
+          const path = normalizePath(file.path);
+          this.ensureBlob(file.contentHash, 0);
+          return {
+            path,
+            contentHash: file.contentHash,
+            mode: file.mode,
+            fileVersionId: this.ensureFileVersion(path, file.contentHash, file.mode),
+          };
+        }),
+        { composed: true }
+      ),
+    }));
   }
 
   // -------------------------------------------------------------------------
@@ -3876,7 +4902,16 @@ export class GadWorkspaceDO extends DurableObjectBase {
    * and (for file rows) the current content hash.
    */
   @rpc({ callers: ["panel", "do", "worker", "server"] })
-  recallMemory(input: { query: string; kinds?: string[] | null; limit?: number | null }): {
+  recallMemory(input: {
+    query: string;
+    kinds?: string[] | null;
+    limit?: number | null;
+    /** Workspace-relative repo path prefixes to scope file results to. A row is
+     *  kept when its `path` is null (non-file entries: messages/claims) or falls
+     *  under one of these prefixes. Applied IN the query so `limit` bounds the
+     *  scoped result set, not an unfiltered page that scoping then decimates. */
+    pathPrefixes?: string[] | null;
+  }): {
     results: Array<{
       kind: string;
       snippet: string;
@@ -3895,6 +4930,17 @@ export class GadWorkspaceDO extends DurableObjectBase {
     const mode = this.ensureMemoryIndex();
     const limit = Math.min(input.limit ?? 10, 50);
     const kinds = input.kinds && input.kinds.length > 0 ? input.kinds : null;
+    const pathPrefixes =
+      input.pathPrefixes && input.pathPrefixes.length > 0 ? input.pathPrefixes : null;
+    // (path IS NULL OR path = pre OR path LIKE 'pre/%') for each prefix, OR-ed.
+    const pathFilter = pathPrefixes
+      ? ` AND (path IS NULL OR ${pathPrefixes
+          .map(() => `(path = ? OR path LIKE ? ESCAPE '\\')`)
+          .join(" OR ")})`
+      : "";
+    const pathBindings = pathPrefixes
+      ? pathPrefixes.flatMap((pre) => [pre, `${pre.replace(/[%_\\]/gu, "\\$&")}/%`])
+      : [];
     let rows: JsonRecord[];
     if (mode === "fts") {
       const kindFilter = kinds ? ` AND kind IN (${kinds.map(() => "?").join(",")})` : "";
@@ -3903,10 +4949,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
           `SELECT text, kind, log_id, head, event_id, path, content_hash, anchor_json,
                   bm25(gad_memory_fts) AS score
              FROM gad_memory_fts
-            WHERE gad_memory_fts MATCH ?${kindFilter}
+            WHERE gad_memory_fts MATCH ?${kindFilter}${pathFilter}
             ORDER BY score LIMIT ?`,
           sanitizeFtsQuery(input.query),
           ...(kinds ?? []),
+          ...pathBindings,
           limit
         )
         .toArray() as JsonRecord[];
@@ -3924,10 +4971,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
           `SELECT text, kind, log_id, head, event_id, path, content_hash, anchor_json,
                   NULL AS score
              FROM gad_memory_fts
-            WHERE ${likeClauses}${kindFilter}
+            WHERE ${likeClauses}${kindFilter}${pathFilter}
             LIMIT ?`,
           ...terms.map((term) => `%${term.replace(/[%_\\]/gu, "\\$&")}%`),
           ...(kinds ?? []),
+          ...pathBindings,
           limit
         )
         .toArray() as JsonRecord[];
@@ -3987,8 +5035,12 @@ export class GadWorkspaceDO extends DurableObjectBase {
   } {
     this.ensureReady();
     return this.transaction(() => {
-      // 1. Root states: every ref target with a stateHash + pending merges.
+      // 1. Root states: every structured worktree head, every generic ref target
+      // with a stateHash, and pending merges.
       const roots = new Set<string>([EMPTY_STATE_HASH]);
+      for (const head of this.listWorktreeHeads({})) {
+        roots.add(head.stateHash);
+      }
       for (const ref of this.listRefs({})) {
         const stateHash = asString((ref.target as Record<string, unknown>)["stateHash"]);
         if (stateHash) roots.add(stateHash);
@@ -4370,13 +5422,9 @@ export class GadWorkspaceDO extends DurableObjectBase {
       from.logId,
       from.head
     );
-    const worktreeRef = this.resolveRef({ refName: this.worktreeRefName(from.logId, from.head) });
-    if (worktreeRef?.target) {
-      this.updateRefInternal({
-        refName: this.worktreeRefName(to.logId, to.head),
-        kind: "worktree-branch",
-        target: worktreeRef.target,
-      });
+    const worktreeHead = this.resolveWorktreeHeadInternal(from.logId, from.head);
+    if (worktreeHead) {
+      this.setWorktreeHead(to.logId, to.head, worktreeHead.stateHash, worktreeHead.commitEventId);
     }
   }
 
@@ -4410,7 +5458,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
       this.sql.exec(`DELETE FROM ${table} WHERE log_id = ? AND head = ?`, key.logId, key.head);
     }
     this.sql.exec(`DELETE FROM gad_memory_fts WHERE log_id = ? AND head = ?`, key.logId, key.head);
-    this.sql.exec(`DELETE FROM refs WHERE ref_name = ?`, this.worktreeRefName(key.logId, key.head));
+    this.deleteWorktreeHeadInternal(key.logId, key.head);
   }
 
   @rpc({ callers: ["panel", "do", "worker", "server"] })
@@ -4442,11 +5490,11 @@ export class GadWorkspaceDO extends DurableObjectBase {
     ]) {
       this.sql.exec(`DELETE FROM ${table}`);
     }
-    // Worktree-branch refs are derived by the state projector: reset them so
+    // Worktree heads are derived by the state projector: reset them so
     // replay re-derives each head's chain from the empty state. Values
     // (worktree states / manifests / file versions / blobs) are content-
     // addressed and never cleared.
-    this.sql.exec(`DELETE FROM refs WHERE kind = 'worktree-branch'`);
+    this.sql.exec(`DELETE FROM gad_worktree_heads`);
     this.ensureEmptyState();
   }
 

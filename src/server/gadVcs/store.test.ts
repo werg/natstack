@@ -9,11 +9,14 @@ import { GadWorkspaceDO } from "../../../workspace/workers/gad-store/index.js";
 import {
   assertWritableVcsPath,
   GadVcs,
-  VCS_LOG_ID,
   VCS_MAIN_HEAD,
   vcsContextHead,
   type GadCaller,
 } from "./store.js";
+
+// The GadVcs primitive accepts any logId; these store-level tests use a single
+// fixture log id (the per-repo VCS layer above picks real `vcs:repo:*` ids).
+const FIXTURE_LOG = "vcs:workspace";
 
 describe("assertWritableVcsPath", () => {
   it("rejects a platform-ignored dir with an ACTIONABLE error (names a writable location)", async () => {
@@ -97,7 +100,7 @@ describe("GadVcs snapshot/materialize", () => {
       "src/deep/nested/util.ts": "export const y = 2;\n",
     };
     await writeTree(workDir, tree);
-    const snap = await vcs.snapshotDir(workDir, { summary: "initial" });
+    const snap = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG, summary: "initial" });
     expect(snap.unchanged).toBe(false);
     expect(snap.fileCount).toBe(3);
     expect(snap.stateHash).toMatch(/^state:[0-9a-f]{64}$/);
@@ -114,30 +117,30 @@ describe("GadVcs snapshot/materialize", () => {
 
   it("skips ingest when nothing changed (durable no-change, survives sidecar amnesia)", async () => {
     await writeTree(workDir, { "a.txt": "one" });
-    const first = await vcs.snapshotDir(workDir);
+    const first = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     expect(first.unchanged).toBe(false);
 
-    const second = await vcs.snapshotDir(workDir);
+    const second = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     expect(second.unchanged).toBe(true);
     expect(second.stateHash).toBe(first.stateHash);
 
     // P3: delete the sidecar cache — still converges with no new event.
     await fsp.rm(path.join(workDir, ".gad"), { recursive: true, force: true });
-    const third = await vcs.snapshotDir(workDir);
+    const third = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     expect(third.unchanged).toBe(true);
     expect(third.stateHash).toBe(first.stateHash);
 
-    const events = gad.instance.readLog({ logId: VCS_LOG_ID, head: VCS_MAIN_HEAD, limit: 0 });
+    const events = gad.instance.readLog({ logId: FIXTURE_LOG, head: VCS_MAIN_HEAD, limit: 0 });
     expect(events.filter((e) => e.payloadKind === "state.snapshot_ingested")).toHaveLength(1);
   });
 
   it("snapshots edits incrementally and materializes deltas", async () => {
     await writeTree(workDir, { "a.txt": "one", "b.txt": "two" });
-    const first = await vcs.snapshotDir(workDir);
+    const first = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
 
     await writeTree(workDir, { "a.txt": "one-edited", "c.txt": "three" });
     await fsp.rm(path.join(workDir, "b.txt"));
-    const second = await vcs.snapshotDir(workDir);
+    const second = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     expect(second.unchanged).toBe(false);
     expect(second.stateHash).not.toBe(first.stateHash);
 
@@ -151,7 +154,7 @@ describe("GadVcs snapshot/materialize", () => {
 
   it("preserves untracked files on materialize unless clean", async () => {
     await writeTree(workDir, { "a.txt": "one" });
-    const snap = await vcs.snapshotDir(workDir);
+    const snap = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
 
     const outDir = path.join(root, "out");
     await vcs.materializeState(snap.stateHash, outDir);
@@ -182,7 +185,7 @@ describe("GadVcs snapshot/materialize", () => {
       "node_modules/dep/index.js": "noise",
       ".git/HEAD": "noise",
     });
-    const snap = await vcs.snapshotDir(workDir);
+    const snap = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     const files = gad.instance.listStateFiles({ stateHash: snap.stateHash });
     expect(files.map((f) => f["path"]).sort()).toEqual([".gadignore", "keep.ts"]);
   });
@@ -193,7 +196,7 @@ describe("GadVcs snapshot/materialize", () => {
       "docs/MERGE_CONFLICTS.md": "user doc",
       "keep.ts": "ok",
     });
-    const snap = await vcs.snapshotDir(workDir);
+    const snap = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     const paths = gad.instance
       .listStateFiles({ stateHash: snap.stateHash })
       .map((f) => f["path"])
@@ -205,9 +208,9 @@ describe("GadVcs snapshot/materialize", () => {
 
   it("forks a context head sharing the main lineage", async () => {
     await writeTree(workDir, { "a.txt": "one" });
-    const snap = await vcs.snapshotDir(workDir);
+    const snap = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
 
-    const fork = await vcs.forkContext("ctx1");
+    const fork = await vcs.forkContext("ctx1", FIXTURE_LOG);
     expect(fork.head).toBe(vcsContextHead("ctx1"));
     expect(fork.stateHash).toBe(snap.stateHash);
 
@@ -215,13 +218,13 @@ describe("GadVcs snapshot/materialize", () => {
     const ctxDir = path.join(root, "ctx");
     await vcs.materializeState(snap.stateHash, ctxDir);
     await writeTree(ctxDir, { "ctx-only.txt": "branch work" });
-    const ctxSnap = await vcs.snapshotDir(ctxDir, { head: fork.head });
+    const ctxSnap = await vcs.snapshotDir(ctxDir, { logId: FIXTURE_LOG, head: fork.head });
     expect(ctxSnap.unchanged).toBe(false);
-    expect(await vcs.resolveWorktreeRef(VCS_MAIN_HEAD)).toBe(snap.stateHash);
-    expect(await vcs.resolveWorktreeRef(fork.head)).toBe(ctxSnap.stateHash);
+    expect(await vcs.resolveWorktreeRef(VCS_MAIN_HEAD, FIXTURE_LOG)).toBe(snap.stateHash);
+    expect(await vcs.resolveWorktreeRef(fork.head, FIXTURE_LOG)).toBe(ctxSnap.stateHash);
 
     // forkContext is idempotent.
-    const again = await vcs.forkContext("ctx1");
+    const again = await vcs.forkContext("ctx1", FIXTURE_LOG);
     expect(again.stateHash).toBe(ctxSnap.stateHash);
   });
 
@@ -230,12 +233,12 @@ describe("GadVcs snapshot/materialize", () => {
       "pkg-a/index.ts": "a",
       "pkg-b/index.ts": "b",
     });
-    const first = await vcs.snapshotDir(workDir);
+    const first = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     const aHash1 = await vcs.getSubtreeHash(first.stateHash, "pkg-a");
     const bHash1 = await vcs.getSubtreeHash(first.stateHash, "pkg-b");
 
     await writeTree(workDir, { "pkg-a/index.ts": "a-edited" });
-    const second = await vcs.snapshotDir(workDir);
+    const second = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     expect(await vcs.getSubtreeHash(second.stateHash, "pkg-a")).not.toBe(aHash1);
     expect(await vcs.getSubtreeHash(second.stateHash, "pkg-b")).toBe(bHash1);
   });
@@ -248,7 +251,7 @@ describe("GadVcs snapshot/materialize", () => {
       "packages/core/index.ts": "export const c = 2;",
     });
     const local = await vcs.localState(workDir);
-    const snap = await vcs.snapshotDir(workDir);
+    const snap = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     expect(local.stateHash).toBe(snap.stateHash);
     for (const subtree of ["panels/chat", "panels/chat/src", "packages/core", "README.md"]) {
       expect(local.manifest.subtreeHash(subtree)).toBe(
@@ -261,11 +264,11 @@ describe("GadVcs snapshot/materialize", () => {
   it("materializes file→directory and directory→file transitions at the same path", async () => {
     // State A: `config` is a regular file.
     await writeTree(workDir, { config: "v=1\n", "keep.txt": "k" });
-    const a = await vcs.snapshotDir(workDir);
+    const a = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
     // State B: `config` becomes a directory.
     await fsp.rm(path.join(workDir, "config"));
     await writeTree(workDir, { "config/index.ts": "export const v = 1;\n" });
-    const b = await vcs.snapshotDir(workDir);
+    const b = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
 
     const outDir = path.join(root, "out");
     await vcs.materializeState(a.stateHash, outDir);
@@ -285,7 +288,7 @@ describe("GadVcs snapshot/materialize", () => {
 
   it("materializes over an untracked file that conflicts with a target directory path", async () => {
     await writeTree(workDir, { "data/x.txt": "x" });
-    const snap = await vcs.snapshotDir(workDir);
+    const snap = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
 
     const outDir = path.join(root, "out");
     await fsp.mkdir(outDir, { recursive: true });
@@ -300,7 +303,7 @@ describe("GadVcs snapshot/materialize", () => {
     const script = path.join(workDir, "run.sh");
     await fsp.writeFile(script, "#!/bin/sh\necho hi\n");
     await fsp.chmod(script, 0o755);
-    const snap = await vcs.snapshotDir(workDir);
+    const snap = await vcs.snapshotDir(workDir, { logId: FIXTURE_LOG });
 
     const outDir = path.join(root, "out");
     await vcs.materializeState(snap.stateHash, outDir);
