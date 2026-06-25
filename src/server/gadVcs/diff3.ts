@@ -19,7 +19,7 @@ export interface Diff3Result {
   conflicts: number;
 }
 
-interface Chunk {
+export interface Chunk {
   /** [start, end) in base */
   baseStart: number;
   baseEnd: number;
@@ -28,7 +28,7 @@ interface Chunk {
 }
 
 /** Myers-lite LCS diff: returns chunks describing side's changes vs base. */
-function diffChunks(base: string[], side: string[]): Chunk[] {
+export function diffChunks(base: string[], side: string[]): Chunk[] {
   const n = base.length;
   const m = side.length;
   // LCS table (n+1 x m+1). Workspace files are small enough for O(n·m) here;
@@ -226,4 +226,48 @@ function joinLines(
   // Preserve a trailing newline when any input ended with one.
   const trailing = baseText.endsWith("\n") || oursText.endsWith("\n") || theirsText.endsWith("\n");
   return text.length > 0 && trailing ? `${text}\n` : text;
+}
+
+/**
+ * Derive character-offset replace-hunks describing how `oldText` becomes
+ * `newText`, at line granularity. Used to give whole-file writes (the shape
+ * fs.writeFile/appendFile/truncate/copyFile/rename-into produce) the same
+ * hunk-level provenance as the agent `replace`/`edit` tool. Hunks here are pure
+ * PROVENANCE — never replayed (replay uses the post-content hash) — so the
+ * offsets are reasonable line-region spans, not a byte-exact patch. Returns a
+ * single whole-file hunk if the texts share no line structure.
+ */
+export function computeReplaceHunks(
+  oldText: string,
+  newText: string
+): Array<{ start: number; end: number; oldText: string; newText: string }> {
+  if (oldText === newText) return [];
+  const oldLines = oldText.split("\n");
+  const chunks = diffChunks(oldLines, newText.split("\n"));
+  if (chunks.length === 0) return [];
+  // Char offset of each line start in oldText (sentinel one past the last line).
+  const lineOffset: number[] = [];
+  let off = 0;
+  for (const l of oldLines) {
+    lineOffset.push(off);
+    off += l.length + 1; // + "\n"
+  }
+  lineOffset.push(oldText.length);
+  const hunks: Array<{ start: number; end: number; oldText: string; newText: string }> = [];
+  for (const c of chunks) {
+    const start = Math.min(lineOffset[c.baseStart] ?? oldText.length, oldText.length);
+    const end =
+      c.baseEnd > c.baseStart
+        ? Math.min(lineOffset[c.baseEnd] ?? oldText.length, oldText.length)
+        : start;
+    const replacement = c.lines.length > 0 ? c.lines.join("\n") : "";
+    hunks.push({
+      start,
+      end,
+      oldText: oldText.slice(start, end),
+      // Keep a trailing newline on a multi-line insertion that lands at a line boundary.
+      newText: c.lines.length > 0 && end < oldText.length ? `${replacement}\n` : replacement,
+    });
+  }
+  return hunks;
 }

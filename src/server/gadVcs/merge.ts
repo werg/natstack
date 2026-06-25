@@ -110,7 +110,7 @@ export class MergeEngine {
 
   /**
    * Compute the merge of `theirs` into `ours` against an explicitly supplied
-   * `base` — for callers (e.g. `applyEdits`) that authored `ours` as an
+   * `base` — for callers (e.g. `edit`) that authored `ours` as an
    * in-memory draft off a known base and never recorded a DAG edge to it.
    * Avoids the `getMergeBase` lookup entirely.
    */
