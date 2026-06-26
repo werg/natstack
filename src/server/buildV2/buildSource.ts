@@ -1,11 +1,18 @@
 /**
  * Build source provider — the seam between the builder and the GAD store.
  *
- * Builds never read the live working tree: they read a materialized checkout
- * of an immutable GAD worktree state (`state:…` hash), so build inputs are
- * content-addressed by construction and the old commit/push race cannot
- * exist. The provider owns checkout caching (per-state dirs hardlinked from
- * the blobstore CAS — a P1 cache, deletable at any time).
+ * The builder never reads the live working tree *directly*: it materializes a
+ * checkout of an immutable GAD worktree state (`state:…` hash), so build inputs
+ * are content-addressed and frozen for the duration of a build (no commit/push
+ * race). Crucially, that state is NOT necessarily committed. For `main` — the
+ * real on-disk workspace — the buildV2 trigger calls
+ * `WorkspaceStateSource.ensureFresh()` (see workspaceVcs.ts), which scans the
+ * live working tree (`localState(workspaceRoot)`) and ingests any out-of-band
+ * edits into a fresh state *before* the build runs. Net effect: uncommitted
+ * working-tree edits ARE built — that's why `pnpm dev` picks up your changes
+ * without a commit — they are just snapshotted into an immutable state first.
+ * The provider owns checkout caching (per-state dirs hardlinked from the
+ * blobstore CAS — a P1 cache, deletable at any time).
  *
  * Tests install a passthrough provider that serves a plain directory.
  */
