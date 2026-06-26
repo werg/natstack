@@ -1,22 +1,37 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect } from "vitest";
 import { fork, type ForkRuntime } from "./fork.js";
 
 // ─── Mock runtime with RPC ──────────────────────────────────────────────────
 
-interface RpcCall { targetId: string; method: string; args: unknown[] }
+interface RpcCall {
+  targetId: string;
+  method: string;
+  args: unknown[];
+}
 
-function createMockRuntime() {
+interface MockOptions {
+  /** Make DO `postClone` throw — for the given clone arg-arity (3 = channel, 5 = agent). */
+  failPostCloneArity?: number;
+}
+
+function createMockRuntime(opts: MockOptions = {}) {
   const rpcCalls: RpcCall[] = [];
   const mainCalls: Array<{ method: string; args: unknown[] }> = [];
 
   // DO method handlers keyed by "method" name
   const doHandlers = new Map<string, (...args: unknown[]) => unknown>();
+  let cloneSeq = 0;
+  let ctxSeq = 0;
 
   const rpc = {
     async call<T>(targetId: string, method: string, ...args: unknown[]): Promise<T> {
       rpcCalls.push({ targetId, method, args });
       // Route DO calls to handlers
       if (targetId.startsWith("do:")) {
+        // callDoTarget passes the real method args as a single array (args[0]).
+        if (method === "postClone" && opts.failPostCloneArity === (args[0] as unknown[])?.length) {
+          throw new Error("postClone failed");
+        }
         const handler = doHandlers.get(method);
         if (handler) return handler(...args) as T;
         return undefined as T;
@@ -31,6 +46,31 @@ function createMockRuntime() {
     stream: async () => new Response(),
   };
 
+  // `runtime.cloneContext` mock: map each `include` id (do:source:className:key)
+  // to a clone with a deterministic `fork:<key>:<n>` newKey, landing in a fresh ctx.
+  const cloneContext = (sourceContextId: string, include: string[] | undefined) => {
+    const ids = include ?? []; // fork always passes an explicit include (channel + kept agents)
+    const entities = ids.map((id) => {
+      const parts = id.split(":");
+      const source = parts[1]!;
+      const className = parts[2]!;
+      const sourceKey = parts.slice(3).join(":");
+      const newKey = `fork:${sourceKey}:${(++cloneSeq).toString(36)}`;
+      return {
+        sourceId: id,
+        newId: `do:${source}:${className}:${newKey}`,
+        kind: "do" as const,
+        source,
+        className,
+        sourceKey,
+        newKey,
+        targetId: `t:${newKey}`,
+      };
+    });
+    void sourceContextId;
+    return { contextId: `fork-ctx-${++ctxSeq}`, entities };
+  };
+
   const runtime: ForkRuntime = {
     rpc,
     async callMain<T>(method: string, ...args: unknown[]): Promise<T> {
@@ -41,6 +81,13 @@ function createMockRuntime() {
           className: "PubSubChannel",
           objectKey: args[1],
         } as T;
+      }
+      if (method === "runtime.cloneContext") {
+        const a = (args[0] ?? {}) as { sourceContextId: string; include?: string[] };
+        return cloneContext(a.sourceContextId, a.include) as T;
+      }
+      if (method === "runtime.destroyContext") {
+        return undefined as T;
       }
       return { source: "x", className: "Y", objectKey: "z" } as T;
     },
@@ -81,10 +128,17 @@ const evalClientParticipant = {
   doRef: { source: "natstack/internal", className: "EvalDO", objectKey: "eval-1" },
 };
 
+const cloneContextCalls = (mainCalls: Array<{ method: string; args: unknown[] }>) =>
+  mainCalls.filter((c) => c.method === "runtime.cloneContext");
+const includeOf = (call: { args: unknown[] }) =>
+  (call.args[0] as { include?: string[] }).include ?? [];
+/** A DO RPC's real method args (callDoTarget nests them as args[0]). */
+const innerArgs = (c: RpcCall) => c.args[0] as unknown[];
+
 // ─── Tests ───────────────────────────────────────────────────────────────────
 
 describe("fork()", () => {
-  it("orchestrates full fork: roster → preflight → clone channel → clone agents", async () => {
+  it("orchestrates full fork: roster → preflight → cloneContext → rewire clones", async () => {
     const { runtime, mainCalls, doHandlers, rpcCalls } = createMockRuntime();
     doHandlers.set("getParticipants", () => [agentParticipant, wsParticipant]);
     doHandlers.set("getContextId", () => "ctx-123");
@@ -94,6 +148,7 @@ describe("fork()", () => {
     const result = await fork(runtime, { channelId: "chan-1", forkPointPubsubId: 42 });
 
     expect(result.forkedChannelId).toMatch(/^fork:chan-1:/);
+    expect(result.forkedContextId).toMatch(/^fork-ctx-/);
     expect(result.clonedParticipants).toEqual([agentParticipant.participantId]);
     expect(result.replacedParticipants).toEqual([]);
     expect(result.excluded).toEqual([]);
@@ -107,13 +162,27 @@ describe("fork()", () => {
     });
     expect(result.clonedAgents[0]!.objectKey).toMatch(/^fork:agent-1:/);
 
-    // Should have called workerd.cloneDO twice (channel + agent)
-    const cloneCalls = mainCalls.filter(c => c.method === "workerd.cloneDO");
-    expect(cloneCalls).toHaveLength(2);
+    // ONE cloneContext call covering the channel + the kept agent (atomic).
+    const clones = cloneContextCalls(mainCalls);
+    expect(clones).toHaveLength(1);
+    expect(includeOf(clones[0]!)).toEqual([
+      "do:workers/pubsub-channel:PubSubChannel:chan-1",
+      "do:workers/agent-worker:AiChatWorker:agent-1",
+    ]);
 
-    // Should have called postClone on both channel and agent via RPC
-    const postCloneCalls = rpcCalls.filter(c => c.method === "postClone");
+    // postClone ran on the cloned channel + agent, threading the NEW context id.
+    const postCloneCalls = rpcCalls.filter((c) => c.method === "postClone");
     expect(postCloneCalls).toHaveLength(2);
+    // Channel postClone: (parentChannelId, forkPoint, newContextId).
+    expect(innerArgs(postCloneCalls[0]!)).toEqual(["chan-1", 42, result.forkedContextId]);
+    // Agent postClone: (parentObjectKey, newChannelId, oldChannelId, forkPoint, newContextId).
+    expect(innerArgs(postCloneCalls[1]!)).toEqual([
+      "agent-1",
+      result.forkedChannelId,
+      "chan-1",
+      42,
+      result.forkedContextId,
+    ]);
   });
 
   it("skips RPC-style DO clients (eval HeadlessSession) — only agent vessels are cloned", async () => {
@@ -127,9 +196,11 @@ describe("fork()", () => {
 
     // The eval client is NOT a forkable participant — only the agent vessel is cloned.
     expect(result.clonedParticipants).toEqual([agentParticipant.participantId]);
-    // channel + the single agent vessel = 2 cloneDO calls (the eval client adds nothing).
-    const cloneCalls = mainCalls.filter((c) => c.method === "workerd.cloneDO");
-    expect(cloneCalls).toHaveLength(2);
+    // include = channel + the single agent vessel (the eval client is absent).
+    expect(includeOf(cloneContextCalls(mainCalls)[0]!)).toEqual([
+      "do:workers/pubsub-channel:PubSubChannel:chan-1",
+      "do:workers/agent-worker:AiChatWorker:agent-1",
+    ]);
   });
 
   it("fails preflight when agent returns canFork=false", async () => {
@@ -138,11 +209,12 @@ describe("fork()", () => {
     doHandlers.set("getContextId", () => "ctx-123");
     doHandlers.set("canFork", () => ({ ok: false, subscriptionCount: 2, reason: "multi-channel" }));
 
-    await expect(fork(runtime, { channelId: "chan-1", forkPointPubsubId: 42 }))
-      .rejects.toThrow("multi-channel");
+    await expect(fork(runtime, { channelId: "chan-1", forkPointPubsubId: 42 })).rejects.toThrow(
+      "multi-channel"
+    );
   });
 
-  it("excludes specified participants", async () => {
+  it("excludes specified participants (not in the clone include)", async () => {
     const { runtime, mainCalls, doHandlers } = createMockRuntime();
     doHandlers.set("getParticipants", () => [agentParticipant, wsParticipant]);
     doHandlers.set("getContextId", () => "ctx-123");
@@ -157,13 +229,18 @@ describe("fork()", () => {
     expect(result.excluded).toEqual([agentParticipant.participantId]);
     expect(result.clonedParticipants).toEqual([]);
 
-    // Only channel clone
-    const cloneCalls = mainCalls.filter(c => c.method === "workerd.cloneDO");
-    expect(cloneCalls).toHaveLength(1);
+    // Only the channel is cloned.
+    expect(includeOf(cloneContextCalls(mainCalls)[0]!)).toEqual([
+      "do:workers/pubsub-channel:PubSubChannel:chan-1",
+    ]);
   });
 
   it("subscribes replacement DOs instead of cloning", async () => {
-    const replacementRef = { source: "workers/agent-worker", className: "AiChatWorker", objectKey: "new-agent" };
+    const replacementRef = {
+      source: "workers/agent-worker",
+      className: "AiChatWorker",
+      objectKey: "new-agent",
+    };
 
     const { runtime, mainCalls, doHandlers, rpcCalls } = createMockRuntime();
     doHandlers.set("getParticipants", () => [agentParticipant]);
@@ -181,29 +258,40 @@ describe("fork()", () => {
     expect(result.replacedParticipants).toEqual([agentParticipant.participantId]);
     expect(result.clonedParticipants).toEqual([]);
 
-    // Only channel clone (no agent clone)
-    const cloneCalls = mainCalls.filter(c => c.method === "workerd.cloneDO");
-    expect(cloneCalls).toHaveLength(1);
+    // The replaced agent is NOT cloned — only the channel is in the include.
+    expect(includeOf(cloneContextCalls(mainCalls)[0]!)).toEqual([
+      "do:workers/pubsub-channel:PubSubChannel:chan-1",
+    ]);
 
-    // Should have called subscribeChannel via RPC on replacement DO
-    const subCalls = rpcCalls.filter(c => c.method === "subscribeChannel");
+    // Replacement subscribes to the forked channel in the NEW context.
+    const subCalls = rpcCalls.filter((c) => c.method === "subscribeChannel");
     expect(subCalls).toHaveLength(1);
     expect(subCalls[0]!.targetId).toContain("new-agent");
+    expect(innerArgs(subCalls[0]!)[0]).toMatchObject({
+      channelId: result.forkedChannelId,
+      contextId: result.forkedContextId,
+    });
   });
 
   it("rejects replacement DO with existing subscriptions", async () => {
-    const replacementRef = { source: "workers/agent-worker", className: "AiChatWorker", objectKey: "busy" };
+    const replacementRef = {
+      source: "workers/agent-worker",
+      className: "AiChatWorker",
+      objectKey: "busy",
+    };
 
     const { runtime, doHandlers } = createMockRuntime();
     doHandlers.set("getParticipants", () => [agentParticipant]);
     doHandlers.set("getContextId", () => "ctx-123");
     doHandlers.set("canFork", () => ({ ok: true, subscriptionCount: 1 }));
 
-    await expect(fork(runtime, {
-      channelId: "chan-1",
-      forkPointPubsubId: 42,
-      replace: { [agentParticipant.participantId]: replacementRef },
-    })).rejects.toThrow("replacement DO already has subscriptions");
+    await expect(
+      fork(runtime, {
+        channelId: "chan-1",
+        forkPointPubsubId: 42,
+        replace: { [agentParticipant.participantId]: replacementRef },
+      })
+    ).rejects.toThrow("replacement DO already has subscriptions");
   });
 
   it("throws when channel has no contextId", async () => {
@@ -211,11 +299,12 @@ describe("fork()", () => {
     doHandlers.set("getParticipants", () => []);
     doHandlers.set("getContextId", () => null);
 
-    await expect(fork(runtime, { channelId: "chan-1", forkPointPubsubId: 42 }))
-      .rejects.toThrow("no contextId");
+    await expect(fork(runtime, { channelId: "chan-1", forkPointPubsubId: 42 })).rejects.toThrow(
+      "no contextId"
+    );
   });
 
-  it("succeeds with empty roster (no DO participants to clone)", async () => {
+  it("clones just the channel with an empty agent roster", async () => {
     const { runtime, mainCalls, doHandlers } = createMockRuntime();
     doHandlers.set("getParticipants", () => [wsParticipant]); // only a WS/panel participant
     doHandlers.set("getContextId", () => "ctx-123");
@@ -227,68 +316,43 @@ describe("fork()", () => {
     expect(result.replacedParticipants).toEqual([]);
     expect(result.excluded).toEqual([]);
 
-    // Only channel clone (no agent clones)
-    const cloneCalls = mainCalls.filter(c => c.method === "workerd.cloneDO");
-    expect(cloneCalls).toHaveLength(1);
+    expect(includeOf(cloneContextCalls(mainCalls)[0]!)).toEqual([
+      "do:workers/pubsub-channel:PubSubChannel:chan-1",
+    ]);
   });
 
-  it("rolls back channel clone when first agent clone fails", async () => {
-    const { runtime, mainCalls, doHandlers } = createMockRuntime();
+  it("rolls back the whole cloned context when channel rewiring fails", async () => {
+    // Channel postClone has arity 3 → fail it.
+    const { runtime, mainCalls, doHandlers } = createMockRuntime({ failPostCloneArity: 3 });
     doHandlers.set("getParticipants", () => [agentParticipant]);
     doHandlers.set("getContextId", () => "ctx-123");
     doHandlers.set("canFork", () => ({ ok: true, subscriptionCount: 1 }));
-    doHandlers.set("postClone", () => undefined);
 
-    let cloneCount = 0;
-    runtime.callMain = async (method: string, ...args: unknown[]) => {
-      mainCalls.push({ method, args });
-      if (method === "workers.resolveService") {
-        return { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: args[1] } as any;
-      }
-      if (method === "workerd.cloneDO") {
-        cloneCount++;
-        if (cloneCount === 2) throw new Error("clone failed"); // channel=1, agent=2
-      }
-      return { source: "x", className: "Y", objectKey: "z" } as any;
-    };
+    await expect(fork(runtime, { channelId: "chan-1", forkPointPubsubId: 42 })).rejects.toThrow(
+      "Fork failed: postClone failed"
+    );
 
-    await expect(fork(runtime, { channelId: "chan-1", forkPointPubsubId: 42 }))
-      .rejects.toThrow("Fork failed: clone failed");
-
-    // Should destroy the channel clone
-    const destroyCalls = mainCalls.filter(c => c.method === "workerd.destroyDO");
+    // The fork tears down the entire cloned context (one destroyContext, not per-DO destroyDO).
+    const destroyCalls = mainCalls.filter((c) => c.method === "runtime.destroyContext");
     expect(destroyCalls).toHaveLength(1);
+    expect((destroyCalls[0]!.args[0] as { contextId: string }).contextId).toMatch(/^fork-ctx-/);
   });
 
-  it("rolls back clones on mid-fork failure", async () => {
-    let cloneCount = 0;
-    const { runtime, mainCalls, doHandlers } = createMockRuntime();
+  it("rolls back the cloned context when an agent rewiring fails mid-way", async () => {
+    // Agent postClone has arity 5 → channel succeeds, agent fails.
+    const { runtime, mainCalls, doHandlers } = createMockRuntime({ failPostCloneArity: 5 });
     doHandlers.set("getParticipants", () => [
       agentParticipant,
       { ...agentParticipant, participantId: "p2", doRef: { ...agentDoRef, objectKey: "agent-2" } },
     ]);
     doHandlers.set("getContextId", () => "ctx-123");
     doHandlers.set("canFork", () => ({ ok: true, subscriptionCount: 1 }));
-    doHandlers.set("postClone", () => undefined);
 
-    // Override callMain to fail on second agent clone
-    runtime.callMain = async (method: string, ...args: unknown[]) => {
-      mainCalls.push({ method, args });
-      if (method === "workers.resolveService") {
-        return { source: "workers/pubsub-channel", className: "PubSubChannel", objectKey: args[1] } as any;
-      }
-      if (method === "workerd.cloneDO") {
-        cloneCount++;
-        if (cloneCount === 3) throw new Error("disk full"); // channel=1, agent1=2, agent2=3
-      }
-      return { source: "x", className: "Y", objectKey: "z" } as any;
-    };
+    await expect(fork(runtime, { channelId: "chan-1", forkPointPubsubId: 42 })).rejects.toThrow(
+      "Fork failed: postClone failed"
+    );
 
-    await expect(fork(runtime, { channelId: "chan-1", forkPointPubsubId: 42 }))
-      .rejects.toThrow("Fork failed: disk full");
-
-    // Should have called destroyDO for rollback (channel + agent-1 = 2)
-    const destroyCalls = mainCalls.filter(c => c.method === "workerd.destroyDO");
-    expect(destroyCalls).toHaveLength(2);
+    const destroyCalls = mainCalls.filter((c) => c.method === "runtime.destroyContext");
+    expect(destroyCalls).toHaveLength(1);
   });
 });

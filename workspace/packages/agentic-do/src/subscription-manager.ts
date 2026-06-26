@@ -92,7 +92,7 @@ export class SubscriptionManager {
       opts.contextId,
       Date.now(),
       opts.config ? JSON.stringify(opts.config) : null,
-      participantId,
+      participantId
     );
 
     return {
@@ -178,8 +178,23 @@ export class SubscriptionManager {
       .map((row) => String(row["channel_id"]));
   }
 
-  /** Fork bookkeeping: re-key a cloned subscription onto the new channel. */
-  rename(oldChannelId: string, newChannelId: string): void {
+  /**
+   * Fork bookkeeping: re-key a cloned subscription onto the new channel. When the
+   * clone lands in a NEW context (a true context fork — `runtime.cloneContext`),
+   * pass `newContextId` to re-home the subscription's `context_id` too; omit it for
+   * a same-context re-key.
+   */
+  rename(oldChannelId: string, newChannelId: string, newContextId?: string): void {
+    if (newContextId !== undefined) {
+      this.sql.exec(
+        `UPDATE subscriptions SET channel_id = ?, context_id = ?, participant_id = ? WHERE channel_id = ?`,
+        newChannelId,
+        newContextId,
+        this.buildParticipantId(),
+        oldChannelId
+      );
+      return;
+    }
     this.sql.exec(
       `UPDATE subscriptions SET channel_id = ?, participant_id = ? WHERE channel_id = ?`,
       newChannelId,

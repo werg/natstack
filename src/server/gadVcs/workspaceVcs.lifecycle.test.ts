@@ -343,6 +343,36 @@ describe("WorkspaceVcs — full context lifecycle (e2e)", () => {
     ).toMatchObject({ kind: "text", text: expect.stringContaining("x = 20") });
   });
 
+  it("forkContext snapshots the source's working files as the target's isolated base", async () => {
+    const src = "fork-src";
+    const dst = "fork-dst";
+    await vcs.pinContext(src);
+    // Give the source divergent committed content.
+    await editCtx(src, "packages/foo", "index.ts", "export const x = 99;\n");
+    const srcView = await vcs.resolveContextView(src);
+
+    // Fork the source's full working snapshot into a fresh context.
+    await vcs.forkContext(src, dst);
+
+    // The target pins exactly the source's composed view…
+    expect(await vcs.contextBaseView(dst)).toBe(srcView);
+    // …so it reads the source's edited content (file-state isolation), and it
+    // starts CLEAN (no inherited ctx heads — the snapshot is its base).
+    expect(
+      (await vcs.readFile(await vcs.resolveContextView(dst), "packages/foo/index.ts"))?.content
+    ).toMatchObject({ kind: "text", text: expect.stringContaining("x = 99") });
+    expect(await ctxHeadRefs(dst)).toEqual([]);
+
+    // Editing the fork diverges without touching the source.
+    await editCtx(dst, "packages/foo", "index.ts", "export const x = 1234;\n");
+    expect(
+      (await vcs.readFile(await vcs.resolveContextView(dst), "packages/foo/index.ts"))?.content
+    ).toMatchObject({ kind: "text", text: expect.stringContaining("x = 1234") });
+    expect(
+      (await vcs.readFile(await vcs.resolveContextView(src), "packages/foo/index.ts"))?.content
+    ).toMatchObject({ kind: "text", text: expect.stringContaining("x = 99") });
+  });
+
   it("records working edits then commits, exposing WORKING content before commit and committed content after", async () => {
     // New-model coverage: the dirty/working layer that the old applyEdits model
     // collapsed into a single committed advance. recordEdit makes the working

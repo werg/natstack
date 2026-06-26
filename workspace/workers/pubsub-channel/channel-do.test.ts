@@ -788,6 +788,34 @@ describe("PubSubChannel", () => {
     expect(afterForkAppend.logEvents.map((event) => event.id)).toEqual([4]);
   });
 
+  it("re-homes the channel's context when postClone threads a new contextId", async () => {
+    const parent = await createGadBackedChannel({ channelKey: "channel-ctx-parent" });
+    setRpcCaller(parent.instance, "panel:user", "panel");
+    await parent.instance.subscribe("panel:user", {
+      contextId: "ctx-src",
+      name: "User",
+      type: "panel",
+    });
+    await parent.instance.publish(
+      "panel:user",
+      AGENTIC_EVENT_PAYLOAD_KIND,
+      agenticEvent("message.completed")
+    );
+
+    // A true context fork re-homes the channel into a fresh isolated context.
+    const fork = await createGadBackedChannel({ channelKey: "channel-ctx-fork", gad: parent.gad });
+    await fork.instance.postClone("channel-ctx-parent", 2, "ctx-forked");
+    expect(await fork.instance.getContextId()).toBe("ctx-forked");
+
+    // Omitting the new contextId leaves the (cloned) context untouched.
+    const fork2 = await createGadBackedChannel({
+      channelKey: "channel-ctx-fork2",
+      gad: parent.gad,
+    });
+    await fork2.instance.postClone("channel-ctx-parent", 2);
+    expect(await fork2.instance.getContextId()).toBeNull();
+  });
+
   it("routes by transport id but publishes terminal events under the canonical invocation id", async () => {
     const { instance, gad } = await createGadBackedChannel();
 

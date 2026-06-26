@@ -38,4 +38,28 @@ describe("SubscriptionManager", () => {
     expect(manager.count()).toBe(0);
     expect(manager.listAll()).toEqual([]);
   });
+
+  it("rename re-keys the channel and (optionally) re-homes the context", async () => {
+    const channel = {
+      // The manager only stores the row + reads channelConfig/envelope opaquely;
+      // a minimal stub cast to the full return type is enough here.
+      subscribe: vi.fn(
+        async () => ({ ok: true }) as Awaited<ReturnType<ChannelClient["subscribe"]>>
+      ),
+    };
+    const { manager } = await makeManager(channel);
+    await manager.subscribe({
+      channelId: "ch-1",
+      contextId: "ctx-src",
+      descriptor: { name: "Test", type: "agent", handle: "test" },
+    });
+
+    // Same-context re-key: channel changes, context preserved.
+    manager.rename("ch-1", "ch-2");
+    expect(manager.getContextId("ch-2")).toBe("ctx-src");
+
+    // True context fork: channel + context both move.
+    manager.rename("ch-2", "ch-3", "ctx-fork");
+    expect(manager.getContextId("ch-3")).toBe("ctx-fork");
+  });
 });

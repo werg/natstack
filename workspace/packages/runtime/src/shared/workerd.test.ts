@@ -31,16 +31,11 @@ describe("createWorkerdClient", () => {
     client = createWorkerdClient(mock.rpc);
   });
 
-  it("exposes only service-resolution + DO-storage primitives (no lifecycle)", () => {
+  it("exposes only service-resolution (no lifecycle, no DO-storage primitives)", () => {
+    // cloneDO/destroyDO are closed off — reachable only via runtime.cloneContext/
+    // destroyContext (server-internal), never on this userland client.
     expect(Object.keys(client).sort()).toEqual(
-      [
-        "cloneDO",
-        "destroyDO",
-        "durableObjectService",
-        "listServices",
-        "resolveDurableObject",
-        "resolveService",
-      ].sort()
+      ["durableObjectService", "listServices", "resolveDurableObject", "resolveService"].sort()
     );
   });
 
@@ -85,17 +80,5 @@ describe("createWorkerdClient", () => {
       "ExampleDO",
       "key-1",
     ]);
-  });
-
-  it("cloneDO calls workerd.cloneDO", async () => {
-    const ref = { source: "workers/x", className: "X", objectKey: "k" };
-    await client.cloneDO(ref, "new-key");
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.cloneDO", [ref, "new-key"]);
-  });
-
-  it("destroyDO calls workerd.destroyDO", async () => {
-    const ref = { source: "workers/x", className: "X", objectKey: "k" };
-    await client.destroyDO(ref);
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.destroyDO", [ref]);
   });
 });

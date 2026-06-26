@@ -46,11 +46,7 @@ import {
   type BroadcastDeps,
   cleanupDeliveryChain,
 } from "./broadcast.js";
-import {
-  ChannelLog,
-  type ChannelReplayContext,
-  type MessageTypeDefinition,
-} from "./log-store.js";
+import { ChannelLog, type ChannelReplayContext, type MessageTypeDefinition } from "./log-store.js";
 import { PolicyHost, policyViewFromLogEnvelope } from "./policy-host.js";
 import { CallTransport, type PendingCallRow } from "./calls.js";
 import type { PolicyEnvelopeView } from "@workspace/channel-policies";
@@ -149,9 +145,7 @@ export class PubSubChannel extends DurableObjectBase {
         created_at INTEGER NOT NULL
       )
     `);
-    this.sql.exec(
-      `CREATE INDEX IF NOT EXISTS idx_dedup_keys_created ON dedup_keys(created_at)`
-    );
+    this.sql.exec(`CREATE INDEX IF NOT EXISTS idx_dedup_keys_created ON dedup_keys(created_at)`);
   }
 
   protected override migrate(_fromVersion: number, _toVersion: number): void {
@@ -300,9 +294,8 @@ export class PubSubChannel extends DurableObjectBase {
   }
 
   private policyViewFromChannelEvent(event: ChannelEvent): PolicyEnvelopeView {
-    const actorKind = (
-      (event.payload as { actor?: { kind?: string } } | null)?.actor?.kind ?? "unknown"
-    ) as string;
+    const actorKind = ((event.payload as { actor?: { kind?: string } } | null)?.actor?.kind ??
+      "unknown") as string;
     return {
       envelopeId: event.messageId,
       seq: event.id,
@@ -1086,7 +1079,10 @@ export class PubSubChannel extends DurableObjectBase {
     const replay = await this.channelLog.replayInitial(500, this.currentReplayContext());
     for (const event of [...replay.logEvents].reverse()) {
       if (event.type !== AGENTIC_EVENT_PAYLOAD_KIND) continue;
-      const payload = event.payload as { kind?: string; causality?: Record<string, unknown> } | null;
+      const payload = event.payload as {
+        kind?: string;
+        causality?: Record<string, unknown>;
+      } | null;
       if (!payload || typeof payload !== "object") continue;
       if (payload.kind !== "message.completed") continue;
       if (payload.causality?.["messageId"] === messageId) return event.senderId;
@@ -1395,9 +1391,9 @@ export class PubSubChannel extends DurableObjectBase {
   // ── Alarm — single scheduler over pure next-time sources (WS2 §8.2) ──────
 
   private nextDedupSweepAt(): number | null {
-    const oldest = this.sql
-      .exec(`SELECT MIN(created_at) AS oldest FROM dedup_keys`)
-      .toArray()[0]?.["oldest"];
+    const oldest = this.sql.exec(`SELECT MIN(created_at) AS oldest FROM dedup_keys`).toArray()[0]?.[
+      "oldest"
+    ];
     return typeof oldest === "number" ? oldest + DEDUP_TTL_MS : null;
   }
 
@@ -1549,12 +1545,25 @@ export class PubSubChannel extends DurableObjectBase {
    * fork (WS2 §4.5).
    */
   @rpc({ callers: ["worker", "server"] })
-  async postClone(parentChannelId: string, forkPointId: number): Promise<void> {
+  async postClone(
+    parentChannelId: string,
+    forkPointId: number,
+    // The clone's new context. A true context fork (`runtime.cloneContext`) lands
+    // the clone in a fresh, isolated context; thread it so the channel's stored
+    // contextId re-homes (matching the clone's entity record). Omit for a legacy
+    // same-context clone (keeps the inherited contextId).
+    newContextId?: string
+  ): Promise<void> {
     // Fix identity: cloneDO copies parent's __objectKey; overwrite with our actual key
     this.sql.exec(
       `INSERT OR REPLACE INTO state (key, value) VALUES ('__objectKey', ?)`,
       this.objectKey
     );
+    // Re-home the context (bypasses initChannel's mismatch guard by writing the
+    // state row directly — this IS the authorized re-home).
+    if (newContextId !== undefined) {
+      this.setStateValue("contextId", newContextId);
+    }
     this.setStateValue("forkedFrom", parentChannelId);
     this.setStateValue("forkPointId", String(forkPointId));
     await this.channelLog.forkFrom(parentChannelId, forkPointId);

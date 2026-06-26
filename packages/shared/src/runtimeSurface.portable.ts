@@ -24,8 +24,6 @@ export const WORKERS_MEMBERS = [
   "resolveService",
   "resolveDurableObject",
   "durableObjectService",
-  "cloneDO",
-  "destroyDO",
 ];
 
 export const WORKSPACE_MEMBERS = [

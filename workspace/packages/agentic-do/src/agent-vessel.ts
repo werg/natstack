@@ -2950,7 +2950,12 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     _parentObjectKey: string,
     newChannelId: string,
     oldChannelId: string,
-    forkPointPubsubId: number
+    forkPointPubsubId: number,
+    // The clone's new context. A true context fork (`runtime.cloneContext`) lands
+    // the clone in a fresh, isolated context; thread it so the agent's subscription
+    // re-homes to it (the entity record is already in the new context). Defaults to
+    // the inherited (source) context for a legacy same-context re-key.
+    newContextId?: string
   ): Promise<void> {
     // fix identity (cloneDO copied the parent's)
     this.sql.exec(
@@ -2975,13 +2980,15 @@ export abstract class AgentVesselBase extends DurableObjectBase {
     // caches: wiped, reconverge (P3)
     this.sql.exec(`DELETE FROM effect_outbox`);
     this.sql.exec(`DELETE FROM fold_cache`);
-    this.subscriptions.rename(oldChannelId, newChannelId);
+    this.subscriptions.rename(oldChannelId, newChannelId, newContextId);
     // Subclass fork cleanup/setup runs with the rename applied but BEFORE the
     // new channel is (re)subscribed, so subclasses can purge per-channel state
     // the clone copied and influence the upcoming subscribe.
     await this.onChannelForked({ oldChannelId, newChannelId, forkPointPubsubId });
     await this.subscribeChannel({
       channelId: newChannelId,
+      // After rename, getContextId(newChannelId) reflects newContextId (or the
+      // inherited context when none was threaded).
       contextId: this.subscriptions.getContextId(newChannelId),
       config: this.subscriptions.getConfig(newChannelId) ?? undefined,
       replay: false,

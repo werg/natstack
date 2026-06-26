@@ -3,16 +3,18 @@
  *
  * Worker instance lifecycle is launched via `runtime.createEntity({kind:"worker"})`
  * and retired via `runtime.retireEntity({id})` — there is no `workerd.*` lifecycle
- * client anymore. What remains here are manifest-declared userland service
+ * client anymore. What remains here is manifest-declared userland service
  * resolution (`listServices`/`resolveService`/`resolveDurableObject`/
- * `durableObjectService`) and the fork/storage DO primitives (`cloneDO`/`destroyDO`).
+ * `durableObjectService`).
+ *
+ * DO-storage primitives (cloneDO/destroyDO) are NOT here: they are server-internal
+ * and reached only through `runtime.cloneContext`/`runtime.destroyContext`.
  *
  * Available to server, panel, and worker callers.
  */
 import type { RpcCaller } from "@natstack/rpc";
 import {
   createDurableObjectServiceClient,
-  type DORefParam,
   type DurableObjectServiceClient,
   type ResolvedDurableObjectTarget,
 } from "@natstack/shared/userlandServiceRpc";
@@ -87,14 +89,8 @@ export interface WorkerdClient {
   ): Promise<ResolvedDurableObjectTarget>;
   /** Resolve a Durable Object-backed service and call it through unified RPC. */
   durableObjectService(query: string, objectKey?: string | null): DurableObjectServiceClient;
-  /** Clone a DO's SQLite storage to a new object key. Returns the new DORef. */
-  cloneDO(ref: DORefParam, newObjectKey: string): Promise<DORefParam>;
-  /** Destroy a DO's SQLite storage (main + WAL/SHM files). */
-  destroyDO(ref: DORefParam): Promise<void>;
 }
 export function createWorkerdClient(rpc: RpcCaller): WorkerdClient {
-  const call = <T>(method: string, ...args: unknown[]) =>
-    rpc.call<T>("main", `workerd.${method}`, args);
   const callWorkers = <T>(method: string, ...args: unknown[]) =>
     rpc.call<T>("main", `workers.${method}`, args);
 
@@ -111,7 +107,5 @@ export function createWorkerdClient(rpc: RpcCaller): WorkerdClient {
       ),
     durableObjectService: (query, objectKey) =>
       createDurableObjectServiceClient(rpc, query, objectKey),
-    cloneDO: (ref, newObjectKey) => call<DORefParam>("cloneDO", ref, newObjectKey),
-    destroyDO: (ref) => call<void>("destroyDO", ref),
   };
 }

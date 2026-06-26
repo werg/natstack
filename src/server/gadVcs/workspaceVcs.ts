@@ -1238,6 +1238,22 @@ export class WorkspaceVcs implements WorkspaceStateSource, BuildSourceProvider {
     return this.contextManager.pinContext(contextId, baseView);
   }
 
+  /**
+   * Fork a context's FILE state for {@link runtime.cloneContext}: snapshot the
+   * SOURCE's full working view (every edited repo at its committed ctx head
+   * COMPOSED WITH its uncommitted edits; unedited repos at the pinned base) and
+   * pin it as the TARGET context's base. The target materializes the source's
+   * exact files and then diverges with its own ctx heads.
+   *
+   * Trade-off (intended): the target reads the snapshot as a CLEAN base — it does
+   * NOT inherit the source's per-repo ctx-head lineage or ahead/behind/uncommitted
+   * status. The file CONTENT is identical; the VCS history is flattened to a pin.
+   */
+  async forkContext(sourceContextId: string, targetContextId: string): Promise<void> {
+    const snapshot = await this.contextManager.resolveContextView(sourceContextId);
+    await this.contextManager.pinContext(targetContextId, snapshot);
+  }
+
   /** The context's pinned base view state, or null if never pinned. */
   contextBaseView(contextId: string): Promise<string | null> {
     return this.contextManager.contextBaseView(contextId);

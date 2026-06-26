@@ -79,6 +79,12 @@ interface BuildDepsOptions {
   >["resolveAppEffectiveVersion"];
   setEntityTitle?: Parameters<typeof createRuntimeService>[0]["setEntityTitle"];
   vcsContexts?: Parameters<typeof createRuntimeService>[0]["vcsContexts"];
+  cloneDurableStorage?: NonNullable<
+    Parameters<typeof createRuntimeService>[0]["hooks"]
+  >["cloneDurableStorage"];
+  destroyDurableStorage?: NonNullable<
+    Parameters<typeof createRuntimeService>[0]["hooks"]
+  >["destroyDurableStorage"];
 }
 
 /** In-memory context-folder fake tracking which contexts exist. */
@@ -120,6 +126,8 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
   const resolvePanelEffectiveVersion =
     opts.resolvePanelEffectiveVersion ?? vi.fn(async () => "ev-panel");
   const resolveAppEffectiveVersion = opts.resolveAppEffectiveVersion ?? vi.fn(async () => "ev-app");
+  const cloneDurableStorage = opts.cloneDurableStorage ?? vi.fn(async () => {});
+  const destroyDurableStorage = opts.destroyDurableStorage ?? vi.fn(async () => {});
 
   const entityStore = new WorkspaceEntityStore({
     doDispatch: dispatch,
@@ -135,6 +143,8 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
       resolvePanelEffectiveVersion,
       resolveAppEffectiveVersion,
       onRetire,
+      cloneDurableStorage,
+      destroyDurableStorage,
     },
     contextBoundary: {
       approvalQueue,
@@ -162,6 +172,8 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
     onRetire,
     resolvePanelEffectiveVersion,
     resolveAppEffectiveVersion,
+    cloneDurableStorage,
+    destroyDurableStorage,
   };
 }
 
@@ -1018,5 +1030,272 @@ describe("runtimeService session entities", () => {
     expect(context.contextId).toEqual(expect.any(String));
     expect(context.contextId.length).toBeGreaterThan(0);
     expect(contextFolders.ensureContextFolder).toHaveBeenCalledWith(context.contextId);
+  });
+});
+
+const workerCaller = (id = "worker:workers/fork:fork", _ctx = "ctx-fork") =>
+  createVerifiedCaller(id, "worker", {
+    callerId: id,
+    callerKind: "worker",
+    repoPath: "workers/fork",
+    effectiveVersion: "v1",
+  });
+
+/** Seed a channel + agent DO in `contextId` (parented to `parent`). */
+async function seedConversation(
+  service: Awaited<ReturnType<typeof buildDeps>>["service"],
+  contextId: string,
+  parent = serverCaller
+) {
+  const ch = (await service.handler({ caller: parent }, "createEntity", [
+    {
+      kind: "do",
+      source: "workers/pubsub-channel",
+      className: "PubSubChannel",
+      key: "ch-1",
+      contextId,
+    },
+  ])) as { id: string };
+  const agent = (await service.handler({ caller: parent }, "createEntity", [
+    { kind: "do", source: "workers/agent", className: "AgentDO", key: "agent-1", contextId },
+  ])) as { id: string };
+  return { ch, agent };
+}
+
+interface CloneEntity {
+  sourceId: string;
+  newId: string;
+  kind: string;
+  source: string;
+  className?: string;
+  sourceKey: string;
+  newKey: string;
+  targetId: string;
+}
+
+describe("runtimeService.cloneContext", () => {
+  it("clones every durable entity into a fresh isolated context, mapping source→clone", async () => {
+    const forkContext = vi.fn(async () => {});
+    const { service, entityCache, cloneDurableStorage, contextFolders } = await buildDeps({
+      vcsContexts: { forkContext },
+    });
+    const { ch, agent } = await seedConversation(service, "ctx-src");
+
+    const result = (await service.handler({ caller: serverCaller }, "cloneContext", [
+      { sourceContextId: "ctx-src" },
+    ])) as { contextId: string; entities: CloneEntity[] };
+
+    // Fresh, isolated target context — never the source.
+    expect(result.contextId).toMatch(/^[0-9a-f-]{36}$/);
+    expect(result.contextId).not.toBe("ctx-src");
+    // File state snapshotted source→target, folder materialized.
+    expect(forkContext).toHaveBeenCalledWith("ctx-src", result.contextId);
+    expect(contextFolders.existing.has(result.contextId)).toBe(true);
+
+    // Both DOs mapped; new keys are distinct from the source keys.
+    expect(result.entities).toHaveLength(2);
+    const chMap = result.entities.find((e) => e.sourceId === ch.id)!;
+    expect(chMap).toMatchObject({
+      kind: "do",
+      source: "workers/pubsub-channel",
+      className: "PubSubChannel",
+      sourceKey: "ch-1",
+    });
+    expect(chMap.newKey).not.toBe("ch-1");
+    expect(result.entities.some((e) => e.sourceId === agent.id)).toBe(true);
+
+    // Storage cloned per DO with from/to keys.
+    expect(cloneDurableStorage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "workers/pubsub-channel",
+        className: "PubSubChannel",
+        fromKey: "ch-1",
+        toKey: chMap.newKey,
+      })
+    );
+    // Clones are active and live in the new context.
+    const cloneRec = entityCache.resolveActive(chMap.newId);
+    expect(cloneRec?.contextId).toBe(result.contextId);
+    expect(cloneRec?.status).toBe("active");
+  });
+
+  it("clones only the named entities when `include` is given", async () => {
+    const { service, cloneDurableStorage } = await buildDeps();
+    const { ch } = await seedConversation(service, "ctx-inc");
+
+    const result = (await service.handler({ caller: serverCaller }, "cloneContext", [
+      { sourceContextId: "ctx-inc", include: [ch.id] },
+    ])) as { entities: CloneEntity[] };
+
+    expect(result.entities).toHaveLength(1);
+    expect(result.entities[0]!.sourceId).toBe(ch.id);
+    // Only the channel's storage was cloned (the agent was not in `include`).
+    expect(cloneDurableStorage).toHaveBeenCalledTimes(1);
+  });
+
+  it("parents the clones to the caller", async () => {
+    const { service, instance } = await buildDeps();
+    await seedConversation(service, "ctx-parent");
+    const caller = workerCaller();
+
+    const result = (await service.handler({ caller }, "cloneContext", [
+      { sourceContextId: "ctx-parent" },
+    ])) as { entities: CloneEntity[] };
+
+    for (const e of result.entities) {
+      expect(instance.entityResolve(e.newId)?.parentId).toBe(caller.runtime.id);
+    }
+  });
+
+  it("throws when the source context has no clonable entities", async () => {
+    const { service } = await buildDeps();
+    await expect(
+      service.handler({ caller: serverCaller }, "cloneContext", [{ sourceContextId: "ctx-empty" }])
+    ).rejects.toThrow(/no clonable/i);
+  });
+
+  it("is free when cloning your OWN context", async () => {
+    const { service, approvalQueue, entityCache } = await buildDeps();
+    const caller = panelCaller("panel:o", "ctx-mine");
+    entityCache._onActivate({
+      id: caller.runtime.id,
+      kind: "panel",
+      source: { repoPath: "panels/caller", effectiveVersion: "v1" },
+      contextId: "ctx-mine",
+      key: "o",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+    await seedConversation(service, "ctx-mine");
+
+    await service.handler({ caller }, "cloneContext", [{ sourceContextId: "ctx-mine" }]);
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("prompts when cloning a FOREIGN EXISTING context", async () => {
+    const { service, approvalQueue, entityCache } = await buildDeps({
+      approvalDecision: "session",
+    });
+    const caller = panelCaller("panel:f", "ctx-caller");
+    entityCache._onActivate({
+      id: caller.runtime.id,
+      kind: "panel",
+      source: { repoPath: "panels/caller", effectiveVersion: "v1" },
+      contextId: "ctx-caller",
+      key: "f",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+    await seedConversation(service, "ctx-foreign");
+
+    await service.handler({ caller }, "cloneContext", [{ sourceContextId: "ctx-foreign" }]);
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({ capability: "context.boundary" })
+    );
+  });
+
+  it("server callers bypass the clone gate", async () => {
+    const { service, approvalQueue } = await buildDeps();
+    await seedConversation(service, "ctx-foreign2");
+    await service.handler({ caller: serverCaller }, "cloneContext", [
+      { sourceContextId: "ctx-foreign2" },
+    ]);
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+  });
+
+  it("rolls back (retires clones, deletes cloned storage, drops the new context) on failure", async () => {
+    const forkContext = vi.fn(async (_source: string, _target: string) => {});
+    // Fail storage-cloning the SECOND DO so the clone loop throws mid-way.
+    const cloneDurableStorage = vi
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockRejectedValueOnce(new Error("clone boom"));
+    const { service, entityCache, destroyDurableStorage, contextFolders } = await buildDeps({
+      vcsContexts: { forkContext },
+      cloneDurableStorage,
+    });
+    await seedConversation(service, "ctx-roll");
+
+    await expect(
+      service.handler({ caller: serverCaller }, "cloneContext", [{ sourceContextId: "ctx-roll" }])
+    ).rejects.toThrow(/clone boom/);
+
+    const targetContextId = forkContext.mock.calls[0]![1];
+    // The new context's folder + VCS were torn down.
+    expect(contextFolders.removeContext).toHaveBeenCalledWith(targetContextId);
+    // The one clone that was activated before the failure is gone again.
+    expect(entityCache.listActive().some((e) => e.contextId === targetContextId)).toBe(false);
+    // The first DO's already-cloned storage was reclaimed.
+    expect(destroyDurableStorage).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("runtimeService.destroyContext", () => {
+  it("retires every entity, reclaims DO storage, then drops VCS + folder", async () => {
+    const dropContext = vi.fn(async () => {});
+    const { service, instance, destroyDurableStorage, contextFolders } = await buildDeps({
+      vcsContexts: { dropContext },
+    });
+    const { ch, agent } = await seedConversation(service, "ctx-dead");
+
+    await service.handler({ caller: serverCaller }, "destroyContext", [{ contextId: "ctx-dead" }]);
+
+    expect(instance.entityResolve(ch.id)?.status).toBe("retired");
+    expect(instance.entityResolve(agent.id)?.status).toBe("retired");
+    // DO storage reclaimed for both (retire alone never deletes it).
+    expect(destroyDurableStorage).toHaveBeenCalledTimes(2);
+    expect(dropContext).toHaveBeenCalledWith("ctx-dead");
+    expect(contextFolders.removeContext).toHaveBeenCalledWith("ctx-dead");
+  });
+
+  it("is free to destroy a context you fully own (every entity parented to you)", async () => {
+    const { service, approvalQueue, instance } = await buildDeps();
+    const caller = workerCaller();
+    // The caller creates a DO into a FRESH foreign context (free) — it now owns it.
+    const owned = (await service.handler({ caller }, "createEntity", [
+      {
+        kind: "do",
+        source: "workers/agent",
+        className: "AgentDO",
+        key: "a",
+        contextId: "ctx-owned",
+      },
+    ])) as { id: string };
+    expect(instance.entityResolve(owned.id)?.parentId).toBe(caller.runtime.id);
+    (approvalQueue.request as ReturnType<typeof vi.fn>).mockClear();
+
+    await service.handler({ caller }, "destroyContext", [{ contextId: "ctx-owned" }]);
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(instance.entityResolve(owned.id)?.status).toBe("retired");
+  });
+
+  it("prompts (severe) to destroy a foreign context you do NOT own", async () => {
+    const { service, approvalQueue, entityCache } = await buildDeps({
+      approvalDecision: "session",
+    });
+    const caller = panelCaller("panel:x", "ctx-caller");
+    entityCache._onActivate({
+      id: caller.runtime.id,
+      kind: "panel",
+      source: { repoPath: "panels/caller", effectiveVersion: "v1" },
+      contextId: "ctx-caller",
+      key: "x",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+    // Entities in ctx-victim are parented to the server, not the caller.
+    await seedConversation(service, "ctx-victim");
+
+    await service.handler({ caller }, "destroyContext", [{ contextId: "ctx-victim" }]);
+
+    expect(approvalQueue.request).toHaveBeenCalledTimes(1);
+    expect(approvalQueue.request).toHaveBeenCalledWith(
+      expect.objectContaining({ capability: "context.boundary", severity: "severe" })
+    );
   });
 });

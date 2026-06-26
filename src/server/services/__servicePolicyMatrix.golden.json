@@ -236,8 +236,10 @@
   "runtime": {
     "service": ["app", "do", "panel", "server", "shell", "worker"],
     "methods": {
+      "cloneContext": null,
       "createContext": ["app", "do", "panel", "server", "shell", "worker"],
       "createEntity": null,
+      "destroyContext": null,
       "listEntities": null,
       "resolveContext": null,
       "retireEntity": null,
@@ -321,13 +323,6 @@
       "listSubscriptions": null,
       "revokeSubscription": null,
       "rotateSecret": null
-    }
-  },
-  "workerd": {
-    "service": ["app", "do", "extension", "panel", "server", "worker"],
-    "methods": {
-      "cloneDO": null,
-      "destroyDO": null
     }
   },
   "workerdInspector": {

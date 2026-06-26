@@ -12,7 +12,11 @@
 
 import { randomUUID } from "node:crypto";
 import type { ServiceDefinition } from "@natstack/shared/serviceDefinition";
-import { runtimeMethods } from "@natstack/shared/serviceSchemas/runtime";
+import {
+  runtimeMethods,
+  type ClonedEntity,
+  type CloneContextResult,
+} from "@natstack/shared/serviceSchemas/runtime";
 import type { VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { AppCapability } from "@natstack/shared/unitManifest";
 import {
@@ -68,6 +72,29 @@ export interface RuntimeEntityHooks {
 
   /** Cleanup hooks invoked on retire — closed at bootstrap. */
   onRetire: (record: EntityRecord) => Promise<void>;
+
+  /**
+   * Clone a DO's durable SQLite storage to a new instance key (server-internal
+   * `workerdManager.cloneDO`). Used by `cloneContext`; never exposed to userland.
+   */
+  cloneDurableStorage?: (args: {
+    source: string;
+    className: string;
+    fromKey: string;
+    toKey: string;
+  }) => Promise<void>;
+
+  /**
+   * Delete a DO's durable SQLite storage (server-internal
+   * `workerdManager.destroyDO`). Used by `cloneContext` rollback + `destroyContext`;
+   * never exposed to userland. (Plain `retireEntity` deliberately leaves storage
+   * intact for re-attach — only a full context destroy reclaims it.)
+   */
+  destroyDurableStorage?: (args: {
+    source: string;
+    className: string;
+    key: string;
+  }) => Promise<void>;
 }
 
 /** Context-folder lifecycle used by inert session entities. */
@@ -88,6 +115,13 @@ export interface RuntimeVcsContexts {
    * `ctx` heads and pin ref.
    */
   dropContext?(contextId: string): Promise<void>;
+  /**
+   * Fork a context's file state: snapshot the SOURCE context's full working view
+   * (committed ctx heads + uncommitted edits) as the TARGET context's pinned base,
+   * so the clone starts as an isolated copy of the source's files and then diverges
+   * independently. Used by `cloneContext`.
+   */
+  forkContext?(sourceContextId: string, targetContextId: string): Promise<void>;
 }
 
 export interface RuntimeServiceDeps {
@@ -190,7 +224,25 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         );
       }
     }
-    let contextId = await resolveContextPolicy(caller, spec.contextId, spec);
+    // Gate (context-boundary) then prepare+activate. The gate is the ONLY caller
+    // of the boundary check on this path; `activateEntity` is gate-free so internal
+    // orchestration (cloneContext) can create clones after a single source-gate.
+    const contextId = await resolveContextPolicy(caller, spec.contextId, spec);
+    return activateEntity(caller, spec, contextId);
+  }
+
+  /**
+   * Prepare runtime resources for an entity and commit its durable row — WITHOUT
+   * the context-boundary gate. `createEntity` calls this after gating; `cloneContext`
+   * calls it per-clone after a single gate on the source context. `parentId` is the
+   * caller, so a cloneContext caller owns (and may freely destroy) the clones.
+   */
+  async function activateEntity(
+    caller: VerifiedCaller,
+    spec: RuntimeEntityCreateSpec,
+    initialContextId: string
+  ): Promise<RuntimeEntityHandle> {
+    let contextId = initialContextId;
     const key = spec.key ?? randomUUID();
 
     let canonicalId: string;
@@ -340,6 +392,23 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
     return context;
   }
 
+  /**
+   * Durable retire + cleanup hooks for ONE entity, WITHOUT the context-boundary
+   * gate. `retireEntity` calls this after gating; `cloneContext` rollback and
+   * `destroyContext` call it directly (their gate is on the context as a whole).
+   */
+  async function retireRecord(id: string): Promise<EntityRecord | null> {
+    const record = await store.retire(id);
+    if (!record) return null;
+    try {
+      await deps.hooks.onRetire(record);
+      await store.cleanupComplete(id);
+    } catch {
+      // Leave cleanup_complete=0; cleanupReaper will retry.
+    }
+    return record;
+  }
+
   async function retireEntity(
     caller: VerifiedCaller,
     id: string,
@@ -357,14 +426,8 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         ...(removeContext ? { severity: "severe" as const } : {}),
       });
     }
-    const record = await store.retire(id);
+    const record = await retireRecord(id);
     if (!record) return;
-    try {
-      await deps.hooks.onRetire(record);
-      await store.cleanupComplete(id);
-    } catch {
-      // Leave cleanup_complete=0; cleanupReaper will retry.
-    }
     if (removeContext) {
       const live = await store.listActive();
       if (!live.some((e) => e.contextId === record.contextId)) {
@@ -373,6 +436,171 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         await deps.contextFolders.removeContext(record.contextId);
       }
     }
+  }
+
+  /** Build a clone spec from a source record: same source + class, new key/context.
+   *  `ref` is omitted, so the clone builds at the current main version (HEAD-tracking
+   *  entities — the common case — match; a source pinned to an older version is
+   *  re-resolved to main, an accepted trade-off vs. plumbing a state-hash build ref). */
+  function buildCloneSpec(
+    src: EntityRecord,
+    contextId: string,
+    newKey: string
+  ): RuntimeEntityCreateSpec {
+    if (src.kind === "do") {
+      if (!src.className) {
+        throw new Error(`cloneContext: DO entity ${src.id} has no className`);
+      }
+      return {
+        kind: "do",
+        source: src.source.repoPath,
+        className: src.className,
+        key: newKey,
+        contextId,
+        stateArgs: src.stateArgs,
+      };
+    }
+    return {
+      kind: "worker",
+      source: src.source.repoPath,
+      key: newKey,
+      contextId,
+      stateArgs: src.stateArgs,
+    };
+  }
+
+  /**
+   * Clone a whole context's durable substrate into a fresh, isolated context:
+   * every worker/DO's storage (server-internal cloneDO) + a VCS snapshot of the
+   * source's working files. Returns the new contextId + source→clone map. Does NOT
+   * invoke the cloned DOs — server→DO calls are out of band; a caller that needs to
+   * "activate" clones (re-root logs, rebind the channel) drives that via the clones'
+   * own methods (the fork's `postClone`). Gated on the SOURCE: cloning your own
+   * context is free; cloning a foreign existing one prompts.
+   */
+  async function cloneContext(
+    caller: VerifiedCaller,
+    args: { sourceContextId: string; include?: string[] }
+  ): Promise<CloneContextResult> {
+    const { sourceContextId } = args;
+    const include = args.include ? new Set(args.include) : null;
+    await gateContextLaunch(caller, sourceContextId, {
+      kind: "runtime",
+      verb: "Clone context",
+      targetLabel: sourceContextId,
+    });
+
+    // Only durable kinds carry cloneable state. Panels/apps are UI/host-managed;
+    // sessions are inert identity. They are not reproduced in the clone. When
+    // `include` is given, clone exactly that subset (the caller's explicit scope).
+    const sourceEntities = (await store.listActive()).filter(
+      (e) =>
+        e.contextId === sourceContextId &&
+        (e.kind === "do" || e.kind === "worker") &&
+        (include ? include.has(e.id) : true)
+    );
+    if (sourceEntities.length === 0) {
+      throw new Error(
+        `cloneContext: source context ${sourceContextId} has no clonable (worker/DO) entities`
+      );
+    }
+
+    const targetContextId = randomUUID();
+    // Fork file state FIRST: pin the new context to the source's working snapshot
+    // so clones materialize the source's files, then diverge independently.
+    await deps.vcsContexts?.forkContext?.(sourceContextId, targetContextId);
+    await deps.contextFolders.ensureContextFolder(targetContextId);
+
+    const created: RuntimeEntityHandle[] = [];
+    const clonedStorage: Array<{ source: string; className: string; key: string }> = [];
+    const entities: ClonedEntity[] = [];
+    try {
+      for (const src of sourceEntities) {
+        const newKey = `${src.key}~clone~${randomUUID().slice(0, 8)}`;
+        if (src.kind === "do") {
+          const className = src.className;
+          if (className == null) {
+            throw new Error(`cloneContext: DO entity ${src.id} has no className`);
+          }
+          // Storage clone must precede activation so the DO reads cloned state on
+          // first access.
+          await deps.hooks.cloneDurableStorage?.({
+            source: src.source.repoPath,
+            className,
+            fromKey: src.key,
+            toKey: newKey,
+          });
+          clonedStorage.push({ source: src.source.repoPath, className, key: newKey });
+        }
+        const handle = await activateEntity(
+          caller,
+          buildCloneSpec(src, targetContextId, newKey),
+          targetContextId
+        );
+        created.push(handle);
+        entities.push({
+          sourceId: src.id,
+          newId: handle.id,
+          kind: src.kind as "do" | "worker",
+          source: src.source.repoPath,
+          ...(src.className ? { className: src.className } : {}),
+          sourceKey: src.key,
+          newKey,
+          targetId: handle.targetId,
+        });
+      }
+    } catch (err) {
+      // Best-effort rollback: retire clones, delete cloned storage, drop the context.
+      for (const h of created) await retireRecord(h.id).catch(() => undefined);
+      for (const s of clonedStorage)
+        await deps.hooks.destroyDurableStorage?.(s).catch(() => undefined);
+      await deps.vcsContexts?.dropContext?.(targetContextId).catch(() => undefined);
+      await deps.contextFolders.removeContext(targetContextId).catch(() => undefined);
+      throw err instanceof Error ? err : new Error(String(err));
+    }
+    return { contextId: targetContextId, entities };
+  }
+
+  /**
+   * Tear a whole context down: retire every entity, reclaim each DO's SQLite
+   * storage, then drop the VCS state + folder. Free for your own context or one you
+   * fully own (every active entity launched by you — e.g. a context you just cloned);
+   * gated (severe) when destroying another agent or panel's existing context.
+   */
+  async function destroyContext(
+    caller: VerifiedCaller,
+    args: { contextId: string }
+  ): Promise<void> {
+    const { contextId } = args;
+    const entities = (await store.listActive()).filter((e) => e.contextId === contextId);
+    // Ownership bypass: a context whose every active entity you launched is yours
+    // to destroy. Otherwise gate (gateContextLaunch still frees your own context +
+    // trusted chrome). An empty context falls through to the gate.
+    const owned = entities.length > 0 && entities.every((e) => e.parentId === caller.runtime.id);
+    if (!owned) {
+      await gateContextLaunch(caller, contextId, {
+        kind: "runtime",
+        verb: "Destroy context",
+        targetLabel: contextId,
+        severity: "severe",
+      });
+    }
+    for (const e of entities) {
+      const rec = await retireRecord(e.id);
+      // DO storage is NOT reclaimed by retire (kept for re-attach) — a full context
+      // destroy is the one path that deletes it.
+      if (rec && rec.kind === "do" && rec.className) {
+        await deps.hooks
+          .destroyDurableStorage?.({
+            source: rec.source.repoPath,
+            className: rec.className,
+            key: rec.key,
+          })
+          .catch(() => undefined);
+      }
+    }
+    await deps.vcsContexts?.dropContext?.(contextId).catch(() => undefined);
+    await deps.contextFolders.removeContext(contextId).catch(() => undefined);
   }
 
   interface EntitySummary {
@@ -436,6 +664,15 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         case "createContext": {
           const [{ contextId }] = args as [{ contextId?: string }];
           return await createContext(ctx.caller, { contextId });
+        }
+        case "cloneContext": {
+          const [cloneArgs] = args as [{ sourceContextId: string; include?: string[] }];
+          return await cloneContext(ctx.caller, cloneArgs);
+        }
+        case "destroyContext": {
+          const [{ contextId }] = args as [{ contextId: string }];
+          await destroyContext(ctx.caller, { contextId });
+          return;
         }
         case "setTitle": {
           // Access is enforced by the per-method policy on `runtimeMethods.setTitle`

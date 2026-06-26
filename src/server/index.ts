@@ -1107,7 +1107,6 @@ async function main() {
   // ── RPC-only services (replacing serverServiceRegistry.ts) ──
 
   const { createBuildService } = await import("./services/buildService.js");
-  const { createWorkerdService } = await import("./services/workerdService.js");
   const { createTokensService } = await import("./services/tokensService.js");
   const { createPresenceService, createPresenceTracker } =
     await import("./services/presenceService.js");
@@ -1746,10 +1745,21 @@ async function main() {
           vcsContexts: {
             pinContext: (contextId) => workspaceVcs.pinContext(contextId),
             dropContext: (contextId) => workspaceVcs.dropContext(contextId),
+            forkContext: (sourceContextId, targetContextId) =>
+              workspaceVcs.forkContext(sourceContextId, targetContextId),
           },
           hooks: {
             prepareDurableObject: (args) => workerdManager.ensureDurableObjectEntity(args),
             prepareWorker: (args) => workerdManager.startWorker(args),
+            // Server-internal DO-storage primitives for cloneContext/destroyContext.
+            // cloneDO/destroyDO are NOT exposed to userland — only the runtime
+            // service (here) drives them, behind the context-boundary gate.
+            cloneDurableStorage: async ({ source, className, fromKey, toKey }) => {
+              await workerdManager.cloneDO({ source, className, objectKey: fromKey }, toKey);
+            },
+            destroyDurableStorage: async ({ source, className, key }) => {
+              await workerdManager.destroyDO({ source, className, objectKey: key });
+            },
             resolvePanelEffectiveVersion: async ({ source, ref }) => {
               if (source.startsWith("browser:")) return "";
               void ref;
@@ -2351,14 +2361,10 @@ async function main() {
       async stop(instance: import("./workerdManager.js").WorkerdManager | null) {
         await instance?.shutdown();
       },
-      getServiceDefinition() {
-        if (!workerdManagerInstance || !buildSystemForWorkerd) {
-          throw new Error("workerd service not initialized");
-        }
-        return createWorkerdService({
-          workerdManager: workerdManagerInstance,
-        });
-      },
+      // No RPC service: workerd's only userland-facing methods were the DO-storage
+      // primitives cloneDO/destroyDO, now closed off. They live on as plain
+      // WorkerdManager methods that the runtime service calls server-internally
+      // (cloneContext/destroyContext), behind the context-boundary gate.
     });
   }
 

@@ -2,8 +2,9 @@
  * Fork Worker — stateless fetch handler that orchestrates semantic conversation forks.
  *
  * Uses platform primitives via RPC:
- * - `runtime.callMain("workerd.cloneDO", ...)` for filesystem SQLite clones
- * - `runtime.callMain("workerd.destroyDO", ...)` for rollback cleanup
+ * - `runtime.callMain("runtime.cloneContext", ...)` clones the channel + kept agents
+ *   into a fresh isolated context (storage + file snapshot), gated by context.boundary
+ * - `runtime.callMain("runtime.destroyContext", ...)` for rollback cleanup
  * - `runtime.rpc.call("do:source:className:objectKey", method, ...args)` for DO method calls
  */
 
@@ -22,7 +23,7 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname === "/fork" && request.method === "POST") {
-      const opts = await request.json() as ForkOpts;
+      const opts = (await request.json()) as ForkOpts;
       try {
         const result = await fork(runtime, opts);
         return Response.json(result);
