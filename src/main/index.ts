@@ -1505,6 +1505,19 @@ function attachWorkspaceWindowServices(): void {
   setupTestApi(panelOrchestrator, panelRegistry, panelView);
 }
 
+/**
+ * Native window chrome colours, kept in step with the greyed shell chrome — and
+ * specifically with the CSS titlebar, which paints `--surface-raised` (Radix
+ * slate step-4 in dark, step-3 in light; see TitleBar.tsx + overrides.css). The
+ * native caption-button strip uses the same value so it blends into the titlebar
+ * with no colour seam, with a legible symbol colour over it.
+ */
+function chromeWindowColors(dark: boolean): { background: string; symbol: string } {
+  return dark
+    ? { background: "#272a2d", symbol: "#c7c9ce" }
+    : { background: "#f0f0f3", symbol: "#44474d" };
+}
+
 function createWindow(): void {
   if (mainWindow && viewManager) {
     attachWorkspaceWindowServices();
@@ -1513,17 +1526,26 @@ function createWindow(): void {
 
   // Create BaseWindow (no webContents of its own)
   // Start hidden to avoid layout flash - shown after shell content loads
+  const chrome = chromeWindowColors(nativeTheme.shouldUseDarkColors);
   mainWindow = new BaseWindow({
     width: 1200,
     height: 600,
     show: false,
     skipTaskbar: IS_HEADLESS_HOST,
+    // Paint the window's native backdrop in the greyed chrome base so any
+    // pre-paint gap shows calm grey rather than a white/black flash.
+    backgroundColor: chrome.background,
     titleBarStyle: "hidden",
     ...(process.platform !== "darwin"
       ? {
           // Match the 28px CSS title bar (TitleBar.tsx) so the native window
-          // controls align with the dense chrome instead of overhanging it.
-          titleBarOverlay: { height: 28 },
+          // controls align with the dense chrome instead of overhanging it,
+          // and tint the caption-button strip to the greyed chrome.
+          titleBarOverlay: {
+            height: 28,
+            color: chrome.background,
+            symbolColor: chrome.symbol,
+          },
         }
       : {}),
   });
@@ -2684,7 +2706,21 @@ app.on("activate", () => {
   }
 });
 
-// Listen for system theme changes and notify subscribers
+// Listen for system theme changes and notify subscribers. Also repaint the
+// native window chrome so the backdrop + caption buttons track the appearance
+// (this fires for in-app theme switches too, which set nativeTheme.themeSource).
 nativeTheme.on("updated", () => {
-  eventService.emit("system-theme-changed", nativeTheme.shouldUseDarkColors ? "dark" : "light");
+  const dark = nativeTheme.shouldUseDarkColors;
+  eventService.emit("system-theme-changed", dark ? "dark" : "light");
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    const chrome = chromeWindowColors(dark);
+    try {
+      mainWindow.setBackgroundColor(chrome.background);
+      if (process.platform !== "darwin") {
+        mainWindow.setTitleBarOverlay({ color: chrome.background, symbolColor: chrome.symbol });
+      }
+    } catch {
+      // Window may be mid-teardown; the next createWindow picks up the colour.
+    }
+  }
 });

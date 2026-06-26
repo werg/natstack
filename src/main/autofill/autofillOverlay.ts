@@ -106,14 +106,14 @@ export class AutofillOverlay {
 <html><head><style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-         font-size: 13px; background: #fff; border: 1px solid #ccc;
+         font-size: 13px; background: #f0f0f3; border: 1px solid #d4d5db;
          border-radius: 6px; overflow: hidden; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
   .item { padding: 8px 12px; cursor: pointer; border-bottom: 1px solid #eee; }
   .item:last-child { border-bottom: none; }
   .item:hover, .item:focus { background: #e8f0fe; outline: none; }
   .item .origin { font-size: 11px; color: #666; margin-top: 2px; }
   @media (prefers-color-scheme: dark) {
-    body { background: #2d2d2d; border-color: #555; color: #eee; }
+    body { background: #2e3135; border-color: #3d4147; color: #eee; }
     .item:hover, .item:focus { background: #3d3d5c; }
     .item .origin { color: #aaa; }
     .item { border-bottom-color: #444; }

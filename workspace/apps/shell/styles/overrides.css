@@ -11,22 +11,53 @@ body,
   min-height: 100%;
   overflow: hidden;
   /* Pre-paint background before the Radix theme mounts — follow the system
-     preference so a light-mode user never gets a dark flash. */
-  background: #f8fafc;
+     preference so a light-mode user never gets a dark flash. Tuned to the
+     greyed chrome base below (Radix slate step 4 light / step 3 dark) so the
+     first paint already reads as calm grey, not bright white. */
+  background: #e8e8ec;
 }
 
 @media (prefers-color-scheme: dark) {
   html,
   body,
   #app {
-    background: #111315;
+    background: #212225;
   }
 }
 
+/* ============================================================================
+   Greyed app chrome. We step the shell's surface tokens a couple of rungs along
+   the Radix gray scale so light-mode chrome reads as a soft grey (not bright
+   white) and dark-mode chrome lifts off near-black toward a neutral grey. Raised
+   surfaces (cards, the approval overlay, toolbars) stay one rung "lighter" than
+   the chrome base in BOTH appearances so elevation still reads.
+
+   These override the shared `--surface-*` tokens (defined in tokens.css) but are
+   SHELL-SCOPED: they live in this file, which is loaded only by the shell bundle
+   — the main window AND the transparent approval overlay, both Radix themes.
+   Panels render in their own webContents that load tokens.css but never this
+   file, so panel surfaces keep the original tokens. Re-tinting `--surface-*`
+   here (rather than swapping `grayColor`) is what keeps the recolour on the
+   chrome and off the panels.
+   ============================================================================ */
+.radix-themes:where(.light, .light-theme) {
+  --surface-chrome: var(--gray-4);
+  --surface-card: var(--gray-4);
+  --surface-raised: var(--gray-3);
+  --surface-border: var(--gray-a7);
+}
+
+.radix-themes:where(.dark, .dark-theme) {
+  --surface-chrome: var(--gray-3);
+  --surface-card: var(--gray-3);
+  --surface-raised: var(--gray-4);
+  --surface-border: var(--gray-a7);
+}
+
 .app-shell-theme {
-  /* Chrome vars are thin aliases over the shared surface tokens (tokens.css) so
-     the shell and panels read in one surface language. The `--app-chrome-*`
-     names are kept as the shell's local vocabulary, now backed by the tokens. */
+  /* Chrome vars are thin aliases over the shared surface tokens (now greyed
+     above), so the shell reads in one surface language and inherits the
+     light/dark split automatically — no per-appearance block needed here. */
   --app-chrome-bg: var(--surface-chrome);
   --app-chrome-bg-strong: var(--surface-raised);
   --app-chrome-border: var(--surface-border);
@@ -40,23 +71,21 @@ body,
   background: var(--app-chrome-bg);
 }
 
-.app-shell-theme:where(.light, .light-theme) {
-  /* Light mode: lean on Radix step-3 surfaces (gentler than hand-rolled hex)
-     for chrome, and the solid step surfaces for approval tints. */
-  --app-chrome-bg: var(--gray-2);
-  --app-chrome-bg-strong: var(--gray-1);
-  --app-chrome-border: var(--gray-a6);
-  --app-chrome-hover: var(--gray-a3);
-  --app-chrome-selected: var(--gray-a4);
-  --app-chrome-selected-hover: var(--gray-a5);
-}
-
 .app-shell-panel-card {
   background-color: var(--app-chrome-bg-strong);
-  box-shadow: inset 0 0 0 1px var(--app-chrome-border);
+  /* No frame: the sidebar and panel panes read as flush regions of the chrome,
+     not boxed cards. Separation comes from tone (panel content is darker than
+     the chrome) and the slim resize handle between them — no outline seams. */
+  box-shadow: none;
   /* Structural panes fill their slot flush — the rounded global radius is for
      controls (buttons, rows, badges), not these big rectangular containers. */
   border-radius: 0;
+}
+
+/* Radix Card paints its surface border on `::after`, so the element's
+   `box-shadow: none` above isn't enough — clear the pseudo-element ring too. */
+.app-shell-panel-card::after {
+  box-shadow: none;
 }
 
 /* Constrain dropdown menus to reasonable height */

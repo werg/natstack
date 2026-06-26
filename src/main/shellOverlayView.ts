@@ -18,7 +18,7 @@ ${OVERLAY_CSP_META}
 <style>
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; height: 100%; background: transparent; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-.panel { margin: 0; border: 1px solid #d7d7dc; border-radius: 6px; overflow-y: auto; overflow-x: hidden; max-height: 100%; background: #fff; color: #1f1f24; box-shadow: 0 8px 22px rgba(0,0,0,.18); }
+.panel { margin: 0; border: 1px solid #d4d5db; border-radius: 6px; overflow-y: auto; overflow-x: hidden; max-height: 100%; background: #f0f0f3; color: #1f1f24; box-shadow: 0 8px 22px rgba(0,0,0,.18); }
 .panel::-webkit-scrollbar { width: 10px; }
 .panel::-webkit-scrollbar-track { background: transparent; }
 .panel::-webkit-scrollbar-thumb { background: rgba(130,130,140,.45); border-radius: 999px; border: 3px solid transparent; background-clip: padding-box; }
@@ -34,7 +34,7 @@ html, body { margin: 0; padding: 0; height: 100%; background: transparent; font-
 .match { font-weight: 700; color: #0b57d0; }
 .empty { padding: 12px; font-size: 12px; color: #6f6f77; }
 @media (prefers-color-scheme: dark) {
-  .panel { background: #202024; border-color: #3b3b42; color: #f0f0f3; box-shadow: 0 8px 22px rgba(0,0,0,.45); }
+  .panel { background: #2e3135; border-color: #3d4147; color: #f0f0f3; box-shadow: 0 8px 22px rgba(0,0,0,.45); }
   .row { border-bottom-color: #303038; }
   .row:hover, .row:focus, .row[data-selected="true"] { background: #28364d; }
   .meta, .empty { color: #a5a5ad; }
