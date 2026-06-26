@@ -105,12 +105,9 @@ describe("PanelView plain panel links", () => {
     );
 
     await vi.waitFor(() => {
-      expect(panelOrchestrator.navigatePanel).toHaveBeenCalledWith(
-        panelId,
-        "panels/chat",
-        { stateArgs: { initialPrompt: "hi" } },
-        { callerId: "panel:nav-current", callerKind: "panel" }
-      );
+      expect(panelOrchestrator.navigatePanel).toHaveBeenCalledWith(panelId, "panels/chat", {
+        stateArgs: { initialPrompt: "hi" },
+      });
     });
     expect(event.preventDefault).toHaveBeenCalled();
     expect(panelOrchestrator.createPanel).not.toHaveBeenCalled();
@@ -129,7 +126,7 @@ describe("PanelView plain panel links", () => {
         "panels/chat",
         { name: "chat-link" },
         undefined,
-        { callerId: "panel:nav-current", callerKind: "panel" }
+        undefined
       );
     });
     expect(sendPanelEvent).toHaveBeenCalledWith(panelId, "runtime:child-created", {
@@ -150,7 +147,7 @@ describe("PanelView plain panel links", () => {
         panelId,
         "https://example.com/",
         { focus: true },
-        { callerId: "panel:nav-current", callerKind: "panel" }
+        undefined
       );
     });
     expect(event.preventDefault).toHaveBeenCalled();

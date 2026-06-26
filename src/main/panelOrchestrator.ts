@@ -234,14 +234,6 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
     return (method, args) => this.callPanelTreeAsServer(method, args);
   }
 
-  private requirePanelTreeCaller(
-    caller: ScopedServerCaller | undefined,
-    operation: string
-  ): ScopedServerCaller {
-    if (!caller) throw new Error(`${operation} requires an authenticated panelTree caller`);
-    return caller;
-  }
-
   // =========================================================================
   // Panel creation
   // =========================================================================
@@ -372,11 +364,12 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
     stateArgs?: Record<string, unknown>,
     scopedCaller?: ScopedServerCaller
   ): Promise<{ id: string; title: string }> {
+    // App callers (the shell's test API, app-view links) create under their own
+    // capability-gated authority via a scoped connection. Panel-hosted links
+    // pass no scoped caller and are translated by the trusted host (see
+    // panelView). The source view becomes the parent slot when it's a panel,
+    // otherwise this is a new root panel.
     const caller = this.registry.getPanel(callerId);
-    if (!caller && scopedCaller?.callerKind !== "app") {
-      throw new Error(`Caller panel not found: ${callerId}`);
-    }
-    const panelTreeCaller = this.requirePanelTreeCaller(scopedCaller, "Panel creation");
     return this.createViaPanelTree(
       source,
       {
@@ -387,7 +380,7 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
         stateArgs,
       },
       { focus: options?.focus },
-      this.panelTreeCallAs(panelTreeCaller)
+      scopedCaller ? this.panelTreeCallAs(scopedCaller) : this.panelTreeCallAsServer()
     );
   }
 
@@ -403,12 +396,11 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
     scopedCaller?: ScopedServerCaller
   ): Promise<{ id: string; title: string } | null> {
     if (!this.registry.getPanel(panelId)) throw new Error(`Panel not found: ${panelId}`);
-    const panelTreeCaller = this.requirePanelTreeCaller(scopedCaller, "Panel navigation");
-    const result = (await this.callPanelTreeAs(panelTreeCaller, "navigate", [
-      panelId,
-      source,
-      options,
-    ])) as {
+    // Panel navigation is host-mediated (trusted chrome) by default; an app
+    // caller may still drive it under its own authority via a scoped connection.
+    const result = (await (scopedCaller
+      ? this.callPanelTreeAs(scopedCaller, "navigate", [panelId, source, options])
+      : this.callPanelTreeAsServer("navigate", [panelId, source, options]))) as {
       id?: string;
       title?: string;
       source?: string;
@@ -485,14 +477,11 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
     }
     const callerPanel = this.registry.getPanel(callerId);
     const parentId = callerPanel ? asPanelSlotId(callerId) : null;
-    const panelTreeCaller = callerPanel
-      ? this.requirePanelTreeCaller(caller, "Browser panel creation")
-      : (caller ?? null);
     return this.createViaPanelTree(
       url,
       { parentId, name: options?.name },
       { focus: options?.focus, browserUrl: url },
-      panelTreeCaller ? this.panelTreeCallAs(panelTreeCaller) : this.panelTreeCallAsServer()
+      caller ? this.panelTreeCallAs(caller) : this.panelTreeCallAsServer()
     );
   }
 

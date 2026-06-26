@@ -167,7 +167,12 @@ export async function createServerClient(
     `${caller.callerKind}\x00${caller.callerId}`;
 
   const createScopedClient = async (caller: ScopedServerCaller): Promise<ScopedClient> => {
-    if (caller.callerKind !== "app" && caller.callerKind !== "panel") {
+    // Only app principals get a scoped runtime connection. A panel authenticates
+    // its own direct connection, which holds the panel lease; a second
+    // host-opened connection for the same panel is rejected by the lease gate.
+    // Panel operations are therefore translated by the trusted host instead (see
+    // panelView / panelOrchestrator). Native `shell` callers use call().
+    if (caller.callerKind !== "app") {
       throw new Error(`Scoped server RPC is not available for ${caller.callerKind} callers`);
     }
     const grant = await authClient.grantConnection(caller.callerId);

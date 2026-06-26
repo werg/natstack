@@ -161,7 +161,11 @@ describe("ServerClient scoped runtime callers", () => {
     await expect.poll(() => events).toEqual([{ callerId: "@workspace-apps/shell" }]);
   });
 
-  it("creates a panel-scoped WS client through a shell-issued connection grant", async () => {
+  it("fails closed for panel scoped callers", async () => {
+    // A panel authenticates its own direct connection, which holds the panel
+    // lease; a second host-opened connection for the same panel is rejected by
+    // the server's lease gate. So scoped panel RPC is refused up front (no grant
+    // request) — panel operations are translated by the trusted host instead.
     const harness = await startRpcHarness();
     const client = await createServerClient(harness.port, "shell-token");
     cleanup.push(() => client.close());
@@ -173,16 +177,8 @@ describe("ServerClient scoped runtime callers", () => {
         "getInfo",
         []
       )
-    ).resolves.toEqual({ callerId: "panel:nav-current", callerKind: "panel" });
-
-    expect(harness.grantRequests).toEqual([["panel:nav-current"]]);
-    expect(harness.scopedRequests).toEqual([
-      {
-        callerId: "panel:nav-current",
-        callerKind: "panel",
-        method: "workspace.getInfo",
-      },
-    ]);
+    ).rejects.toThrow(/not available for panel/);
+    expect(harness.grantRequests).toEqual([]);
   });
 
   it("fails closed for unsupported scoped caller kinds", async () => {

@@ -71,8 +71,7 @@ interface PanelOrchestratorLike {
       contextId?: string;
       ref?: string;
       stateArgs?: Record<string, unknown>;
-    },
-    scopedCaller?: PanelLinkCaller
+    }
   ): Promise<{ id: string; title: string } | null>;
   replaceCurrentSnapshot(
     panelId: string,
@@ -83,9 +82,7 @@ interface PanelOrchestratorLike {
   updatePanelTitle(panelId: string, title: string): Promise<void>;
 }
 
-type PanelLinkCaller =
-  | { callerId: string; callerKind: "panel" }
-  | { callerId: string; callerKind: "app" };
+type PanelLinkCaller = { callerId: string; callerKind: "app" };
 
 interface AutofillManagerLike {
   attachToWebContents(webContentsId: number, webContents: Electron.WebContents): void;
@@ -629,15 +626,18 @@ export class PanelView implements PanelViewLike {
     return viewManager.getViewInfo?.(viewId) ?? null;
   }
 
-  private scopedCallerForHostedView(viewId: string): PanelLinkCaller {
+  /**
+   * App-hosted views act under their own (capability-gated) authority when they
+   * open managed links. Panel-hosted views do NOT: acting as the panel would
+   * need a second runtime connection, which the panel lease gate rejects (the
+   * panel's own connection holds the lease). Host-intercepted links are already
+   * structurally scoped to the source slot, so the host translates them as
+   * trusted chrome — returning no scoped caller routes the call that way.
+   */
+  private scopedCallerForHostedView(viewId: string): PanelLinkCaller | undefined {
     const viewInfo = this.getHostedViewInfo(viewId);
     if (viewInfo?.type === "app") return { callerId: viewId, callerKind: "app" };
-
-    const panel = this.panelRegistry.getPanel(viewId);
-    if (!panel) throw new Error(`Panel link caller not found: ${viewId}`);
-    const runtimeEntityId = panel.runtimeEntityId;
-    if (!runtimeEntityId) throw new Error(`Panel link caller has no runtime entity: ${viewId}`);
-    return { callerId: runtimeEntityId, callerKind: "panel" };
+    return undefined;
   }
 
   private createOptionsForParsedLink(parsed: ParsedPanelUrl): {
@@ -698,12 +698,13 @@ export class PanelView implements PanelViewLike {
     parsed: ParsedPanelUrl,
     url: string
   ): Promise<void> {
-    const caller = this.scopedCallerForHostedView(panelId);
+    // Same-frame navigation only happens for panel-hosted slots (app views open
+    // links as new root panels), so this is always a trusted-chrome translation
+    // of the source slot — no scoped caller.
     const result = await this.panelOrchestrator.navigatePanel(
       panelId,
       parsed.source,
-      this.navigateOptionsForParsedLink(parsed),
-      caller
+      this.navigateOptionsForParsedLink(parsed)
     );
     if (result) {
       this.sendPanelEvent?.(panelId, "runtime:managed-navigation", { panelId: result.id, url });
@@ -742,7 +743,7 @@ export class PanelView implements PanelViewLike {
         .replace(/"/g, "&quot;");
     const html = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-  body { font-family: system-ui, sans-serif; background: #1e1e1e; color: #ddd;
+  body { font-family: system-ui, sans-serif; background: #272a2d; color: #ddd;
          display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
   .box { max-width: 560px; padding: 2rem; }
   h1 { font-size: 1.1rem; color: #f48771; }

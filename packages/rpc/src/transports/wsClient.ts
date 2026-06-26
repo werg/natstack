@@ -93,9 +93,11 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
     }, delay);
   };
 
-  const handleAuthFailure = async (): Promise<void> => {
+  const handleAuthFailure = async (reason?: string): Promise<void> => {
     if (!config.adapter.refreshAuthToken) {
-      firstConnectReject?.(new Error("Server auth failed"));
+      firstConnectReject?.(
+        new Error(reason ? `Server auth failed: ${reason}` : "Server auth failed")
+      );
       firstConnectReject = null;
       firstConnectResolve = null;
       if (!hasConnectedBefore) closed = true;
@@ -122,7 +124,7 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
     switch (msg.type) {
       case "ws:auth-result": {
         if (!msg.success) {
-          void handleAuthFailure();
+          void handleAuthFailure(msg.error);
           return;
         }
         const previousBootId = lastSeenBootId;

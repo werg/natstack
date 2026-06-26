@@ -515,16 +515,32 @@ describe("PanelOrchestrator.focusPanel", () => {
 });
 
 describe("PanelOrchestrator.createPanel", () => {
-  it("rejects unscoped child panel creation instead of falling back to server authority", async () => {
+  it("creates unscoped child panels as the trusted host (shell authority)", async () => {
     const registry = new PanelRegistry({ onTreeUpdated: vi.fn() });
-    const caller = makePanel("caller");
+    const caller = makePanel("panel:tree/caller");
     registry.addPanel(caller, null, { addAsRoot: true });
-    const { orchestrator, serverClient } = createOrchestrator(registry);
+    const { orchestrator, panelView, serverClient } = createOrchestrator(registry);
+    const loadedPanels = new Set<string>();
+    panelView.hasView.mockImplementation((panelId: string) => loadedPanels.has(panelId));
+    panelView.createViewForPanel.mockImplementation(async (panelId: string) => {
+      loadedPanels.add(panelId);
+    });
 
-    await expect(orchestrator.createPanel(caller.id, "panels/created-panel")).rejects.toThrow(
-      "Panel creation requires an authenticated panelTree caller"
+    // Host-intercepted panel links carry no scoped caller — the call must route
+    // through the shell connection (serverClient.call), never an act-as-panel
+    // scoped connection (callAs), which the panel lease gate would reject.
+    await orchestrator.createPanel(caller.id, "panels/created-panel");
+
+    expect(serverClient.call).toHaveBeenCalledWith("panelTree", "create", [
+      "panels/created-panel",
+      expect.objectContaining({ parentId: caller.id }),
+    ]);
+    expect(serverClient.callAs).not.toHaveBeenCalledWith(
+      expect.anything(),
+      "panelTree",
+      "create",
+      expect.anything()
     );
-    expect(serverClient.call).not.toHaveBeenCalledWith("panelTree", "create", expect.anything());
   });
 
   it("focuses after creating the native view for focused panels", async () => {
@@ -651,16 +667,24 @@ describe("PanelOrchestrator.createPanel", () => {
     expect(acquireOrder!).toBeLessThan(createViewOrder!);
   });
 
-  it("rejects unscoped browser child creation instead of falling back to server authority", async () => {
+  it("creates unscoped browser child panels as the trusted host (shell authority)", async () => {
     const registry = new PanelRegistry({ onTreeUpdated: vi.fn() });
     const caller = makePanel("panel:tree/caller");
     registry.addPanel(caller, null, { addAsRoot: true });
-    const { orchestrator, serverClient } = createOrchestrator(registry);
+    const { orchestrator, panelView, serverClient } = createOrchestrator(registry);
+    const loadedPanels = new Set<string>();
+    panelView.hasView.mockImplementation((panelId: string) => loadedPanels.has(panelId));
+    panelView.createViewForBrowser.mockImplementation(async (panelId: string) => {
+      loadedPanels.add(panelId);
+    });
 
-    await expect(
-      orchestrator.createBrowserUrlPanel(caller.id, "https://example.com/")
-    ).rejects.toThrow("Browser panel creation requires an authenticated panelTree caller");
-    expect(serverClient.call).not.toHaveBeenCalledWith("panelTree", "create", expect.anything());
+    await orchestrator.createBrowserUrlPanel(caller.id, "https://example.com/");
+
+    expect(serverClient.call).toHaveBeenCalledWith("panelTree", "create", [
+      "https://example.com/",
+      expect.objectContaining({ parentId: caller.id }),
+    ]);
+    expect(serverClient.callAs).not.toHaveBeenCalled();
   });
 
   it("keeps a created browser panel visible with an error when native browser view creation fails", async () => {
@@ -705,7 +729,7 @@ describe("PanelOrchestrator.createPanel", () => {
 });
 
 describe("PanelOrchestrator.navigatePanel", () => {
-  it("routes panel replacement through scoped panelTree navigate and rebuilds the view", async () => {
+  it("routes host-mediated panel replacement through the shell connection and rebuilds the view", async () => {
     const registry = new PanelRegistry({ onTreeUpdated: vi.fn() });
     const panel = makePanel("panel:tree/current", [], {
       runtimeEntityId: asPanelEntityId("panel:nav-current"),
@@ -718,20 +742,18 @@ describe("PanelOrchestrator.navigatePanel", () => {
     panelView.createViewForPanel.mockImplementation(async (panelId: string) => {
       loadedPanels.add(panelId);
     });
-    const scopedCaller = { callerId: "panel:nav-current", callerKind: "panel" as const };
 
-    await orchestrator.navigatePanel(
-      panel.id,
-      "panels/chat",
-      { stateArgs: { initialPrompt: "hello" } },
-      scopedCaller
-    );
+    // No scoped caller: the trusted host navigates the source slot as chrome.
+    await orchestrator.navigatePanel(panel.id, "panels/chat", {
+      stateArgs: { initialPrompt: "hello" },
+    });
 
-    expect(serverClient.callAs).toHaveBeenCalledWith(scopedCaller, "panelTree", "navigate", [
+    expect(serverClient.call).toHaveBeenCalledWith("panelTree", "navigate", [
       panel.id,
       "panels/chat",
       { stateArgs: { initialPrompt: "hello" } },
     ]);
+    expect(serverClient.callAs).not.toHaveBeenCalled();
     expect(panelView.createViewForPanel).toHaveBeenCalledWith(
       panel.id,
       expect.stringContaining("/panels/chat/"),
