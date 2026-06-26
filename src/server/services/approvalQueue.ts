@@ -414,12 +414,6 @@ export function createApprovalQueue(deps: {
             value: req.resource.value,
           }
         : undefined;
-      if (req.capability === "workerd.lifecycle") {
-        return { kind: "worker-lifecycle", verb: req.title, ...(object ? { object } : {}) };
-      }
-      if (req.capability === "panel.automate" || req.capability === "panel.structural") {
-        return { kind: "panel", verb: req.title, ...(object ? { object } : {}) };
-      }
       if (
         req.capability === "workspace-repo-write" ||
         req.capability === "workspace-project-import" ||
@@ -435,9 +429,6 @@ export function createApprovalQueue(deps: {
       }
       if (req.capability === "workerd.inspector") {
         return { kind: "inspection", verb: req.title, ...(object ? { object } : {}) };
-      }
-      if (req.capability === "runtime.crossContextEntity") {
-        return { kind: "runtime", verb: req.title, ...(object ? { object } : {}) };
       }
       if (req.capability === "client-config-delete") {
         return { kind: "service-setup", verb: req.title, ...(object ? { object } : {}) };

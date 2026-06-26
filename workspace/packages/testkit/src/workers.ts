@@ -1,12 +1,7 @@
 /**
  * Worker/DO orchestration and state inspection helpers.
  */
-import {
-  contextId,
-  createDurableObjectServiceClient,
-  workers,
-  workspace,
-} from "@workspace/runtime";
+import { contextId, createDurableObjectServiceClient, rpc, workspace } from "@workspace/runtime";
 import type { WorkspaceUnitStatus } from "@workspace/runtime";
 
 export type UnitDiagnostics = Awaited<ReturnType<typeof workspace.units.diagnostics>>;
@@ -75,19 +70,30 @@ export async function ensureWorker(
   }
 ): Promise<CompactUnitStatus> {
   const name = opts?.name ?? source.split("/").pop() ?? source;
-  const existing = await workers.status(name).catch(() => null);
-  if (!existing) {
-    await workers.create({
-      source,
-      contextId,
-      name: opts?.name,
-      env: opts?.env,
-      stateArgs: opts?.stateArgs,
-    });
+  // Worker status is source-keyed: workspace.units.list reports one row per
+  // worker source, whose status reflects the running instance. A graph worker
+  // always has a row, so "needs launch" means "not currently live".
+  const find = async (): Promise<WorkspaceUnitStatus | null> => {
+    const units = await workspace.units.list();
+    return units.find((unit) => unit.kind === "worker" && unit.source === source) ?? null;
+  };
+  const existing = await find().catch(() => null);
+  const live = existing?.status === "running" || existing?.status === "building";
+  if (!live) {
+    await rpc.call("main", "runtime.createEntity", [
+      {
+        kind: "worker",
+        source,
+        key: name,
+        contextId,
+        env: opts?.env,
+        stateArgs: opts?.stateArgs,
+      },
+    ]);
   }
   const running = await waitFor(
     async () => {
-      const status = await workers.status(name);
+      const status = await find();
       if (status?.status === "error") {
         throw new Error(`worker ${name} entered error state`);
       }

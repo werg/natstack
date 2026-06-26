@@ -43,7 +43,7 @@ function capabilityApproval(
     repoPath: partial.repoPath ?? "panels/test",
     effectiveVersion: partial.effectiveVersion ?? "ev",
     requestedAt: partial.requestedAt ?? Date.now(),
-    capability: partial.capability ?? "panel.automate",
+    capability: partial.capability ?? "context.boundary",
     severity: partial.severity,
     title: partial.title,
     description: partial.description,
@@ -132,16 +132,16 @@ describe("ApprovalCard", () => {
     const { emit } = renderCard(
       capabilityApproval({
         approvalId: "cap-severe",
-        title: "Drive privileged panel",
+        title: "Act on Shell's context",
         severity: "severe",
       })
     );
     const card = screen
-      .getByText("Drive privileged Shell")
+      .getByText("Act on Shell's context")
       .closest(".approval-card") as HTMLElement;
     expect(card.getAttribute("data-approval-tone")).toBe("red");
 
-    const trustButton = screen.getByText("Trust and drive").closest("button");
+    const trustButton = screen.getByText("Trust version").closest("button");
     expect(trustButton?.getAttribute("data-accent-color")).toBe("red");
     fireEvent.click(trustButton as HTMLButtonElement);
     expect(emit).toHaveBeenCalledWith({

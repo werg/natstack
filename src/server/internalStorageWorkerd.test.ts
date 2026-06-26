@@ -506,8 +506,8 @@ describe("internal storage DOs under workerd", () => {
 
       // A planned workerd restart drives the prepare/resume lifecycle hooks on
       // registered DOs. (Worker create no longer restarts — the worker host is
-      // static — so trigger a real restart explicitly.)
-      await manager.restartAll();
+      // static — so trigger a real restart explicitly via the internal entry.)
+      await (manager as unknown as { restartWorkerd(): Promise<void> }).restartWorkerd();
 
       expect(manager.getBootGeneration()).toBe(2);
       await expect(doDispatch.dispatch(probeRef, "currentBootGeneration")).resolves.toBe("2");

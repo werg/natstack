@@ -856,6 +856,29 @@ async function main() {
     materialize: (contextId) => workspaceVcs.ensureContextFolder(contextId),
   });
 
+  // Shared deps for the single context-boundary gate (runtime + panel layers).
+  // A context "exists" (holds state to intrude on) if it has an active entity
+  // or a materialized folder; owner label feeds the approval copy.
+  const contextBoundaryDeps = {
+    approvalQueue,
+    grantStore: capabilityGrantStore,
+    contextExists: (contextId: string): boolean => {
+      if (entityCache.listActive().some((e) => e.contextId === contextId)) return true;
+      try {
+        return contextFolderManager.getContextRoot(contextId) != null;
+      } catch {
+        return false;
+      }
+    },
+    resolveContextOwnerLabel: (contextId: string): string | undefined => {
+      const active = entityCache.listActive().filter((e) => e.contextId === contextId);
+      const owner =
+        active.find((e) => e.kind === "panel") ?? active.find((e) => e.kind === "app") ?? active[0];
+      if (!owner) return undefined;
+      return entityTitleService.getTitle(owner.id) ?? owner.source.repoPath ?? owner.id;
+    },
+  };
+
   const { isDeclaredRemoteRepoPath, syncDeclaredRemoteForRepo } =
     await import("@natstack/shared/workspace/remotes");
   const { loadWorkspaceConfig, resolveDeclaredApps, resolveDeclaredExtensions } =
@@ -1740,13 +1763,7 @@ async function main() {
               await cleanupRuntimeEntityRecord(record);
             },
           },
-          capability: {
-            approvalQueue,
-            grantStore: capabilityGrantStore,
-          },
-          canCreateCrossContextEntity: (caller, spec) =>
-            spec.kind === "panel" &&
-            appHostForGateway?.hasAppCapability(caller.runtime.id, "panel-hosting") === true,
+          contextBoundary: contextBoundaryDeps,
           hasAppCapability: (callerId, capability) =>
             appHostForGateway?.hasAppCapability(callerId, capability) ?? false,
           setEntityTitle: (entityId, title, options) =>
@@ -2340,9 +2357,6 @@ async function main() {
         }
         return createWorkerdService({
           workerdManager: workerdManagerInstance,
-          buildSystem: buildSystemForWorkerd,
-          approvalQueue,
-          grantStore: capabilityGrantStore,
         });
       },
     });
@@ -2563,6 +2577,8 @@ async function main() {
     grantStore: capabilityGrantStore,
     hasAppCapability: (callerId: string, capability: AppCapability) =>
       appHostForGateway?.hasAppCapability(callerId, capability) ?? false,
+    contextExists: contextBoundaryDeps.contextExists,
+    resolveContextOwnerLabel: contextBoundaryDeps.resolveContextOwnerLabel,
     panelRuntimeCoordinator,
     ensureDefaultHeadlessHost: async () => {
       const manager = getHeadlessHostManager();

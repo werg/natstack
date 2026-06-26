@@ -458,12 +458,36 @@ name as a string; do not call `help(workers)`.
 
 ## Worker Management
 
+Launch, list, and retire workers through the **runtime entity API**
+(`runtime.createEntity` / `runtime.listEntities` / `runtime.retireEntity`). List
+launchable sources with `workers.listSources`.
+
 ```
 eval({ code: `
-  const sources = await workers.listInstanceSources();
+  // Launchable worker sources (the workers/* repos that can be started)
+  const sources = await rpc.call("main", "workers.listSources", []);
   console.log("Available worker sources:", sources);
-  const instances = await workers.list();
-  console.log("Running instances:", instances);
+
+  // Currently-running worker instances
+  const instances = await rpc.call("main", "runtime.listEntities", [{ kind: "worker" }]);
+  console.log("Running instances:", instances.map((w) => w.id));
+` })
+```
+
+```
+eval({ code: `
+  // Launch a worker — \`key\` names the instance; pass \`ref\` for code edited on
+  // the current context head, omit it for the main build.
+  const handle = await rpc.call("main", "runtime.createEntity", [{
+    kind: "worker",
+    source: "workers/my-worker",
+    key: "my-worker",
+    contextId: ctx.contextId,
+    ref: \`ctx:${ctx.contextId}\`,
+  }]);
+  console.log("Launched", handle.id, "→", handle.targetId);
+  // Stop it later with the handle's id:
+  // await rpc.call("main", "runtime.retireEntity", [{ id: handle.id }]);
 ` })
 ```
 

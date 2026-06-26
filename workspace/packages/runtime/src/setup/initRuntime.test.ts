@@ -410,7 +410,7 @@ describe("initRuntime", () => {
     ]);
   });
 
-  it("defaults panel-created workers to the current panel slot parent id", async () => {
+  it("launches workers through runtime.createEntity (server derives the parent)", async () => {
     const sends: Array<{ targetId: string; method: string; args: unknown[] }> = [];
     g.__natstackEntityId = "panel:child-entity";
     g.__natstackSlotId = "child-slot";
@@ -432,13 +432,11 @@ describe("initRuntime", () => {
             sends.push({ targetId: envelope.target, method: message.method, args: message.args });
             deliver(
               responseFor(envelope, {
-                name: "agent",
-                source: "workers/agent",
+                id: "worker:workers/agent:agent",
+                kind: "worker",
+                source: { repoPath: "workers/agent", effectiveVersion: "ev-1" },
                 contextId: "ctx-1",
-                callerId: "worker:agent",
-                env: {},
-                bindings: {},
-                status: "running",
+                targetId: "worker:workers/agent:agent",
               })
             );
           },
@@ -446,18 +444,25 @@ describe("initRuntime", () => {
       fs: {} as never,
     });
 
-    await runtime.workers.create({ source: "workers/agent", contextId: "ctx-1" });
+    // The panel-side client no longer injects parent metadata — the worker entity
+    // is created through the unified runtime path, where the SERVER derives the
+    // launch parent from the verified caller.
+    await runtime.callMain("runtime.createEntity", {
+      kind: "worker",
+      source: "workers/agent",
+      key: "agent",
+      contextId: "ctx-1",
+    });
 
     expect(sends).toEqual([
       {
         targetId: "main",
-        method: "workerd.createInstance",
+        method: "runtime.createEntity",
         args: [
           {
-            parentId: "child-slot",
-            parentEntityId: "panel:child-entity",
-            parentKind: "panel",
+            kind: "worker",
             source: "workers/agent",
+            key: "agent",
             contextId: "ctx-1",
           },
         ],

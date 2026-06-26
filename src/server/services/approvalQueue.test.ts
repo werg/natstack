@@ -178,7 +178,7 @@ describe("approvalQueue", () => {
       callerKind: "panel",
       repoPath: "panels/example",
       effectiveVersion: "hash-1",
-      capability: "panel.structural",
+      capability: "context.boundary",
       title: "Open panel",
       operation: {
         kind: "panel",
@@ -193,7 +193,7 @@ describe("approvalQueue", () => {
       callerKind: "panel",
       repoPath: "panels/example",
       effectiveVersion: "hash-1",
-      capability: "workerd.lifecycle",
+      capability: "context.boundary",
       title: "Spawn worker",
       operation: {
         kind: "worker-lifecycle",
@@ -240,9 +240,9 @@ describe("approvalQueue", () => {
       callerKind: "panel",
       repoPath: "panels/example",
       effectiveVersion: "hash-1",
-      capability: "panel.automate",
+      capability: "context.boundary",
       severity: "severe",
-      title: "Drive privileged panel",
+      title: "Act on Shell's context",
       resource: {
         type: "panel",
         label: "Panel",
@@ -252,9 +252,9 @@ describe("approvalQueue", () => {
 
     expect(queue.listPending()[0]).toMatchObject({
       kind: "capability",
-      capability: "panel.automate",
+      capability: "context.boundary",
       severity: "severe",
-      title: "Drive privileged panel",
+      title: "Act on Shell's context",
     });
     queue.resolve(queue.listPending()[0]!.approvalId, "deny");
     await expect(promise).resolves.toBe("deny");

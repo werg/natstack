@@ -44,10 +44,7 @@ import {
   type WorkerdClient,
   type DurableObjectServiceClient,
 } from "../shared/workerd.js";
-import {
-  createNonPanelRuntimeHandle,
-  createRuntimeParentHandle,
-} from "../shared/handles.js";
+import { createNonPanelRuntimeHandle, createRuntimeParentHandle } from "../shared/handles.js";
 import { helpfulNamespace } from "../shared/helpfulNamespace.js";
 import { createGatewayFetch, type GatewayFetch } from "../shared/gatewayFetch.js";
 import { createMainCaller } from "../shared/mainRpc.js";
@@ -55,7 +52,11 @@ import {
   createPanelRuntime,
   type PanelRuntimeApi,
 } from "../shared/panelRuntime.js";
-import { createHostedRuntime, type RuntimeHost, type WorkspaceRuntime } from "../shared/hostedRuntime.js";
+import {
+  createHostedRuntime,
+  type RuntimeHost,
+  type WorkspaceRuntime,
+} from "../shared/hostedRuntime.js";
 import type { WorkerEnv } from "./types.js";
 export type { WorkerEnv, ExecutionContext } from "./types.js";
 // Portable authoring helpers (z, defineContract, Rpc, path/context helpers,
@@ -251,14 +252,7 @@ export function createWorkerRuntime(env: WorkerEnv): WorkerRuntime {
   installWorkerConsoleBridge(rpc);
 
   const runtimeFs = _initFsWithRpc(rpc);
-  const workers = helpfulNamespace(
-    "workers",
-    createWorkerdClient(rpc, {
-      parentId: selfId,
-      parentEntityId: selfId,
-      parentKind: "worker",
-    })
-  );
+  const workers = helpfulNamespace("workers", createWorkerdClient(rpc));
   const gatewayAliases = parseGatewayAliases(env.GATEWAY_URL_ALIASES);
   const gatewayConfig = { serverUrl, token: env.RPC_AUTH_TOKEN, aliases: gatewayAliases };
   const gatewayFetch = createGatewayFetch(gatewayConfig);

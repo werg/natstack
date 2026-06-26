@@ -198,12 +198,11 @@ describe("dynamic worker host (real workerd)", () => {
     active = await createHarness();
     const { manager, workerdCall } = active;
 
-    const instance = await manager.createInstance({
+    await manager.startWorker({
       source: "workers/echo",
       contextId: "ctx-1",
-      name: "echo",
+      key: "echo",
     });
-    expect(instance.status).toBe("running");
     const bootAfterCreate = manager.getBootGeneration();
 
     const res = await workerdCall("/echo/__rpc", {
@@ -214,7 +213,7 @@ describe("dynamic worker host (real workerd)", () => {
     expect(await res.json()).toEqual({ result: { echo: "ping", workerId: "echo" } });
 
     // A second worker created while the first runs — still no restart.
-    await manager.createInstance({ source: "workers/echo", contextId: "ctx-2", name: "echo2" });
+    await manager.startWorker({ source: "workers/echo", contextId: "ctx-2", key: "echo2" });
     expect(manager.getBootGeneration()).toBe(bootAfterCreate);
 
     const res2 = await workerdCall("/echo2/__rpc", {
@@ -228,15 +227,16 @@ describe("dynamic worker host (real workerd)", () => {
     active = await createHarness();
     const { manager, workerdCall, egressHits } = active;
 
-    await manager.createInstance({ source: "workers/echo", contextId: "ctx-1", name: "echo" });
+    await manager.startWorker({ source: "workers/echo", contextId: "ctx-1", key: "echo" });
 
     const res = await workerdCall("/echo/egress");
     expect(res.status).toBe(200);
     const body = (await res.json()) as { result: { seenCaller: string | null } };
-    // The worker tried to forge "FORGED"; the gateway stamped the real id.
-    expect(body.result.seenCaller).toBe("worker:echo");
+    // The worker tried to forge "FORGED"; the gateway stamped the real id (the
+    // worker entity's canonical caller id: worker:<source>:<key>).
+    expect(body.result.seenCaller).toBe("worker:workers/echo:echo");
     const lastHit = egressHits[egressHits.length - 1];
-    expect(lastHit?.caller).toBe("worker:echo");
+    expect(lastHit?.caller).toBe("worker:workers/echo:echo");
     expect(lastHit?.secret).toBe(manager.getEgressSecret());
   }, 30_000);
 
@@ -244,12 +244,12 @@ describe("dynamic worker host (real workerd)", () => {
     active = await createHarness();
     const { manager, workerdCall } = active;
 
-    await manager.createInstance({ source: "workers/echo", contextId: "ctx-1", name: "echo" });
+    await manager.startWorker({ source: "workers/echo", contextId: "ctx-1", key: "echo" });
     // Keep a second instance so workerd stays up after the destroy.
-    await manager.createInstance({ source: "workers/echo", contextId: "ctx-2", name: "keep" });
+    await manager.startWorker({ source: "workers/echo", contextId: "ctx-2", key: "keep" });
     const boot = manager.getBootGeneration();
 
-    await manager.destroyInstance("echo");
+    await manager.stopWorker("worker:workers/echo:echo");
     expect(manager.getBootGeneration()).toBe(boot);
     expect(manager.getWorkerVersion("echo")).toBeNull();
 
@@ -272,7 +272,7 @@ describe("dynamic worker host (real workerd)", () => {
     active = await createHarness(buildRef);
     const { manager, workerdCall } = active;
 
-    await manager.createInstance({ source: "workers/echo", contextId: "ctx-1", name: "echo" });
+    await manager.startWorker({ source: "workers/echo", contextId: "ctx-1", key: "echo" });
     const boot = manager.getBootGeneration();
 
     const before = await workerdCall("/echo/__rpc", {

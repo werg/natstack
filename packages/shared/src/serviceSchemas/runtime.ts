@@ -119,9 +119,7 @@ export const CreateEntitySpecSchema = z.discriminatedUnion("kind", [
 /** Wire shape of a full logical workspace context branch. */
 export const WorkspaceContextSchema = z
   .object({
-    contextId: z
-      .string()
-      .describe("Context id for a full logical workspace branch view."),
+    contextId: z.string().describe("Context id for a full logical workspace branch view."),
   })
   .strict();
 
@@ -142,15 +140,16 @@ export const runtimeMethods = defineServiceMethods({
           reason: "app/session runtime entities are host-managed",
         },
       ],
-      // Declares the handler's cross-context approval gate
-      // (resolveContextPolicy → requestCapabilityPermission for
-      // RUNTIME_CROSS_CONTEXT_ENTITY when the target context differs).
+      // Declares the handler's context-boundary approval gate
+      // (resolveContextPolicy → requireContextBoundaryPermission). Fires only
+      // when the target context is BOTH foreign to the caller AND already exists;
+      // same-context and fresh-context launches are free, as is trusted chrome.
       approval: [
         {
-          when: "creating in a different context than the caller",
-          capability: "runtime.crossContextEntity",
+          when: "launching into another, already-existing context than the caller",
+          capability: "context.boundary",
           operation: { kind: "runtime", verb: "Create runtime entity" },
-          reason: "cross-context entity creation requires approval",
+          reason: "launching code into another agent or panel's existing context requires approval",
         },
       ],
     },

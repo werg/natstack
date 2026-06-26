@@ -4,10 +4,6 @@ import type {
   ApprovalResourceScope,
   PendingCapabilityApproval,
 } from "@natstack/shared/approvals";
-import {
-  PANEL_AUTOMATE_CAPABILITY,
-  PANEL_STRUCTURAL_CAPABILITY,
-} from "@natstack/shared/panelAccessPolicy";
 import type {
   VerifiedCaller,
   ServiceContext,
@@ -17,12 +13,6 @@ import { deferIfNeeded } from "@natstack/shared/serviceDispatcher";
 import type { ApprovalQueue, GrantedDecision } from "./approvalQueue.js";
 import type { CapabilityGrantStore } from "./capabilityGrantStore.js";
 
-/**
- * Canonical capability name guarding cross-context durable-object entity access.
- * Re-exported here so callers can import the constant from the capability
- * permission module rather than redefining it.
- */
-export const RUNTIME_CROSS_CONTEXT_ENTITY = "runtime.crossContextEntity" as const;
 export const NETWORK_ALL_RESOURCE_KEY = "network:*" as const;
 
 export interface CapabilityPermissionResource {
@@ -89,10 +79,7 @@ export async function requestCapabilityPermission(
 
   const resourceKey = request.resource.key ?? request.resource.value;
   const resourceScope = request.resource.scope ?? exactResourceScope(resourceKey);
-  const dedupKey =
-    request.dedupKey === undefined && isPanelCapability(request.capability)
-      ? `panel-capability:${request.capability}:${resourceKey}`
-      : request.dedupKey;
+  const dedupKey = request.dedupKey;
   if (deps.grantStore.hasGrant(request.capability, resourceKey, identity, resourceScope)) {
     return { allowed: true };
   }
@@ -209,10 +196,6 @@ export function normalizeCallerKind(kind: string): "panel" | "app" | "worker" | 
     return kind;
   }
   return null;
-}
-
-function isPanelCapability(capability: string): boolean {
-  return capability === PANEL_AUTOMATE_CAPABILITY || capability === PANEL_STRUCTURAL_CAPABILITY;
 }
 
 function exactResourceScope(key: string): ApprovalResourceScope {

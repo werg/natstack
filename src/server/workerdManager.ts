@@ -257,7 +257,7 @@ export interface WorkerdManagerDeps {
 type ResolvedWorkerdManagerDeps = WorkerdManagerDeps;
 
 /** The canonical regular-worker instance name for a source. Matches the
- *  sanitization that createRegularInstance applies to rawName. */
+ *  sanitization that startWorker applies to the entity key. */
 function canonicalInstanceNameForSource(source: string): string {
   const raw = source.split("/").pop() ?? "worker";
   return raw.replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -589,10 +589,6 @@ export class WorkerdManager {
   // Instance management
   // =========================================================================
 
-  async createInstance(options: WorkerCreateOptions): Promise<WorkerInstance> {
-    return this.createRegularInstance(options);
-  }
-
   /**
    * Ensure a DO class is registered with workerd and return the targetId +
    * effectiveVersion that the runtime service will record on the entity row.
@@ -651,8 +647,40 @@ export class WorkerdManager {
     const targetId = canonicalEntityId({ kind: "worker", source: args.source, key: args.key });
     const name = args.key.replace(/[^a-zA-Z0-9_-]/g, "_");
 
-    if (this.instances.has(name)) {
-      throw new Error(`Worker instance "${name}" already exists`);
+    // Idempotent re-attach: `canonicalEntityId` is context-free, so the same
+    // (source, key) maps to the same targetId/name in any context. If a live
+    // instance already matches this identity (same source AND contextId), return
+    // it as a no-op — this covers spawn retries/races where the entity create is
+    // replayed. A different identity colliding on the sanitized name (a different
+    // source, or the same source in another context — workers are NOT
+    // context-isolated until their canonical id includes contextId) is a genuine
+    // collision and throws rather than silently reusing the wrong worker.
+    const existingInstance = this.instances.get(name);
+    if (existingInstance) {
+      // Reattach ONLY on a FULL-identity match: the canonical targetId
+      // (`runtimeImageId` = worker:source:key) AND the contextId. targetId is
+      // context-free, so both checks are needed — the targetId guards distinct
+      // raw keys that sanitize to the same `name` (e.g. `a:b`/`a_b`), and the
+      // contextId prevents silently handing a launch a worker running in a
+      // DIFFERENT context (same source+key in another context maps to the same
+      // targetId). Workers are not context-isolated until their canonical id
+      // includes contextId — callers must use context-unique keys; anything
+      // short of a full match is a genuine collision and throws.
+      if (
+        existingInstance.runtimeImageId === targetId &&
+        existingInstance.contextId === args.contextId
+      ) {
+        return {
+          targetId,
+          effectiveVersion: existingInstance.effectiveVersion ?? existingInstance.buildKey ?? "",
+        };
+      }
+      throw new Error(
+        `Worker instance "${name}" already exists with a different identity ` +
+          `(existing targetId=${existingInstance.runtimeImageId} source=${existingInstance.source} ` +
+          `context=${existingInstance.contextId}; requested targetId=${targetId} ` +
+          `source=${args.source} context=${args.contextId})`
+      );
     }
 
     const callerId = targetId;
@@ -809,110 +837,6 @@ export class WorkerdManager {
     }
   }
 
-  // ── Regular (non-durable) worker creation ──
-
-  private async createRegularInstance(options: WorkerCreateOptions): Promise<WorkerInstance> {
-    const rawName = options.name ?? options.source.split("/").pop() ?? "worker";
-    // Sanitize name — used in generated JS router code and workerd config keys
-    const name = rawName.replace(/[^a-zA-Z0-9_-]/g, "_");
-
-    if (this.instances.has(name)) {
-      throw new Error(`Worker instance "${name}" already exists`);
-    }
-
-    const callerId = `worker:${name}`;
-    const contextId = options.contextId;
-    const scopeRef = explicitScopeRef(options.ref);
-
-    // Create auth token
-    const token = this.ensureWorkerBearer(callerId);
-
-    const instance: WorkerInstance = {
-      id: callerId,
-      name,
-      source: options.source,
-      contextId,
-      callerId,
-      parentId: options.parentId,
-      parentEntityId: options.parentEntityId,
-      parentKind: options.parentKind,
-      token,
-      env: options.env ?? {},
-      bindings: options.bindings ?? {},
-      stateArgs: options.stateArgs,
-      runtimeImageId: callerId,
-      scopeRef,
-      codeVersion: 1,
-      status: "building",
-    };
-
-    this.instances.set(name, instance);
-
-    // Bind the runtime image and start the static worker host.
-    try {
-      instance.status = "starting";
-      const [image] = await Promise.all([
-        this.bindRuntimeImage(callerId, options.source, scopeRef),
-        this.ensureWorkerdRunning(),
-      ]);
-      instance.scopeRef = image.scopeRef;
-      instance.buildKey = image.buildKey;
-      instance.effectiveVersion = image.effectiveVersion;
-      this.advanceWorkerCodeVersion(instance, image.generation);
-      // Register egress AFTER bind so the caller carries the signed effective
-      // version (not "unknown"/an artifact key) for version-scoped approvals/audit.
-      this.registerEgressCaller(instance);
-
-      instance.status = "running";
-      this.lastWorkerErrors.delete(options.source);
-      this.deps.recordLifecycleEvent?.({
-        source: options.source,
-        callerId,
-        level: "info",
-        message: `Worker started (build ${image.buildKey})`,
-        fields: {
-          event: "worker-started",
-          buildKey: image.buildKey,
-          generation: image.generation,
-          effectiveVersion: image.effectiveVersion,
-        },
-      });
-      log.info(`Worker instance "${name}" started (source: ${options.source})`);
-
-      // Register regular-worker routes only for the canonical-named instance.
-      // Non-canonical instances of the same source don't shadow routes.
-      if (this.deps.routeRegistry && this.deps.getManifestRoutes) {
-        const canonical = canonicalInstanceNameForSource(options.source);
-        if (name === canonical) {
-          const routes = this.deps.getManifestRoutes(options.source);
-          if (routes.length > 0) {
-            this.deps.routeRegistry.registerWorkerRoutes(options.source, name, Array.from(routes));
-          }
-        }
-      }
-    } catch (error) {
-      // Rollback: clean up token, context registration, and instance map entry
-      instance.status = "error";
-      this.instances.delete(name);
-      this.runtimeImages.delete(callerId);
-      this.deps.unregisterEgressCaller(callerId);
-      this.revokeWorkerBearer(callerId);
-      const message = error instanceof Error ? error.message : String(error);
-      this.lastWorkerErrors.set(options.source, { message, timestamp: Date.now() });
-      this.deps.recordLifecycleEvent?.({
-        source: options.source,
-        callerId,
-        level: "error",
-        message: `Worker failed to start: ${message}`,
-        fields: { event: "worker-start-failed" },
-      });
-      log.error(`Failed to start worker "${name}":`, error);
-      throw error;
-    }
-
-    return instance;
-  }
-
   /**
    * Build a VerifiedCaller for a live worker instance and register it for
    * attributed egress through the shared listener. Called on create; matched by
@@ -936,37 +860,6 @@ export class WorkerdManager {
   private async ensureWorkerdRunning(): Promise<void> {
     if (this.process && this.process.exitCode === null) return;
     await this.restartWorkerd();
-  }
-
-  async destroyInstance(name: string): Promise<void> {
-    const resolvedName = this.resolveInstanceName(name);
-    const instance = resolvedName ? this.instances.get(resolvedName) : undefined;
-    if (!resolvedName || !instance) {
-      throw new Error(`Worker instance "${name}" not found`);
-    }
-
-    // Cleanup
-    this.deps.unregisterEgressCaller(instance.callerId);
-    this.revokeWorkerBearer(instance.callerId);
-    this.deps.fsService.closeHandlesForCaller(instance.callerId);
-    await this.deps.cleanupWebhookSubscriptions?.(instance.callerId);
-    this.instances.delete(resolvedName);
-    this.runtimeImages.delete(instance.runtimeImageId);
-
-    // Unregister regular-worker routes if this was the canonical instance.
-    if (this.deps.routeRegistry) {
-      const canonical = canonicalInstanceNameForSource(instance.source);
-      if (instance.name === canonical) {
-        this.deps.routeRegistry.unregisterWorkerRoutes(instance.source);
-      }
-    }
-
-    instance.status = "stopped";
-
-    // No restart — see stopWorker. Only stop workerd when nothing remains.
-    await this.stopWorkerdIfIdle();
-
-    log.info(`Worker instance "${resolvedName}" destroyed`);
   }
 
   /** Stop workerd only when no workers and no DO services remain to serve. */
@@ -1024,14 +917,6 @@ export class WorkerdManager {
 
   listInstances(): Omit<WorkerInstance, "token">[] {
     return Array.from(this.instances.values()).map(({ token: _token, ...rest }) => rest);
-  }
-
-  getInstanceStatus(name: string): Omit<WorkerInstance, "token"> | null {
-    const resolvedName = this.resolveInstanceName(name);
-    const instance = resolvedName ? this.instances.get(resolvedName) : undefined;
-    if (!instance) return null;
-    const { token: _token, ...rest } = instance;
-    return rest;
   }
 
   private resolveInstanceName(idOrName: string): string | null {
@@ -2362,10 +2247,6 @@ export default { fetch() { return new Response("universal-do host"); } };
       releaseServicePort("workerdInspector", this.inspectorPort);
     }
     this.inspectorPort = null;
-  }
-
-  async restartAll(): Promise<void> {
-    await this.restartWorkerd();
   }
 
   /**

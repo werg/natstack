@@ -1221,10 +1221,7 @@ function StandardActions({
   onChoose: (decision: ApprovalDecision) => void;
 }) {
   const copy = getStandardActionCopy(approval);
-  const severePanelCapability =
-    approval.kind === "capability" &&
-    approval.severity === "severe" &&
-    (approval.capability === "panel.automate" || approval.capability === "panel.structural");
+  const isSevereCapability = approval.kind === "capability" && approval.severity === "severe";
   return (
     <View style={styles.actionGroups}>
       <View style={styles.actionRow}>
@@ -1240,10 +1237,10 @@ function StandardActions({
         <DecisionButton
           label={copy.version.label}
           description={copy.version.description}
-          variant={severePanelCapability ? "dangerPrimary" : "primary"}
+          variant={isSevereCapability ? "dangerPrimary" : "primary"}
           disabled={busy}
           loading={pendingAction === "version"}
-          icon={severePanelCapability ? AlertTriangle : CheckCircle2}
+          icon={isSevereCapability ? AlertTriangle : CheckCircle2}
           onPress={() => onChoose("version")}
           testID="approval-action-version"
         />

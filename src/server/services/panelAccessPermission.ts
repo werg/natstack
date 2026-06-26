@@ -1,33 +1,41 @@
 import type { PanelAccessOperation, PanelAccessTarget } from "@natstack/shared/panelAccessPolicy";
 import {
-  PANEL_AUTOMATE_CAPABILITY,
-  PANEL_STRUCTURAL_CAPABILITY,
-  accessDecision,
+  isOpenPanelOperation,
+  panelAccessSeverityForTarget,
 } from "@natstack/shared/panelAccessPolicy";
 import type { ServiceContext, VerifiedCaller } from "@natstack/shared/serviceDispatcher";
 import type { AppCapability } from "@natstack/shared/unitManifest";
-import {
-  panelCapabilityResourceKey,
-  requestCapabilityPermission,
-  type CapabilityPermissionDeps,
-} from "./capabilityPermission.js";
-import { isAuthorizedChrome } from "./chromeTrust.js";
+import { requireContextBoundaryPermission, type ContextBoundaryDeps } from "./contextBoundary.js";
 
 export interface PanelAccessPermissionTarget extends PanelAccessTarget {
   title?: string;
   source?: string;
   kind?: "workspace" | "browser" | string;
   runtimeEntityId?: string;
+  /** The target panel's CURRENT context (bridge metadata populates this). */
+  contextId?: string;
   requestedSource?: string;
+  /** The DESTINATION context for context-changing ops (create / navigate). */
   requestedContextId?: string;
   operationGroupKey?: string;
 }
 
-export interface PanelAccessPermissionDeps extends CapabilityPermissionDeps {
-  resolveRequesterPanel?(caller: VerifiedCaller): Promise<PanelAccessPermissionTarget | null>;
-  hasApprovalSession?(): boolean;
-  /** Whether a workspace-app caller holds an authorized activation capability. */
+export interface PanelAccessPermissionDeps extends ContextBoundaryDeps {
+  /** Resolve a (subject) principal's own context — durable, async. */
+  resolveCallerContext(callerId: string): Promise<string | null>;
+  /** Resolve a target/anchor entity's context — sync (active cache). */
+  resolveEntityContext(entityId: string): string | null;
+  /**
+   * Build a code-identity subject caller from an anchor entity id (for
+   * host-mediated `server`/`shell` calls whose true initiator is that entity).
+   * Returns null when the anchor has no resolvable code identity.
+   */
+  resolveSubjectCaller(entityId: string): VerifiedCaller | null;
   hasAppCapability?(callerId: string, capability: AppCapability): boolean;
+  /** Used by panelTreeService.targetForCreate to resolve a panel caller's own slot. */
+  resolveRequesterPanel?(caller: VerifiedCaller): Promise<PanelAccessPermissionTarget | null>;
+  /** Retained for wiring compatibility; the context-boundary gate no longer reads it. */
+  hasApprovalSession?(): boolean;
 }
 
 export interface PanelAccessPermissionResult {
@@ -37,192 +45,118 @@ export interface PanelAccessPermissionResult {
   reason?: string;
 }
 
+/** Ops that change a panel's context (gate against the DESTINATION, not the current, context). */
+function isContextChangingOp(op: PanelAccessOperation): boolean {
+  return op === "openPanel" || op === "replacePanel";
+}
+
+/** The entity whose authority a host-mediated action runs under (its true initiator). */
+function anchorEntityId(target: PanelAccessPermissionTarget): string | null {
+  // For create, the target IS the parent panel (targetForCreate returns it); for
+  // operate-on-existing it is the target panel. Either way its runtime entity is
+  // the subject. Workspace-root / unresolved targets have none.
+  return target.runtimeEntityId ?? null;
+}
+
+function destinationContextId(
+  deps: PanelAccessPermissionDeps,
+  op: PanelAccessOperation,
+  target: PanelAccessPermissionTarget
+): string | null {
+  if (isContextChangingOp(op)) {
+    // create: requestedContextId = options.contextId (absent ⇒ fresh ⇒ free).
+    // navigate/navigateHistory: requestedContextId = the pre-resolved destination
+    // context (absent ⇒ no context change ⇒ free).
+    return target.requestedContextId ?? null;
+  }
+  // operate-on-existing: act on the target panel's current context.
+  return (
+    target.contextId ??
+    (target.runtimeEntityId ? deps.resolveEntityContext(target.runtimeEntityId) : null)
+  );
+}
+
+function verbFor(op: PanelAccessOperation): string {
+  switch (op) {
+    case "openPanel":
+      return "Open panel in";
+    case "navigate":
+    case "replacePanel":
+      return "Navigate panel in";
+    case "cdp":
+      return "Automate panel in";
+    case "reload":
+      return "Reload panel in";
+    case "close":
+    case "archive":
+      return "Close panel in";
+    case "unload":
+      return "Unload panel in";
+    case "movePanel":
+      return "Move panel in";
+    case "takeOver":
+      return "Take over panel in";
+    case "openDevTools":
+      return "Open DevTools in";
+    case "rebuildPanel":
+    case "rebuildAndReload":
+      return "Rebuild panel in";
+    case "updatePanelState":
+    case "stateArgs.set":
+      return "Change panel state in";
+    default:
+      return "Act on";
+  }
+}
+
+/**
+ * The single context-boundary gate for panel control-plane operations. Prompts
+ * iff the action targets another, already-existing context. The prompt is
+ * attributed to a code-identity SUBJECT — the direct userland caller, or (for a
+ * host-mediated `server`/`shell` call) the host-set anchor entity — never the
+ * host itself. Same-context, fresh-context, and open (read) ops are free.
+ */
 export async function requirePanelAccessPermission(
   deps: PanelAccessPermissionDeps,
   ctx: ServiceContext,
   op: PanelAccessOperation,
   target: PanelAccessPermissionTarget
 ): Promise<PanelAccessPermissionResult> {
-  const requesterPanel =
-    ctx.caller.runtime.kind === "panel" && deps.resolveRequesterPanel
-      ? await deps.resolveRequesterPanel(ctx.caller)
-      : null;
-  if (
-    (op === "stateArgs.set" || op === "replacePanel") &&
-    isSelfPanelTarget(ctx.caller, target, requesterPanel)
-  ) {
-    return { allowed: true };
-  }
-  const authorizedChrome = isAuthorizedChrome(ctx.caller, {
-    hasAppCapability: deps.hasAppCapability,
-  });
-  const decision = accessDecision(
-    op,
-    {
-      id: ctx.caller.runtime.id,
-      kind: ctx.caller.runtime.kind,
-      privileged:
-        requesterPanel?.privileged === true || requesterPanel?.shell === true || authorizedChrome,
-    },
-    target
-  );
+  if (isOpenPanelOperation(op)) return { allowed: true };
 
-  if (!decision.allow) {
-    return { allowed: false, reason: "Panel access denied by policy" };
+  // Resolve the subject. A direct userland caller carries `.code`; a host-
+  // mediated call arrives as `server`/`shell` (no code identity) and runs under
+  // the host-set anchor entity instead. No code identity AND no resolvable
+  // anchor ⇒ a genuine system action ⇒ free.
+  let subjectCaller: VerifiedCaller = ctx.caller;
+  if (!ctx.caller.code) {
+    const anchorId = anchorEntityId(target);
+    const anchor = anchorId ? deps.resolveSubjectCaller(anchorId) : null;
+    if (!anchor) return { allowed: true };
+    subjectCaller = anchor;
   }
-  if (!decision.capability) {
-    return { allowed: true };
-  }
-  const requesterEntityId = ctx.caller.runtime.id;
-  const targetLabel = target.title ?? target.id;
-  const operationObjectValue =
-    op === "openPanel" && target.requestedSource ? target.requestedSource : targetLabel;
-  const headlineTarget =
-    op === "openPanel" && target.requestedSource ? target.requestedSource : targetLabel;
-  const resourceKey = panelCapabilityResourceKey(target.id, requesterEntityId);
-  const identity = ctx.caller.code;
-  const existingGrant =
-    identity && deps.grantStore.hasGrant(decision.capability, resourceKey, identity);
-  const impliedByAutomationGrant =
-    identity &&
-    decision.capability === PANEL_STRUCTURAL_CAPABILITY &&
-    deps.grantStore.hasGrant(PANEL_AUTOMATE_CAPABILITY, resourceKey, identity);
-  if (existingGrant || impliedByAutomationGrant) {
-    return { allowed: true, capability: decision.capability };
-  }
-  if (!existingGrant && deps.hasApprovalSession && !deps.hasApprovalSession()) {
-    return {
-      allowed: false,
-      capability: decision.capability,
-      reason: "No approval-capable shell is connected",
-    };
-  }
-  const result = await requestCapabilityPermission(deps, {
-    caller: ctx.caller,
-    capability: decision.capability,
-    severity: decision.severity,
-    resource: {
-      type: "panel",
-      label: "Panel",
-      value: targetLabel,
-      key: resourceKey,
-    },
-    operation: {
+
+  const targetContextId = destinationContextId(deps, op, target);
+  if (targetContextId == null) return { allowed: true }; // fresh / no-change / unknown
+
+  const originContextId = await deps.resolveCallerContext(subjectCaller.runtime.id);
+
+  const result = await requireContextBoundaryPermission(deps, {
+    subjectCaller,
+    originContextId,
+    targetContextId,
+    action: {
       kind: "panel",
-      verb: op,
-      object: { type: "panel", label: "Panel", value: operationObjectValue },
+      verb: verbFor(op),
+      targetLabel: target.title ?? target.id,
+      severity: panelAccessSeverityForTarget(target),
       ...(target.operationGroupKey ? { groupKey: target.operationGroupKey } : {}),
     },
-    title: titleFor(op, headlineTarget, decision.severity),
-    description: descriptionFor(op, targetLabel, headlineTarget),
-    details: [
-      { label: "Operation", value: op },
-      { label: "Target panel", value: target.id },
-      ...(target.requestedSource
-        ? [{ label: "Requested source", value: target.requestedSource }]
-        : []),
-      ...(target.requestedContextId
-        ? [{ label: "Requested context", value: target.requestedContextId }]
-        : []),
-      ...(target.source ? [{ label: "Source", value: target.source }] : []),
-    ],
-    deniedReason: `${op} denied for panel ${target.id}`,
   });
 
-  if (!result.allowed) {
-    return { allowed: false, capability: decision.capability, reason: result.reason };
-  }
   return {
-    allowed: true,
-    capability: decision.capability,
-    prompted: result.decision !== undefined,
+    allowed: result.allowed,
+    ...(result.reason ? { reason: result.reason } : {}),
+    ...(result.decision !== undefined ? { prompted: true } : {}),
   };
-}
-
-function isSelfPanelTarget(
-  caller: VerifiedCaller,
-  target: PanelAccessPermissionTarget,
-  requesterPanel: PanelAccessPermissionTarget | null
-): boolean {
-  if (caller.runtime.kind !== "panel") return false;
-  if (target.runtimeEntityId && target.runtimeEntityId === caller.runtime.id) return true;
-  if (requesterPanel?.runtimeEntityId && target.runtimeEntityId) {
-    return requesterPanel.runtimeEntityId === target.runtimeEntityId;
-  }
-  return Boolean(requesterPanel?.id && requesterPanel.id === target.id);
-}
-
-function titleFor(
-  op: PanelAccessOperation,
-  targetLabel: string,
-  severity: "standard" | "severe" | undefined
-): string {
-  if (op === "cdp") {
-    return severity === "severe" ? `Drive privileged ${targetLabel}` : `Automate ${targetLabel}`;
-  }
-  if (op === "navigate") return `Navigate ${targetLabel}`;
-  if (op === "reload") return `Reload ${targetLabel}`;
-  if (op === "openPanel") return `Open ${targetLabel}`;
-  if (op === "close" || op === "archive") return `Close ${targetLabel}`;
-  if (op === "unload") return `Unload ${targetLabel}`;
-  if (op === "movePanel") return `Move ${targetLabel}`;
-  if (op === "replacePanel") return `Navigate ${targetLabel}`;
-  if (op === "takeOver") return `Take over ${targetLabel}`;
-  if (op === "openDevTools") return `Open DevTools for ${targetLabel}`;
-  if (op === "rebuildPanel") return `Rebuild ${targetLabel}`;
-  if (op === "rebuildAndReload") return `Rebuild and reload ${targetLabel}`;
-  if (op === "stateArgs.set" || op === "updatePanelState") return `Change ${targetLabel} state`;
-  return `Change ${targetLabel}`;
-}
-
-function descriptionFor(
-  op: PanelAccessOperation,
-  targetLabel: string,
-  headlineTarget: string
-): string {
-  if (op === "cdp") {
-    return `Allow this requester to connect to ${targetLabel} over CDP.`;
-  }
-  if (
-    op === "navigate" ||
-    op === "reload" ||
-    op === "goBack" ||
-    op === "goForward" ||
-    op === "stop"
-  ) {
-    return `Allow this requester to drive ${targetLabel}.`;
-  }
-  if (op === "openPanel") {
-    return headlineTarget === targetLabel
-      ? `Allow this requester to open a panel under ${targetLabel}.`
-      : `Allow this requester to open ${headlineTarget} under ${targetLabel}.`;
-  }
-  if (op === "close" || op === "archive") {
-    return `Allow this requester to close ${targetLabel}.`;
-  }
-  if (op === "unload") {
-    return `Allow this requester to unload ${targetLabel}.`;
-  }
-  if (op === "movePanel") {
-    return `Allow this requester to move ${targetLabel} in the panel tree.`;
-  }
-  if (op === "replacePanel") {
-    return `Allow this requester to navigate ${targetLabel} to another panel source or context.`;
-  }
-  if (op === "takeOver") {
-    return `Allow this requester to take over hosting for ${targetLabel}.`;
-  }
-  if (op === "openDevTools") {
-    return `Allow this requester to open DevTools for ${targetLabel}.`;
-  }
-  if (op === "rebuildPanel") {
-    return `Allow this requester to rebuild ${targetLabel}.`;
-  }
-  if (op === "rebuildAndReload") {
-    return `Allow this requester to rebuild and reload ${targetLabel}.`;
-  }
-  if (op === "stateArgs.set" || op === "updatePanelState") {
-    return `Allow this requester to change state for ${targetLabel}.`;
-  }
-  return `Allow this requester to change ${targetLabel}.`;
 }

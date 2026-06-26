@@ -78,9 +78,6 @@ interface BuildDepsOptions {
     Parameters<typeof createRuntimeService>[0]["hooks"]
   >["resolveAppEffectiveVersion"];
   setEntityTitle?: Parameters<typeof createRuntimeService>[0]["setEntityTitle"];
-  canCreateCrossContextEntity?: Parameters<
-    typeof createRuntimeService
-  >[0]["canCreateCrossContextEntity"];
   vcsContexts?: Parameters<typeof createRuntimeService>[0]["vcsContexts"];
 }
 
@@ -139,10 +136,16 @@ async function buildDeps(opts: BuildDepsOptions = {}) {
       resolveAppEffectiveVersion,
       onRetire,
     },
-    capability: { approvalQueue, grantStore },
+    contextBoundary: {
+      approvalQueue,
+      grantStore,
+      contextExists: (id: string) =>
+        contextFolders.existing.has(id) || entityCache.listActive().some((e) => e.contextId === id),
+      resolveContextOwnerLabel: (id: string) =>
+        entityCache.listActive().find((e) => e.contextId === id)?.id,
+    },
     contextFolders,
     setEntityTitle: opts.setEntityTitle,
-    canCreateCrossContextEntity: opts.canCreateCrossContextEntity,
     vcsContexts: opts.vcsContexts,
   });
 
@@ -178,17 +181,6 @@ const appCaller = (id = "app:apps/shell:desktop", _contextId = "ctx-caller") =>
     effectiveVersion: "v1",
   });
 
-const panelHostAppCaller = (
-  id = "app:apps/field-mobile:device-1",
-  repoPath = "apps/field-mobile"
-) =>
-  createVerifiedCaller(id, "app", {
-    callerId: id,
-    callerKind: "app",
-    repoPath,
-    effectiveVersion: "v-host",
-  });
-
 const shellCaller = createVerifiedCaller("shell", "shell");
 const serverCaller = createVerifiedCaller("server", "server");
 
@@ -199,15 +191,6 @@ const doCreateSpec = (
   source: "workers/example",
   className: "MyDO",
   key: "k1",
-  ...overrides,
-});
-
-const panelCreateSpec = (
-  overrides: Partial<Extract<RuntimeEntityCreateSpec, { kind: "panel" }>> = {}
-): RuntimeEntityCreateSpec => ({
-  kind: "panel",
-  source: "panels/example",
-  key: "p1",
   ...overrides,
 });
 
@@ -437,23 +420,28 @@ describe("runtimeService.createEntity context policy", () => {
     expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
-  it("bypasses approval for app callers trusted by the host policy", async () => {
-    const canCreateCrossContextEntity = vi.fn(() => true);
-    const { service, approvalQueue } = await buildDeps({ canCreateCrossContextEntity });
-    const caller = panelHostAppCaller();
-
+  it("allows cross-context creation into a FRESH (non-existing) context without prompting", async () => {
+    const { service, approvalQueue, entityCache } = await buildDeps();
+    const caller = panelCaller("panel:pf", "ctx-caller");
+    entityCache._onActivate({
+      id: caller.runtime.id,
+      kind: "panel",
+      source: { repoPath: "panels/caller", effectiveVersion: "v1" },
+      contextId: "ctx-caller",
+      key: "pf",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+    // ctx-fresh has no entities and no materialized folder ⇒ fresh ⇒ free.
     const handle = (await service.handler({ caller }, "createEntity", [
-      panelCreateSpec({ contextId: "ctx-target" }),
+      doCreateSpec({ contextId: "ctx-fresh" }),
     ])) as { contextId: string };
-    expect(handle.contextId).toBe("ctx-target");
-    expect(canCreateCrossContextEntity).toHaveBeenCalledWith(
-      caller,
-      expect.objectContaining({ kind: "panel", source: "panels/example" })
-    );
+    expect(handle.contextId).toBe("ctx-fresh");
     expect(approvalQueue.request).not.toHaveBeenCalled();
   });
 
-  it("requests approval for panel callers in cross-context and grants when allowed", async () => {
+  it("requests approval for panel callers launching into an EXISTING foreign context", async () => {
     const { service, approvalQueue, entityCache } = await buildDeps({
       approvalDecision: "session",
     });
@@ -464,6 +452,17 @@ describe("runtimeService.createEntity context policy", () => {
       source: { repoPath: "panels/caller", effectiveVersion: "v1" },
       contextId: "ctx-caller",
       key: "p2",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+    // A resident entity makes ctx-target an EXISTING context.
+    entityCache._onActivate({
+      id: "panel:resident-2",
+      kind: "panel",
+      source: { repoPath: "panels/resident", effectiveVersion: "v1" },
+      contextId: "ctx-target",
+      key: "resident-2",
       createdAt: 1,
       status: "active",
       cleanupComplete: true,
@@ -491,6 +490,16 @@ describe("runtimeService.createEntity context policy", () => {
       status: "active",
       cleanupComplete: true,
     });
+    entityCache._onActivate({
+      id: "panel:resident-app",
+      kind: "panel",
+      source: { repoPath: "panels/resident", effectiveVersion: "v1" },
+      contextId: "ctx-target",
+      key: "resident-app",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
 
     const handle = (await service.handler({ caller }, "createEntity", [
       doCreateSpec({ contextId: "ctx-target" }),
@@ -500,12 +509,12 @@ describe("runtimeService.createEntity context policy", () => {
       expect.objectContaining({
         callerId: "app:apps/shell:desktop",
         callerKind: "app",
-        capability: "runtime.crossContextEntity",
+        capability: "context.boundary",
       })
     );
   });
 
-  it("rejects panel callers in cross-context when denied", async () => {
+  it("rejects panel callers launching into an existing foreign context when denied", async () => {
     const { service, entityCache } = await buildDeps({ approvalDecision: "deny" });
     const caller = panelCaller("panel:p3", "ctx-caller");
     entityCache._onActivate({
@@ -514,6 +523,16 @@ describe("runtimeService.createEntity context policy", () => {
       source: { repoPath: "panels/caller", effectiveVersion: "v1" },
       contextId: "ctx-caller",
       key: "p3",
+      createdAt: 1,
+      status: "active",
+      cleanupComplete: true,
+    });
+    entityCache._onActivate({
+      id: "panel:resident-3",
+      kind: "panel",
+      source: { repoPath: "panels/resident", effectiveVersion: "v1" },
+      contextId: "ctx-target",
+      key: "resident-3",
       createdAt: 1,
       status: "active",
       cleanupComplete: true,

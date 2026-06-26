@@ -327,15 +327,7 @@
     "service": ["app", "do", "extension", "panel", "server", "worker"],
     "methods": {
       "cloneDO": null,
-      "createInstance": null,
-      "destroyDO": null,
-      "destroyInstance": null,
-      "getInstanceStatus": null,
-      "getPort": null,
-      "listInstances": null,
-      "listInstanceSources": null,
-      "restartAll": null,
-      "updateInstance": null
+      "destroyDO": null
     }
   },
   "workerdInspector": {

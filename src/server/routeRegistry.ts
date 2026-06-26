@@ -18,9 +18,9 @@
  *   - DO routes: registered when a DO class becomes known to workerd
  *     (`workerdManager.registerAllDOClasses`, `onSourceRebuilt`), unregistered
  *     when the DO class is dropped.
- *   - Worker routes: registered at the end of `createRegularInstance` iff the
+ *   - Worker routes: registered at the end of `startWorker` iff the
  *     instance's name equals the canonical name (= source's last segment),
- *     unregistered in `destroyInstance` for the canonical instance.
+ *     unregistered in `stopWorker` for the canonical instance.
  *   - HTTP service routes: registered at bootstrap via
  *     registerHttpServiceRoutes(), alongside container.registerManaged().
  *

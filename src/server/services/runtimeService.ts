@@ -24,13 +24,12 @@ import {
   type WorkspaceContext,
 } from "@natstack/shared/runtime/entitySpec";
 import type { WorkspaceEntityStore } from "../workspaceEntityStore.js";
-import {
-  requestCapabilityPermission,
-  type CapabilityPermissionDeps,
-} from "./capabilityPermission.js";
 import { isAuthorizedChrome } from "./chromeTrust.js";
-
-export const RUNTIME_CROSS_CONTEXT_ENTITY = "runtime.crossContextEntity" as const;
+import {
+  requireContextBoundaryPermission,
+  type ContextBoundaryAction,
+  type ContextBoundaryDeps,
+} from "./contextBoundary.js";
 
 export interface RuntimeEntityHooks {
   /** Prepare runtime resources for a "do" entity. Returns targetId + effectiveVersion. */
@@ -100,7 +99,7 @@ export interface RuntimeServiceDeps {
    */
   entityStore: WorkspaceEntityStore;
   hooks: RuntimeEntityHooks;
-  capability: CapabilityPermissionDeps;
+  contextBoundary: ContextBoundaryDeps;
   contextFolders: RuntimeContextFolders;
   /** Optional VCS hooks for pinning and dropping context branches. */
   vcsContexts?: RuntimeVcsContexts;
@@ -114,78 +113,53 @@ export interface RuntimeServiceDeps {
     title: string | undefined,
     options?: { explicit?: boolean }
   ) => void | Promise<void>;
-  canCreateCrossContextEntity?: (
-    caller: VerifiedCaller,
-    spec: RuntimeEntityCreateSpec
-  ) => boolean | Promise<boolean>;
   hasAppCapability?: (callerId: string, capability: AppCapability) => boolean;
 }
 
 export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinition {
   const store = deps.entityStore;
 
+  /**
+   * The context-boundary gate for DIRECT (userland) entity launch/destroy/
+   * context ops. Trusted chrome/server callers bypass — they cannot be prompted
+   * (no code identity), and the only `server` entrants are (a) panel-mediated
+   * calls already gated at the panel layer or (b) genuine system creation
+   * (seed/CLI), which is free. Runs BEFORE any side effect, so denial is
+   * non-destructive.
+   */
+  async function gateContextLaunch(
+    caller: VerifiedCaller,
+    targetContextId: string,
+    action: ContextBoundaryAction
+  ): Promise<void> {
+    if (isAuthorizedChrome(caller, { hasAppCapability: deps.hasAppCapability })) return;
+    const originContextId = await store.resolveContext(caller.runtime.id);
+    const result = await requireContextBoundaryPermission(deps.contextBoundary, {
+      subjectCaller: caller,
+      originContextId,
+      targetContextId,
+      action,
+    });
+    if (!result.allowed) {
+      throw new Error(result.reason ?? "Context-boundary denied");
+    }
+  }
+
   async function resolveContextPolicy(
     caller: VerifiedCaller,
     requested: string | null | undefined,
     spec: RuntimeEntityCreateSpec
   ): Promise<string> {
+    // Empty/omitted ⇒ a brand-new context (fresh ⇒ free, no gate).
     if (requested == null || requested === "") {
       return randomUUID();
     }
-    const callerKind = caller.runtime.kind;
-    if (isAuthorizedChrome(caller, { hasAppCapability: deps.hasAppCapability })) {
-      return requested;
-    }
-    if (await deps.canCreateCrossContextEntity?.(caller, spec)) {
-      return requested;
-    }
-    // Pull caller's current contextId (cache-first, falls back to the WorkspaceDO).
-    const callerContextId = await store.resolveContext(caller.runtime.id);
-    if (callerContextId === requested) {
-      return requested;
-    }
-    if (
-      callerKind !== "panel" &&
-      callerKind !== "app" &&
-      callerKind !== "worker" &&
-      callerKind !== "do"
-    ) {
-      // extension callers reach here too; cross-context is gated.
-      throw new Error(`Caller kind ${callerKind} cannot create cross-context entities`);
-    }
-    const result = await requestCapabilityPermission(deps.capability, {
-      caller,
-      capability: RUNTIME_CROSS_CONTEXT_ENTITY,
-      dedupKey: `cross-context:${caller.runtime.id}:${spec.kind}:${requested}`,
-      resource: {
-        type: "context",
-        label: "Target context",
-        value: requested,
-        key: requested,
-      },
-      operation: {
-        kind: "runtime",
-        verb: `Create ${spec.kind}`,
-        object: {
-          type: "runtime-entity",
-          label: "Target source",
-          value: `${spec.source} in ${requested}`,
-        },
-        groupKey: `cross-context:${caller.runtime.id}:${spec.kind}:${requested}:${spec.source}`,
-      },
-      title: `Create ${spec.kind} in ${requested}`,
-      description: `Allow ${callerKind} ${caller.runtime.id} to create a ${spec.kind} entity in context ${requested}.`,
-      details: [
-        { label: "Caller", value: `${callerKind} ${caller.runtime.id}` },
-        { label: "Target kind", value: spec.kind },
-        { label: "Target source", value: spec.source },
-        { label: "Target context", value: requested },
-      ],
-      deniedReason: "Cross-context entity creation denied",
+    await gateContextLaunch(caller, requested, {
+      kind: "runtime",
+      verb: `Create ${spec.kind}`,
+      targetLabel: spec.source,
+      groupKey: `context-boundary:${requested}:${spec.source}`,
     });
-    if (!result.allowed) {
-      throw new Error(result.reason ?? "Cross-context entity creation denied");
-    }
     return requested;
   }
 
@@ -351,14 +325,38 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
    * to it yet. Useful when an orchestrator wants several entities to share a
    * branch. Repo selection remains an operation-level concern on VCS methods.
    */
-  async function createContext(args: { contextId?: string }): Promise<WorkspaceContext> {
+  async function createContext(
+    caller: VerifiedCaller,
+    args: { contextId?: string }
+  ): Promise<WorkspaceContext> {
+    // A named, already-existing foreign context is gated (this re-pins its VCS /
+    // re-materializes its folder); a fresh/omitted contextId is free.
+    if (args.contextId != null && args.contextId !== "") {
+      await gateContextLaunch(caller, args.contextId, { kind: "runtime", verb: "Set up context" });
+    }
     const contextId = args.contextId ?? randomUUID();
     const context = await setUpContext(contextId);
     await deps.contextFolders.ensureContextFolder(contextId);
     return context;
   }
 
-  async function retireEntity(id: string, removeContext?: boolean): Promise<void> {
+  async function retireEntity(
+    caller: VerifiedCaller,
+    id: string,
+    removeContext?: boolean
+  ): Promise<void> {
+    // Gate BEFORE mutating. Resolve the target's context via the DURABLE store
+    // (the active cache may already be evicting it). A null/unknown/already-
+    // retired target ⇒ the retire below no-ops ⇒ allow.
+    const targetContextId = await store.resolveContext(id);
+    if (targetContextId != null) {
+      await gateContextLaunch(caller, targetContextId, {
+        kind: "runtime",
+        verb: "Destroy",
+        targetLabel: id,
+        ...(removeContext ? { severity: "severe" as const } : {}),
+      });
+    }
     const record = await store.retire(id);
     if (!record) return;
     try {
@@ -424,7 +422,7 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         }
         case "retireEntity": {
           const [{ id, removeContext }] = args as [{ id: string; removeContext?: boolean }];
-          await retireEntity(id, removeContext);
+          await retireEntity(ctx.caller, id, removeContext);
           return;
         }
         case "listEntities": {
@@ -437,7 +435,7 @@ export function createRuntimeService(deps: RuntimeServiceDeps): ServiceDefinitio
         }
         case "createContext": {
           const [{ contextId }] = args as [{ contextId?: string }];
-          return await createContext({ contextId });
+          return await createContext(ctx.caller, { contextId });
         }
         case "setTitle": {
           // Access is enforced by the per-method policy on `runtimeMethods.setTitle`

@@ -1,8 +1,12 @@
 /**
  * Tests for the typed workerd client.
+ *
+ * Worker instance lifecycle now lives on `runtime.createEntity`/`retireEntity`
+ * (no `workerd.*` lifecycle client). What remains is userland service resolution
+ * and the fork/storage DO primitives.
  */
 
-import { createWorkerdClient, type WorkerdClient, type WorkerCreateOptions } from "./workerd.js";
+import { createWorkerdClient, type WorkerdClient } from "./workerd.js";
 
 function createMockRpc() {
   const calls: Array<{ target: string; method: string; args: unknown[] }> = [];
@@ -27,66 +31,17 @@ describe("createWorkerdClient", () => {
     client = createWorkerdClient(mock.rpc);
   });
 
-  it("create calls workerd.createInstance with options", async () => {
-    const opts: WorkerCreateOptions = {
-      source: "workers/hello",
-      contextId: "ctx-1",
-    };
-    await client.create(opts);
-
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.createInstance", [opts]);
-  });
-
-  it("adds parent defaults when creating workers from a runtime", async () => {
-    client = createWorkerdClient(mock.rpc, {
-      parentId: "parent-slot",
-      parentEntityId: "panel:parent-entity",
-      parentKind: "panel",
-    });
-
-    await client.create({
-      source: "workers/child",
-      contextId: "ctx-1",
-    });
-
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.createInstance", [
-      {
-        source: "workers/child",
-        contextId: "ctx-1",
-        parentId: "parent-slot",
-        parentEntityId: "panel:parent-entity",
-        parentKind: "panel",
-      },
-    ]);
-  });
-
-  it("destroy calls workerd.destroyInstance", async () => {
-    await client.destroy("hello");
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.destroyInstance", ["hello"]);
-  });
-
-  it("update calls workerd.updateInstance", async () => {
-    await client.update("hello", { env: { X: "1" } });
-    expect(mock.rpc.call).toHaveBeenCalledWith(
-      "main",
-      "workerd.updateInstance",
-      ["hello", { env: { X: "1" } }],
+  it("exposes only service-resolution + DO-storage primitives (no lifecycle)", () => {
+    expect(Object.keys(client).sort()).toEqual(
+      [
+        "cloneDO",
+        "destroyDO",
+        "durableObjectService",
+        "listServices",
+        "resolveDurableObject",
+        "resolveService",
+      ].sort()
     );
-  });
-
-  it("list calls workerd.listInstances", async () => {
-    await client.list();
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.listInstances", []);
-  });
-
-  it("status calls workerd.getInstanceStatus", async () => {
-    await client.status("hello");
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.getInstanceStatus", ["hello"]);
-  });
-
-  it("listInstanceSources calls workerd.listInstanceSources", async () => {
-    await client.listInstanceSources();
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.listInstanceSources", []);
   });
 
   it("listServices calls workers.listServices", async () => {
@@ -96,7 +51,10 @@ describe("createWorkerdClient", () => {
 
   it("resolveService calls workers.resolveService", async () => {
     await client.resolveService("natstack.channel.v1", "chat-1");
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workers.resolveService", ["natstack.channel.v1", "chat-1"]);
+    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workers.resolveService", [
+      "natstack.channel.v1",
+      "chat-1",
+    ]);
   });
 
   it("durableObjectService resolves then calls the service target through unified RPC", async () => {
@@ -110,7 +68,9 @@ describe("createWorkerdClient", () => {
       return "ok";
     });
 
-    await expect(client.durableObjectService("example.service.v1", "key-1").call("ping")).resolves.toBe("ok");
+    await expect(
+      client.durableObjectService("example.service.v1", "key-1").call("ping")
+    ).resolves.toBe("ok");
     expect(mock.rpc.call).toHaveBeenCalledWith("main", "workers.resolveService", [
       "example.service.v1",
       "key-1",
@@ -120,20 +80,22 @@ describe("createWorkerdClient", () => {
 
   it("resolveDurableObject calls workers.resolveDurableObject", async () => {
     await client.resolveDurableObject("workers/example", "ExampleDO", "key-1");
-    expect(mock.rpc.call).toHaveBeenCalledWith(
-      "main",
-      "workers.resolveDurableObject",
-      ["workers/example", "ExampleDO", "key-1"],
-    );
+    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workers.resolveDurableObject", [
+      "workers/example",
+      "ExampleDO",
+      "key-1",
+    ]);
   });
 
-  it("getPort calls workerd.getPort", async () => {
-    await client.getPort();
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.getPort", []);
+  it("cloneDO calls workerd.cloneDO", async () => {
+    const ref = { source: "workers/x", className: "X", objectKey: "k" };
+    await client.cloneDO(ref, "new-key");
+    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.cloneDO", [ref, "new-key"]);
   });
 
-  it("restartAll calls workerd.restartAll", async () => {
-    await client.restartAll();
-    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.restartAll", []);
+  it("destroyDO calls workerd.destroyDO", async () => {
+    const ref = { source: "workers/x", className: "X", objectKey: "k" };
+    await client.destroyDO(ref);
+    expect(mock.rpc.call).toHaveBeenCalledWith("main", "workerd.destroyDO", [ref]);
   });
 });

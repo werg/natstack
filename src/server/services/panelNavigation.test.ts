@@ -161,7 +161,7 @@ describe("panel navigation: capability grants and retire hooks", () => {
           retiredRecords.push(record);
         },
       },
-      capability: { approvalQueue, grantStore },
+      contextBoundary: { approvalQueue, grantStore, contextExists: () => false },
       contextFolders: {
         ensureContextFolder: vi.fn(async (contextId: string) => `/tmp/contexts/${contextId}`),
         removeContext: vi.fn(async () => {}),

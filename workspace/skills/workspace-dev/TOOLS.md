@@ -201,32 +201,37 @@ a convenience namespace for non-colliding service names, but rich runtime
 bindings win on collision: `services.workers` is the same ergonomic `workers`
 client, not the raw `workers` service catalog.
 
-#### workerd (Worker Management)
+#### Worker lifecycle (runtime entity API)
 
-Manage worker instances. Available to panels, workers, and server callers. **Limits are mandatory.**
+Launch, list, and retire workers through the **runtime entity API**. Available to
+panels, workers, and server callers. The raw form is
+`rpc.call("main", "runtime.<method>", [...])`.
 
 ```
-// Create a worker instance
+// Launch a worker — `key` names the instance
 eval({ code: `
-  const instance = await workers.create({
+  const handle = await rpc.call("main", "runtime.createEntity", [{
+    kind: "worker",
     source: "workers/my-worker",
+    key: "my-worker",
     contextId: ctx.contextId,
     ref: \`ctx:${ctx.contextId}\`, // for worker code created/edited in this context
-  });
-  console.log("Worker started:", instance.name, "on port", await workers.getPort());
+  }]);
+  scope.workerId = handle.id; // e.g. "worker:workers/my-worker:my-worker"
+  console.log("Worker started:", handle.id, "→ target", handle.targetId);
 `
 })
 
 // List running workers
 eval({ code: `
-  const list = await workers.list();
-  console.log(list.map(w => w.name + " (" + w.status + ")"));
+  const list = await rpc.call("main", "runtime.listEntities", [{ kind: "worker" }]);
+  console.log(list.map(w => w.id + " (" + w.source + ")"));
 `
 })
 
-// Destroy a worker
+// Retire (stop) a worker — pass the id from the launch handle (or listEntities)
 eval({ code: `
-  await workers.destroy("my-worker");
+  await rpc.call("main", "runtime.retireEntity", [{ id: scope.workerId }]);
 `
 })
 ```
@@ -236,7 +241,7 @@ select the code build. Pass `ref: \`ctx:${ctx.contextId}\`` when launching a
 worker you just created or edited on the current context head. Omit `ref` only
 when you intentionally want the main workspace build.
 
-Methods: `create(options)`, `destroy(name)`, `update(name, updates)`, `list()`, `status(name)`, `listInstanceSources()`, `getPort()`, `restartAll()`. See [WORKERS.md](WORKERS.md) for full API.
+Launch/list/retire: `runtime.createEntity({ kind: "worker", source, key, contextId, env, stateArgs, ref? })` returns a handle (`{ id, targetId, … }`); `runtime.listEntities({ kind: "worker" })`; `runtime.retireEntity({ id })`. The `workers` binding now exposes only service resolution — `listServices()`, `resolveService(...)`, `resolveDurableObject(...)`, `durableObjectService(...)` — plus the `cloneDO`/`destroyDO` infra primitives. See [WORKERS.md](WORKERS.md) for the service-resolution API.
 
 #### Version control (GAD-native, edit → commit → push)
 

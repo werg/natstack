@@ -36,16 +36,6 @@ export function createRuntime(deps: RuntimeDeps) {
   const slotId = deps.slotId ?? (entityId as unknown as PanelSlotId);
   const parentRuntimeId = deps.parentEntityId ?? deps.parentId ?? null;
   const base = createBaseRuntime({ ...deps, id: entityId });
-  const workers = {
-    ...base.workers,
-    create: (options: Parameters<typeof base.workers.create>[0]) =>
-      base.workers.create({
-        parentId: slotId,
-        parentEntityId: entityId,
-        parentKind: "panel",
-        ...options,
-      }),
-  };
   const shell = (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
 
   _initStateArgsRuntime(slotId, (service, method, args) => base.rpc.call(service, method, args));
@@ -98,7 +88,7 @@ export function createRuntime(deps: RuntimeDeps) {
     rpc: base.rpc,
     callMain: base.callMain,
     fs: base.fs,
-    workers,
+    workers: base.workers,
 
     resolveParent,
     parent: parentApi.parent,

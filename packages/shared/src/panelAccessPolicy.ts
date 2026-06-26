@@ -1,12 +1,5 @@
 import type { CallerKind } from "./serviceDispatcher.js";
 
-export const PANEL_AUTOMATE_CAPABILITY = "panel.automate" as const;
-export const PANEL_STRUCTURAL_CAPABILITY = "panel.structural" as const;
-
-export type PanelAccessCapability =
-  | typeof PANEL_AUTOMATE_CAPABILITY
-  | typeof PANEL_STRUCTURAL_CAPABILITY;
-
 export type PanelAccessSeverity = "standard" | "severe";
 
 export type PanelAccessOperation =
@@ -14,9 +7,6 @@ export type PanelAccessOperation =
   | "metadata"
   | "ensureLoaded"
   | "focus"
-  | "rpc.call"
-  | "rpc.emit"
-  | "rpc.on"
   | "cdp"
   | "navigate"
   | "reload"
@@ -39,11 +29,7 @@ export type PanelAccessOperation =
 export interface PanelAccessRequester {
   id: string;
   kind: CallerKind | string;
-  /**
-   * True when the caller is authorized chrome or a privileged shell/about
-   * panel. Servers resolve this before calling accessDecision; caller kind is
-   * identity only.
-   */
+  /** True when the caller is authorized chrome or a privileged shell/about panel. */
   privileged?: boolean;
 }
 
@@ -55,80 +41,22 @@ export interface PanelAccessTarget {
   shell?: boolean;
 }
 
-export interface PanelAccessDecision {
-  allow: boolean;
-  capability?: PanelAccessCapability;
-  severity?: PanelAccessSeverity;
-}
+/**
+ * Open (ungated) operations — reads / observation / consensual presence. These
+ * never gate, regardless of context. Everything else is a control-plane op
+ * governed by the single context-boundary gate (see `requirePanelAccessPermission`
+ * / `context.boundary`).
+ *
+ * NOTE: cross-entity RPC (rpc.call/emit/on) is deliberately NOT modeled here —
+ * raw entity-to-entity relay RPC is left open by design and gated nowhere (see
+ * `rpcServer.checkRelayAuth`); recipients self-gate on receipt.
+ */
+const openOperations = new Set<PanelAccessOperation>(["read", "metadata", "ensureLoaded", "focus"]);
 
-const openOperations = new Set<PanelAccessOperation>([
-  "read",
-  "metadata",
-  "ensureLoaded",
-  "focus",
-  "rpc.call",
-  "rpc.emit",
-  "rpc.on",
-]);
-
-const automateOperations = new Set<PanelAccessOperation>([
-  "cdp",
-  "navigate",
-  "reload",
-  "goBack",
-  "goForward",
-  "stop",
-]);
-
-const structuralOperations = new Set<PanelAccessOperation>([
-  "openPanel",
-  "archive",
-  "close",
-  "unload",
-  "movePanel",
-  "replacePanel",
-  "takeOver",
-  "openDevTools",
-  "rebuildPanel",
-  "rebuildAndReload",
-  "updatePanelState",
-  "stateArgs.set",
-]);
-
-export function panelAccessCapabilityForOperation(
-  op: PanelAccessOperation
-): PanelAccessCapability | null {
-  if (openOperations.has(op)) return null;
-  if (automateOperations.has(op)) return PANEL_AUTOMATE_CAPABILITY;
-  if (structuralOperations.has(op)) return PANEL_STRUCTURAL_CAPABILITY;
-  return PANEL_STRUCTURAL_CAPABILITY;
+export function isOpenPanelOperation(op: PanelAccessOperation): boolean {
+  return openOperations.has(op);
 }
 
 export function panelAccessSeverityForTarget(target: PanelAccessTarget): PanelAccessSeverity {
   return target.privileged === true || target.shell === true ? "severe" : "standard";
-}
-
-export function isTrustedPanelAccessRequester(requester: PanelAccessRequester): boolean {
-  return requester.privileged === true;
-}
-
-export function accessDecision(
-  op: PanelAccessOperation,
-  requester: PanelAccessRequester,
-  target: PanelAccessTarget
-): PanelAccessDecision {
-  if (isTrustedPanelAccessRequester(requester)) {
-    return { allow: true };
-  }
-
-  const capability = panelAccessCapabilityForOperation(op);
-  if (capability === null) {
-    return { allow: true };
-  }
-
-  return {
-    allow: true,
-    capability,
-    severity: panelAccessSeverityForTarget(target),
-  };
 }

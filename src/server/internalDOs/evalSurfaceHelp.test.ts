@@ -42,21 +42,15 @@ describe("describeEvalBindingSurface (help('<binding>') reflects the injected su
     expect(desc).toMatch(/mkdir|NOT Node's mkdtemp/);
   });
 
-  it("documents worker runtime methods with the ergonomic eval signatures", () => {
-    const out = describeEvalBindingSurface(
-      "workers",
-      ["create", "destroy", "listInstanceSources"],
-      {}
-    );
+  it("documents the worker launch/retire path via runtime.createEntity/retireEntity", () => {
+    const out = describeEvalBindingSurface("runtime", ["createEntity", "retireEntity"], {});
 
-    expect((out!.methods["create"] as { description: string }).description).toContain(
-      "ctx:${ctx.contextId}"
-    );
-    expect((out!.methods["destroy"] as { description: string }).description).toContain(
-      "not the full object"
-    );
-    expect((out!.methods["listInstanceSources"] as { description: string }).description).toContain(
-      'rpc.call("main", "workers.listSources", [])'
+    const createDesc = (out!.methods["createEntity"] as { description: string }).description;
+    expect(createDesc).toContain('kind: "worker"');
+    expect(createDesc).toContain("ctx:${ctx.contextId}");
+    expect(createDesc).toContain('rpc.call("main", `workers.listSources`, [])');
+    expect((out!.methods["retireEntity"] as { description: string }).description).toContain(
+      "runtime.retireEntity"
     );
   });
 

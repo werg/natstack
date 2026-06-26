@@ -29,9 +29,7 @@ function isIdentityScopedVersionApproval(approval: PendingApproval): boolean {
   ) {
     return true;
   }
-  return (
-    approval.effectiveVersion === "internal" || approval.repoPath === "natstack/internal"
-  );
+  return approval.effectiveVersion === "internal" || approval.repoPath === "natstack/internal";
 }
 
 function trustVersionLabel(approval: PendingApproval, fallback = "Trust version"): string {
@@ -130,11 +128,6 @@ export function getApprovalRiskTone(approval: PendingApproval): ApprovalRiskTone
     return "caution";
   }
   if (approval.kind === "capability") {
-    if (approval.capability === "workerd.lifecycle") {
-      return approval.severity === "severe" && /destroy/i.test(approval.title)
-        ? "danger"
-        : "caution";
-    }
     if (approval.severity === "severe") return "danger";
   }
   return "standard";
@@ -193,9 +186,6 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.capability === "workspace-project-import") {
     return "Project import";
   }
-  if (approval.capability === "workerd.lifecycle") {
-    return "Worker lifecycle";
-  }
   if (approval.capability === "external-network-fetch") {
     return "Network access";
   }
@@ -205,17 +195,8 @@ export function getApprovalCategoryLabel(approval: PendingApproval): string {
   if (approval.capability === "workerd.inspector") {
     return "Inspection";
   }
-  if (approval.capability === "runtime.crossContextEntity") {
-    return "Runtime";
-  }
   if (approval.capability === "client-config-delete") {
     return "Service setup";
-  }
-  if (approval.capability === "panel.automate") {
-    return "Panel automation";
-  }
-  if (approval.capability === "panel.structural") {
-    return "Panel change";
   }
   if (isBrowserOpenApproval(approval)) {
     return isOAuthExternalApproval(approval) ? "Sign-in action" : "Browser action";
@@ -407,29 +388,6 @@ export function getStandardActionCopy(
       denyDescription: "Do not import this project.",
     };
   }
-  if (approval.capability === "workerd.lifecycle") {
-    const target = approval.resource?.value ?? "this worker";
-    const action = workerLifecycleVerb(approval);
-    return {
-      once: {
-        label: "Allow once",
-        description: "Allow this worker lifecycle request once.",
-      },
-      session: {
-        label: "Allow this session",
-        description: `Allow worker lifecycle changes for ${target} until NatStack restarts.`,
-      },
-      version: {
-        label: trustVersionLabel(approval),
-        description: `Allow ${trustSubject(approval)} to manage ${target}.`,
-      },
-      repo: {
-        label: "Trust repo",
-        description: `Allow this workspace project to manage ${target}.`,
-      },
-      denyDescription: `Do not ${action} ${target}.`,
-    };
-  }
   if (approval.capability === "external-network-fetch") {
     const destination = formatNetworkDestination(approval.resource?.value ?? "this destination");
     return {
@@ -447,7 +405,8 @@ export function getStandardActionCopy(
       },
       repo: {
         label: "Trust repo with network",
-        description: "Allow this workspace project to use network access without asking for each origin.",
+        description:
+          "Allow this workspace project to use network access without asking for each origin.",
       },
       denyDescription: `Do not connect to ${destination}.`,
     };
@@ -473,52 +432,6 @@ export function getStandardActionCopy(
           "Allow this workspace project to read cross-origin responses without asking for each origin.",
       },
       denyDescription: `Do not read responses from ${destination}.`,
-    };
-  }
-  if (approval.capability === "panel.automate") {
-    const target = approval.resource?.value ?? "this panel";
-    const severe = approval.severity === "severe";
-    return {
-      once: {
-        label: severe ? "Drive once" : "Automate once",
-        description: `Allow automation of ${target} for this request only.`,
-      },
-      session: {
-        label: severe ? "Drive this session" : "Automate this session",
-        description: `Allow automation of ${target} until NatStack restarts.`,
-      },
-      version: {
-        label: trustVersionLabel(approval, severe ? "Trust and drive" : "Trust version"),
-        description: `Allow ${exactTrustSubject(approval)} to automate ${target}.`,
-      },
-      repo: {
-        label: severe ? "Trust repo and drive" : "Trust repo",
-        description: `Allow this workspace project to automate ${target}.`,
-      },
-      denyDescription: `Do not automate ${target}.`,
-    };
-  }
-  if (approval.capability === "panel.structural") {
-    const target = approval.resource?.value ?? "this panel";
-    const severe = approval.severity === "severe";
-    return {
-      once: {
-        label: severe ? "Change once" : "Allow once",
-        description: `Allow this panel-tree change to ${target} once.`,
-      },
-      session: {
-        label: severe ? "Change this session" : "Allow this session",
-        description: `Allow panel-tree changes to ${target} until NatStack restarts.`,
-      },
-      version: {
-        label: trustVersionLabel(approval, severe ? "Trust and change" : "Trust version"),
-        description: `Allow ${exactTrustSubject(approval)} to change ${target}.`,
-      },
-      repo: {
-        label: severe ? "Trust repo and change" : "Trust repo",
-        description: `Allow this workspace project to change ${target}.`,
-      },
-      denyDescription: `Do not change ${target}.`,
     };
   }
   if (isBrowserOpenApproval(approval)) {
@@ -547,7 +460,10 @@ export function getStandardActionCopy(
       label: trustVersionLabel(approval),
       description: `Allow ${exactTrustSubject(approval)} to request ${target}.`,
     },
-    repo: { label: "Trust repo", description: `Allow this workspace project to request ${target}.` },
+    repo: {
+      label: "Trust repo",
+      description: `Allow this workspace project to request ${target}.`,
+    },
     denyDescription: `Do not allow ${target}.`,
   };
 }
@@ -726,16 +642,6 @@ export function getApprovalCopy(approval: PendingApproval): {
         summary: `Imports ${destination} from a remote git repository.`,
       };
     }
-    if (approval.capability === "workerd.lifecycle") {
-      const target = approval.resource?.value ?? "this worker";
-      return {
-        title: targetAwareWorkerLifecycleTitle(approval.title, workerLifecycleTitle(approval, target)),
-        summary: approval.description ?? `Changes worker lifecycle state for ${target}.`,
-        ...(approval.severity === "severe"
-          ? { warning: "This changes a running worker instance." }
-          : {}),
-      };
-    }
     if (approval.capability === "external-network-fetch") {
       const destination = formatNetworkDestination(approval.resource?.value ?? "this destination");
       return {
@@ -751,9 +657,7 @@ export function getApprovalCopy(approval: PendingApproval): {
       const destination = formatNetworkDestination(approval.resource?.value ?? "this destination");
       return {
         title: `Read responses from ${destination}`,
-        summary:
-          approval.description ??
-          `Reads cross-origin responses from ${destination}.`,
+        summary: approval.description ?? `Reads cross-origin responses from ${destination}.`,
       };
     }
     if (approval.capability === "workerd.inspector") {
@@ -763,11 +667,17 @@ export function getApprovalCopy(approval: PendingApproval): {
         summary: approval.description ?? `Attaches the workerd inspector to ${target}.`,
       };
     }
-    if (approval.capability === "runtime.crossContextEntity") {
-      const target = approval.resource?.value ?? approval.operation?.object?.value ?? "another context";
+    if (approval.capability === "context.boundary") {
+      const owner = approval.details?.find((d) => d.label === "Owner")?.value;
+      const target =
+        approval.resource?.value ?? approval.operation?.object?.value ?? "another context";
+      const subject = owner ? `${owner}'s context` : `context ${target}`;
       return {
-        title: targetAwareGenericTitle(approval.title, `Create runtime entity in ${target}`),
-        summary: approval.description ?? `Creates a runtime entity in ${target}.`,
+        title: targetAwareGenericTitle(approval.title, `Act on ${subject}`),
+        summary:
+          approval.description ??
+          `Runs code in / acts on ${subject} — another agent or panel's existing state.`,
+        warning: "This runs code in, or acts on, another agent or panel's existing state.",
       };
     }
     if (approval.capability === "client-config-delete") {
@@ -775,38 +685,6 @@ export function getApprovalCopy(approval: PendingApproval): {
       return {
         title: targetAwareGenericTitle(approval.title, `Disable ${formatServiceName(target)}`),
         summary: approval.description ?? `Disables ${formatServiceName(target)}.`,
-      };
-    }
-    if (approval.capability === "panel.automate") {
-      const target = approval.resource?.value ?? "this panel";
-      const fallbackTitle =
-        approval.severity === "severe" ? `Drive privileged ${target}` : `Automate ${target}`;
-      return {
-        title: targetAwarePanelTitle(approval.title, fallbackTitle),
-        summary: `Automates ${target}.`,
-        ...(approval.severity === "severe"
-          ? {
-              warning:
-                "This target is privileged. Approving gives the requester control of a trusted shell panel.",
-            }
-          : {}),
-      };
-    }
-    if (approval.capability === "panel.structural") {
-      const target = approval.resource?.value ?? "this panel";
-      const subject = panelOperationSubject(approval, target);
-      return {
-        title: targetAwarePanelTitle(approval.title, panelStructuralTitle(approval, target)),
-        summary:
-          panelOperationName(approval) === "openPanel" && subject !== target
-            ? `Opens ${subject} under ${target}.`
-            : `Changes ${target}.`,
-        ...(approval.severity === "severe"
-          ? {
-              warning:
-                "This target is privileged. Approving allows changes to a trusted shell panel.",
-            }
-          : {}),
       };
     }
     if (isBrowserOpenApproval(approval)) {
@@ -935,47 +813,6 @@ function genericCapabilityTarget(approval: PendingCapabilityApproval): string {
   );
 }
 
-function workerLifecycleVerb(approval: PendingCapabilityApproval): string {
-  const verb = approval.operation?.verb.toLowerCase();
-  if (verb === "spawn" || verb === "create") return "spawn";
-  if (verb === "destroy" || verb === "delete" || verb === "stop") return "destroy";
-  if (verb === "update" || verb === "reconfigure") return "update";
-  const title = approval.title.toLowerCase();
-  if (title.includes("destroy") || title.includes("stop")) return "destroy";
-  if (title.includes("update") || title.includes("reconfigure")) return "update";
-  return "spawn";
-}
-
-function workerLifecycleTitle(approval: PendingCapabilityApproval, target: string): string {
-  switch (workerLifecycleVerb(approval)) {
-    case "destroy":
-      return `Destroy ${target}`;
-    case "update":
-      return `Update ${target}`;
-    default:
-      return `Spawn ${target}`;
-  }
-}
-
-function targetAwareWorkerLifecycleTitle(title: string | undefined, fallback: string): string {
-  if (!title) return fallback;
-  const normalized = title.trim().toLowerCase();
-  const genericWorkerTitles = new Set([
-    "spawn worker",
-    "create worker",
-    "start worker",
-    "destroy worker",
-    "destroy worker instance",
-    "stop worker",
-    "stop worker instance",
-    "update worker",
-    "update worker instance",
-    "reconfigure worker",
-    "reconfigure worker instance",
-  ]);
-  return genericWorkerTitles.has(normalized) ? fallback : title;
-}
-
 function targetAwareGenericTitle(title: string | undefined, fallback: string): string {
   if (!title) return fallback;
   const normalized = title.trim().toLowerCase();
@@ -987,72 +824,6 @@ function targetAwareGenericTitle(title: string | undefined, fallback: string): s
     "profile workers via the workerd inspector",
   ]);
   return genericTitles.has(normalized) ? fallback : title;
-}
-
-function panelOperationName(approval: PendingCapabilityApproval): string | undefined {
-  return (
-    approval.operation?.verb ??
-    approval.details?.find((detail) => detail.label.toLowerCase() === "operation")?.value
-  );
-}
-
-function panelOperationSubject(approval: PendingCapabilityApproval, fallback: string): string {
-  return approval.operation?.object?.value ?? fallback;
-}
-
-function panelStructuralTitle(approval: PendingCapabilityApproval, target: string): string {
-  const operation = panelOperationName(approval);
-  const subject = panelOperationSubject(approval, target);
-  switch (operation) {
-    case "openPanel":
-      return `Open ${subject}`;
-    case "navigate":
-    case "replacePanel":
-      return `Navigate ${target}`;
-    case "reload":
-      return `Reload ${target}`;
-    case "close":
-    case "archive":
-      return `Close ${target}`;
-    case "unload":
-      return `Unload ${target}`;
-    case "movePanel":
-      return `Move ${target}`;
-    case "takeOver":
-      return `Take over ${target}`;
-    case "openDevTools":
-      return `Open DevTools for ${target}`;
-    case "rebuildPanel":
-      return `Rebuild ${target}`;
-    case "rebuildAndReload":
-      return `Rebuild and reload ${target}`;
-    case "stateArgs.set":
-    case "updatePanelState":
-      return `Change ${target} state`;
-    default:
-      return `Change ${target}`;
-  }
-}
-
-function targetAwarePanelTitle(title: string | undefined, fallback: string): string {
-  if (!title) return fallback;
-  const normalized = title.trim().toLowerCase();
-  const genericPanelTitles = new Set([
-    "automate panel",
-    "drive privileged panel",
-    "navigate panel",
-    "reload panel",
-    "open panel",
-    "close panel",
-    "unload panel",
-    "move panel",
-    "take over panel",
-    "open panel devtools",
-    "rebuild panel",
-    "rebuild and reload panel",
-    "change panel state",
-  ]);
-  return genericPanelTitles.has(normalized) ? fallback : title;
 }
 
 function unitBatchLabel(approval: PendingUnitBatchApproval): {

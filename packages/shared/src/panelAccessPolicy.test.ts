@@ -1,36 +1,24 @@
 import { describe, expect, it } from "vitest";
-import {
-  PANEL_AUTOMATE_CAPABILITY,
-  PANEL_STRUCTURAL_CAPABILITY,
-  accessDecision,
-  panelAccessCapabilityForOperation,
-} from "./panelAccessPolicy.js";
+import { isOpenPanelOperation, panelAccessSeverityForTarget } from "./panelAccessPolicy.js";
 
 describe("panelAccessPolicy", () => {
-  it("leaves open metadata, loading, focus, and consensual RPC operations ungated", () => {
-    for (const op of ["metadata", "ensureLoaded", "focus", "rpc.call"] as const) {
-      expect(accessDecision(op, { id: "panel-a", kind: "panel" }, { id: "panel-b" })).toEqual({
-        allow: true,
-      });
+  it("treats reads / observation / consensual presence as open (ungated)", () => {
+    for (const op of ["read", "metadata", "ensureLoaded", "focus"] as const) {
+      expect(isOpenPanelOperation(op)).toBe(true);
     }
   });
 
-  it("gates CDP and browser-driving verbs with panel.automate", () => {
-    for (const op of ["cdp", "navigate", "reload", "goBack", "goForward", "stop"] as const) {
-      expect(panelAccessCapabilityForOperation(op)).toBe(PANEL_AUTOMATE_CAPABILITY);
-      expect(accessDecision(op, { id: "panel-a", kind: "panel" }, { id: "panel-b" })).toEqual({
-        allow: true,
-        capability: PANEL_AUTOMATE_CAPABILITY,
-        severity: "standard",
-      });
-    }
-  });
-
-  it("gates structural operations separately from automation", () => {
+  it("treats control-plane operations as gated (not open)", () => {
     for (const op of [
-      "archive",
+      "cdp",
       "openPanel",
       "close",
+      "navigate",
+      "reload",
+      "goBack",
+      "goForward",
+      "stop",
+      "archive",
       "unload",
       "movePanel",
       "replacePanel",
@@ -41,54 +29,19 @@ describe("panelAccessPolicy", () => {
       "updatePanelState",
       "stateArgs.set",
     ] as const) {
-      expect(panelAccessCapabilityForOperation(op)).toBe(PANEL_STRUCTURAL_CAPABILITY);
-      expect(accessDecision(op, { id: "parent", kind: "panel" }, { id: "child" })).toEqual({
-        allow: true,
-        capability: PANEL_STRUCTURAL_CAPABILITY,
-        severity: "standard",
-      });
+      expect(isOpenPanelOperation(op)).toBe(false);
     }
   });
 
-  it("does not grant relationship bypasses", () => {
-    expect(accessDecision("cdp", { id: "parent", kind: "panel" }, { id: "child" })).toMatchObject({
-      capability: PANEL_AUTOMATE_CAPABILITY,
-    });
-    expect(accessDecision("close", { id: "parent", kind: "panel" }, { id: "child" })).toMatchObject(
-      { capability: PANEL_STRUCTURAL_CAPABILITY }
+  it("escalates privileged and shell targets to severe severity", () => {
+    expect(panelAccessSeverityForTarget({ id: "about", privileged: true })).toBe("severe");
+    expect(panelAccessSeverityForTarget({ id: "about", shell: true })).toBe("severe");
+  });
+
+  it("keeps ordinary targets at standard severity", () => {
+    expect(panelAccessSeverityForTarget({ id: "panel-b" })).toBe("standard");
+    expect(panelAccessSeverityForTarget({ id: "panel-b", privileged: false, shell: false })).toBe(
+      "standard"
     );
-  });
-
-  it("escalates privileged targets to severe approvals", () => {
-    expect(
-      accessDecision("cdp", { id: "panel-a", kind: "panel" }, { id: "about", privileged: true })
-    ).toEqual({
-      allow: true,
-      capability: PANEL_AUTOMATE_CAPABILITY,
-      severity: "severe",
-    });
-    expect(
-      accessDecision("close", { id: "panel-a", kind: "panel" }, { id: "about", shell: true })
-    ).toEqual({
-      allow: true,
-      capability: PANEL_STRUCTURAL_CAPABILITY,
-      severity: "severe",
-    });
-  });
-
-  it("bypasses callers only when trusted status is surfaced explicitly", () => {
-    expect(accessDecision("cdp", { id: "shell", kind: "shell" }, { id: "target" })).toMatchObject({
-      capability: PANEL_AUTOMATE_CAPABILITY,
-    });
-
-    for (const requester of [
-      { id: "shell", kind: "shell", privileged: true },
-      { id: "server", kind: "server", privileged: true },
-      { id: "about", kind: "panel", privileged: true },
-    ] as const) {
-      expect(accessDecision("cdp", requester, { id: "target", privileged: true })).toEqual({
-        allow: true,
-      });
-    }
   });
 });

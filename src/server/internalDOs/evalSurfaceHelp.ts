@@ -22,22 +22,19 @@ export const EVAL_RUNTIME_METHOD_NOTES: Record<string, { description: string }> 
       "NOT Node's mkdtemp (which creates the directory), and .tmp paths are scratch space, not " +
       "tracked edit/VCS destinations.",
   },
-  "workers.create": {
+  "runtime.createEntity": {
     description:
-      "create({ source, contextId, name?, ref?, env?, bindings? }) → WorkerInstanceInfo. " +
-      "Pass ref: `ctx:${ctx.contextId}` for worker code created or edited on the current context head; " +
-      "omit ref only when intentionally launching the main build.",
+      "Workers are launched via " +
+      'rpc.call("main", `runtime.createEntity`, [{ kind: "worker", source, key, contextId, env, stateArgs }]). ' +
+      "`key` names the instance (it maps to the worker entity key); pass " +
+      "`ref: `ctx:${ctx.contextId}`` for worker code created or edited on the current context head, " +
+      "and omit ref only when intentionally launching the main build. Launchable worker sources are " +
+      'listed with rpc.call("main", `workers.listSources`, []).',
   },
-  "workers.destroy": {
+  "runtime.retireEntity": {
     description:
-      "destroy(name: string) → void. Pass the worker instance name, not the full object returned by " +
-      "create() or list().",
-  },
-  "workers.listInstanceSources": {
-    description:
-      "listInstanceSources() → available worker-instance source packages. This is the ergonomic " +
-      "runtime call for listing launchable worker sources; the raw catalog method " +
-      '`workers.listSources` is reached with `rpc.call("main", "workers.listSources", [])`.',
+      'Retire (stop) a worker via rpc.call("main", `runtime.retireEntity`, [{ id }]), passing the entity ' +
+      "id returned by runtime.createEntity. This replaces the removed workers.destroy.",
   },
 };
 

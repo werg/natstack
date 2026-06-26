@@ -167,25 +167,6 @@ describe("approvalCopy", () => {
       summaryIncludes: "Updates workspace source",
     },
     {
-      name: "worker lifecycle",
-      approval: {
-        ...base,
-        kind: "capability",
-        capability: "workerd.lifecycle",
-        title: "Spawn worker",
-        description: 'Allow this code to start the worker "workers/hello".',
-        resource: {
-          type: "worker-source",
-          label: "Worker",
-          value: "workers/hello",
-        },
-      },
-      category: "Worker lifecycle",
-      title: "Spawn workers/hello",
-      summaryIncludes: "start the worker",
-      risk: "caution",
-    },
-    {
       name: "client-config",
       approval: {
         ...base,
@@ -332,76 +313,6 @@ describe("approvalCopy", () => {
       title: "Allow notifications?",
       summaryIncludes: "notification access",
     },
-    {
-      name: "panel automate",
-      approval: {
-        ...base,
-        kind: "capability",
-        capability: "panel.automate",
-        severity: "severe",
-        title: "Drive privileged panel",
-        operation: {
-          kind: "panel",
-          verb: "cdp",
-          object: { type: "panel", label: "Panel", value: "Shell" },
-        },
-        resource: {
-          type: "panel",
-          label: "Panel",
-          value: "Shell",
-        },
-      },
-      category: "Panel automation",
-      title: "Drive privileged Shell",
-      summaryIncludes: "Automates Shell",
-      warning:
-        "This target is privileged. Approving gives the requester control of a trusted shell panel.",
-      risk: "danger",
-    },
-    {
-      name: "panel structural",
-      approval: {
-        ...base,
-        kind: "capability",
-        capability: "panel.structural",
-        title: "Close panel",
-        operation: {
-          kind: "panel",
-          verb: "close",
-          object: { type: "panel", label: "Panel", value: "Child panel" },
-        },
-        resource: {
-          type: "panel",
-          label: "Panel",
-          value: "Child panel",
-        },
-      },
-      category: "Panel change",
-      title: "Close Child panel",
-      summaryIncludes: "Changes Child panel",
-    },
-    {
-      name: "open panel",
-      approval: {
-        ...base,
-        kind: "capability",
-        capability: "panel.structural",
-        title: "Open panel",
-        operation: {
-          kind: "panel",
-          verb: "openPanel",
-          object: { type: "panel", label: "Panel", value: "panels/spectrolite" },
-        },
-        resource: {
-          type: "panel",
-          label: "Panel",
-          value: "System test suite run",
-        },
-      },
-      category: "Panel change",
-      title: "Open panels/spectrolite",
-      summaryIncludes: "Opens panels/spectrolite under System test suite run",
-    },
   ];
 
   it.each(fixtures)(
@@ -462,27 +373,11 @@ describe("approvalCopy", () => {
 
   it("formats standard action labels by approval subtype", () => {
     const [capability, oauth, gitWrite] = fixtures.map((fixture) => fixture.approval);
-    const severePanelAutomation = fixtures.find((fixture) => fixture.name === "panel automate")!
-      .approval as Extract<PendingApproval, { kind: "capability" }>;
     const workspaceSourceChange = fixtures.find(
       (fixture) => fixture.name === "workspace source change"
     )!.approval as Extract<PendingApproval, { kind: "capability" }>;
-    const workerLifecycle = fixtures.find((fixture) => fixture.name === "worker lifecycle")!
-      .approval as Extract<PendingApproval, { kind: "capability" }>;
     const networkEgress = fixtures.find((fixture) => fixture.name === "network egress")!
       .approval as Extract<PendingApproval, { kind: "capability" }>;
-    const severePanelStructural = {
-      ...(fixtures.find((fixture) => fixture.name === "panel structural")!.approval as Extract<
-        PendingApproval,
-        { kind: "capability" }
-      >),
-      severity: "severe" as const,
-    };
-    const internalPanelAutomation = {
-      ...severePanelAutomation,
-      repoPath: "natstack/internal",
-      effectiveVersion: "internal",
-    };
     const repoBinding = fixtures.find((fixture) => fixture.name === "credential repo binding")!
       .approval as Extract<PendingApproval, { kind: "credential" }>;
     const evalCredential = {
@@ -525,10 +420,6 @@ describe("approvalCopy", () => {
     expect(getStandardActionCopy(workspaceSourceChange).session.description).toContain(
       "panels/spectrolite"
     );
-    expect(getStandardActionCopy(workerLifecycle).once.label).toBe("Allow once");
-    expect(getStandardActionCopy(workerLifecycle).version.description).toContain(
-      "manage workers/hello"
-    );
     expect(getStandardActionCopy(networkEgress).once.label).toBe("Connect once");
     expect(getStandardActionCopy(networkEgress).session.label).toBe("Allow this origin");
     expect(getStandardActionCopy(networkEgress).session.description).toContain("localhost:42531");
@@ -537,18 +428,8 @@ describe("approvalCopy", () => {
     expect(getStandardActionCopy(evalNetworkEgress).version.label).toBe(
       "Trust identity with network"
     );
-    expect(getStandardActionCopy(severePanelAutomation).once.label).toBe("Drive once");
-    expect(getStandardActionCopy(severePanelAutomation).version.label).toBe("Trust and drive");
-    expect(getStandardActionCopy(internalPanelAutomation).version.label).toBe("Trust identity");
-    expect(getStandardActionCopy(internalPanelAutomation).version.description).toContain(
-      "runtime identity"
-    );
     expect(getStandardActionCopy(evalCredential).version.label).toBe("Trust identity");
-    expect(getStandardActionCopy(evalCredential).version.description).toContain(
-      "runtime identity"
-    );
-    expect(getStandardActionCopy(severePanelStructural).once.label).toBe("Change once");
-    expect(getStandardActionCopy(severePanelStructural).version.label).toBe("Trust and change");
+    expect(getStandardActionCopy(evalCredential).version.description).toContain("runtime identity");
   });
 
   it("formats unit-batch action labels for mixed scheduled jobs and apps", () => {

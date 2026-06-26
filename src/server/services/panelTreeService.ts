@@ -163,6 +163,21 @@ export function createPanelTreeService(deps: PanelTreeServiceDeps): ServiceDefin
                   ? (args[0] as { panelId: string }).panelId
                   : (args[0] as string)
               );
+        // Context-changing ops gate on their DESTINATION context, not the
+        // panel's current one. `navigate` carries it in options; `navigateHistory`
+        // moves into a stored history entry whose context can be foreign+existing,
+        // so peek it (non-mutating) before the gate.
+        if (method === "navigate") {
+          const navContextId = (args[2] as { contextId?: string } | undefined)?.contextId;
+          if (typeof navContextId === "string" && navContextId.length > 0) {
+            target.requestedContextId = navContextId;
+          }
+        } else if (method === "navigateHistory") {
+          const destContextId = (await bridge(ctx, "historyTargetContext", args)) as string | null;
+          if (typeof destContextId === "string" && destContextId.length > 0) {
+            target.requestedContextId = destContextId;
+          }
+        }
         const permission = await requirePanelAccessPermission(deps, ctx, op, target);
         if (!permission.allowed) {
           throw new Error(permission.reason ?? `${method} denied for panel ${target.id}`);

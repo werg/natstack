@@ -20,18 +20,10 @@ import { namespaceEntry, valueEntry, type RuntimeSurfaceEntry } from "./runtimeS
 
 // --- shared namespace member arrays (single source of truth) ---
 export const WORKERS_MEMBERS = [
-  "create",
-  "destroy",
-  "update",
-  "list",
-  "status",
-  "listInstanceSources",
   "listServices",
   "resolveService",
   "resolveDurableObject",
   "durableObjectService",
-  "getPort",
-  "restartAll",
   "cloneDO",
   "destroyDO",
 ];

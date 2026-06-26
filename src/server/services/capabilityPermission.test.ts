@@ -9,7 +9,6 @@ import {
   panelCapabilityResourceKey,
   requestCapabilityPermission,
 } from "./capabilityPermission.js";
-import { PANEL_AUTOMATE_CAPABILITY } from "@natstack/shared/panelAccessPolicy";
 import type { ApprovalQueue } from "./approvalQueue.js";
 import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
 
@@ -376,7 +375,7 @@ describe("capabilityPermission", () => {
     };
     const targetPanelId = "target-panel";
     const baseRequest = {
-      capability: PANEL_AUTOMATE_CAPABILITY,
+      capability: "context.boundary",
       resource: {
         type: "panel",
         label: "Panel",
@@ -423,24 +422,18 @@ describe("capabilityPermission", () => {
       },
     });
 
+    // Each requester entity is scoped by its own resource key, so a version/repo
+    // grant from one requester does not satisfy another's prompt.
     expect(approvalQueue.request).toHaveBeenCalledTimes(2);
     expect(approvalQueue.request).toHaveBeenNthCalledWith(
       1,
       expect.objectContaining({
-        dedupKey: `panel-capability:${PANEL_AUTOMATE_CAPABILITY}:${panelCapabilityResourceKey(
-          targetPanelId,
-          firstCaller.runtime.id
-        )}`,
         grantResourceKey: panelCapabilityResourceKey(targetPanelId, firstCaller.runtime.id),
       })
     );
     expect(approvalQueue.request).toHaveBeenNthCalledWith(
       2,
       expect.objectContaining({
-        dedupKey: `panel-capability:${PANEL_AUTOMATE_CAPABILITY}:${panelCapabilityResourceKey(
-          targetPanelId,
-          secondCaller.runtime.id
-        )}`,
         grantResourceKey: panelCapabilityResourceKey(targetPanelId, secondCaller.runtime.id),
       })
     );
@@ -460,7 +453,7 @@ describe("capabilityPermission", () => {
         repoPath: "panels/source",
         effectiveVersion: "version-1",
       }),
-      capability: PANEL_AUTOMATE_CAPABILITY,
+      capability: "context.boundary",
       severity: "severe",
       resource: {
         type: "panel",

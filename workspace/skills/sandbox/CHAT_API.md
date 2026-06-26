@@ -199,8 +199,8 @@ const browsers = await chat.rpc.call(
   ["@workspace-extensions/browser-data", "detectBrowsers", []],
 );
 
-// Workers
-const instances = await chat.rpc.call("main", "workerd.listInstances", []);
+// Workers (running worker instances)
+const instances = await chat.rpc.call("main", "runtime.listEntities", [{ kind: "worker" }]);
 ```
 
 ## chat.contextId / chat.channelId

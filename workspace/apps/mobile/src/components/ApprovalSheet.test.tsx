@@ -323,22 +323,21 @@ describe("ApprovalSheet", () => {
     await waitFor(() => expect(onResolve).toHaveBeenCalledWith("approval-1", "once"));
   });
 
-  it("renders severe panel capability approvals with danger-tone trust action", () => {
-    const severePanel: PendingApproval = {
+  it("renders severe context-boundary approvals with danger-tone trust action", () => {
+    const severeBoundary: PendingApproval = {
       ...capability,
-      capability: "panel.automate",
+      capability: "context.boundary",
       severity: "severe",
-      title: "Drive privileged panel",
+      title: "Act on Shell's context",
       resource: { type: "panel", label: "Panel", value: "Shell" },
+      details: [{ label: "Owner", value: "Shell" }],
     };
 
-    const { getByTestId, getByText } = renderSheet(severePanel);
+    const { getByTestId, getByText } = renderSheet(severeBoundary);
 
-    expect(getByText("Drive privileged Shell")).toBeTruthy();
+    expect(getByText("Act on Shell's context")).toBeTruthy();
     expect(
-      getByText(
-        "This target is privileged. Approving gives the requester control of a trusted shell panel."
-      )
+      getByText("This runs code in, or acts on, another agent or panel's existing state.")
     ).toBeTruthy();
     expect(getByTestId("approval-accent-stripe").props.style).toEqual(
       expect.arrayContaining([
@@ -355,7 +354,7 @@ describe("ApprovalSheet", () => {
       ])
     );
     expect(getByTestId("approval-action-version").props.accessibilityLabel).toContain(
-      "Trust and drive"
+      "Trust version"
     );
     expect(getByTestId("approval-action-version").props.style).toEqual(
       expect.arrayContaining([

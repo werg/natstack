@@ -644,6 +644,21 @@ export class PanelManager {
     };
   }
 
+  /**
+   * Non-mutating peek: the context the panel WOULD move into for a history
+   * back/forward. The panel-tree service resolves this before the bridge so the
+   * context-boundary gate sees the destination context (a panel's history can
+   * span foreign contexts). Returns null when the move is a no-op.
+   */
+  async historyTargetContext(slotId: PanelSlotId, delta: -1 | 1): Promise<string | null> {
+    const before = await this.requireStoredPanel(slotId);
+    const history = before.history;
+    if (!history) return null;
+    const targetIndex = Math.max(0, Math.min(history.entries.length - 1, history.index + delta));
+    if (targetIndex === history.index) return null;
+    return history.entries[targetIndex]?.contextId ?? null;
+  }
+
   async navigateHistory(slotId: PanelSlotId, delta: -1 | 1): Promise<Panel | null> {
     const before = await this.requireStoredPanel(slotId);
     const history = before.history;
