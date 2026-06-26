@@ -98,9 +98,6 @@ export const REFERENCE_PAYLOAD_PATHS: ReadonlySet<string> = new Set([
   "$.payload.blocks[*].arguments",
 ]);
 
-/** @deprecated old name for REFERENCE_PAYLOAD_PATHS (pre-storage-classes). */
-export const DEFAULT_FORCE_JSON_REF_PATHS = REFERENCE_PAYLOAD_PATHS;
-
 const REQUIRED_STORED_PAYLOAD_PATHS = REFERENCE_PAYLOAD_PATHS;
 
 export class InlineValueTooLargeError extends Error {
@@ -201,27 +198,6 @@ async function encodeStorageClassesInner(
     ] as const)
   );
   return Object.fromEntries(entries);
-}
-
-/** @deprecated old threshold-spill entry point — now delegates to
- *  encodeStorageClasses (no size-threshold spilling; inline overflow errors). */
-export async function encodeBoundedJsonForStorage(
-  value: unknown,
-  writer: BlobWriter,
-  options: { maxInlineTextBytes?: number; maxInlineJsonBytes?: number; forceJsonRefPaths?: ReadonlySet<string> } = {},
-  path = "$"
-): Promise<unknown> {
-  return encodeStorageClasses(
-    value,
-    writer,
-    {
-      ...(options.maxInlineTextBytes !== undefined
-        ? { maxInlineTextBytes: options.maxInlineTextBytes }
-        : {}),
-      ...(options.forceJsonRefPaths ? { referencePaths: options.forceJsonRefPaths } : {}),
-    },
-    path
-  );
 }
 
 export function isStoredValueRef(value: unknown): value is StoredValueRef {

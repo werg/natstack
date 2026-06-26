@@ -28,8 +28,8 @@ import {
   type AppendIdempotency,
   manifestHashForEntries,
   sha256HexSyncText,
-  sortJson,
-  stableJson,
+  sortForCanonicalJson,
+  canonicalJson,
   stableSha256Hex,
   stateHashForRoot,
   EMPTY_MANIFEST_HASH,
@@ -738,7 +738,7 @@ function agenticEventFromEnvelope(envelope: LogEnvelope): Record<string, unknown
 
 function terminalInvocationSignatureFromEnvelope(envelope: LogEnvelope): string {
   const causality = (envelope.causality ?? {}) as Record<string, unknown>;
-  return stableJson({
+  return canonicalJson({
     actor: envelope.actor,
     kind: envelope.payloadKind,
     turnId: causality["turnId"],
@@ -1509,7 +1509,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
     if ("expected" in input) {
       const expected = input.expected ?? null;
       const current = existing?.target ?? null;
-      if (stableJson(expected) !== stableJson(current)) {
+      if (canonicalJson(expected) !== canonicalJson(current)) {
         throw new Error(`ref CAS conflict: ${input.refName}`);
       }
     }
@@ -1865,17 +1865,17 @@ export class GadWorkspaceDO extends DurableObjectBase {
     const isObj = (v: unknown): v is Record<string, unknown> =>
       typeof v === "object" && v !== null && !Array.isArray(v);
     const trunc = (v: unknown): string => {
-      const s = stableJson(v) ?? "undefined";
+      const s = canonicalJson(v) ?? "undefined";
       return s.length > 160 ? `${s.slice(0, 160)}…(${s.length}b)` : s;
     };
     const parts: string[] = [];
     for (const key of new Set([...Object.keys(incoming), ...Object.keys(stored)])) {
-      if (stableJson(incoming[key]) === stableJson(stored[key])) continue;
+      if (canonicalJson(incoming[key]) === canonicalJson(stored[key])) continue;
       if (key === "payload" && isObj(incoming[key]) && isObj(stored[key])) {
         const a = incoming[key] as Record<string, unknown>;
         const b = stored[key] as Record<string, unknown>;
         for (const pk of new Set([...Object.keys(a), ...Object.keys(b)])) {
-          if (stableJson(a[pk]) === stableJson(b[pk])) continue;
+          if (canonicalJson(a[pk]) === canonicalJson(b[pk])) continue;
           parts.push(`payload.${pk} (incoming=${trunc(a[pk])} stored=${trunc(b[pk])})`);
         }
       } else {
@@ -2090,7 +2090,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
         appendedAt: event.appendedAtExplicit ? event.appendedAt : stored.appendedAt,
       });
       const storedSemantic = this.semanticSlice(stored);
-      if (stableJson(incomingSemantic) !== stableJson(storedSemantic)) {
+      if (canonicalJson(incomingSemantic) !== canonicalJson(storedSemantic)) {
         if (input.idempotency === "idempotent-by-id") {
           // Client retry with a stable id and volatile payload fields:
           // first write wins, the journaled original is the result.
@@ -3231,7 +3231,7 @@ export class GadWorkspaceDO extends DurableObjectBase {
         payload["metadata"] ?? envelope.annotations?.["metadata"] ?? actor["metadata"] ?? null
       )
     );
-    const rolesJson = Object.keys(metadata).length > 0 ? JSON.stringify(sortJson(metadata)) : null;
+    const rolesJson = Object.keys(metadata).length > 0 ? JSON.stringify(sortForCanonicalJson(metadata)) : null;
     const openRow = this.sql
       .exec(
         `SELECT joined_at FROM channel_roster

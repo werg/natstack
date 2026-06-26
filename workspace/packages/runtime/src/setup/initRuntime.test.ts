@@ -6,7 +6,6 @@ import { DEFAULT_THEME_CONFIG } from "../types.js";
 
 const g = globalThis as typeof globalThis & {
   __natstackEntityId?: string;
-  __natstackId?: string;
   __natstackSlotId?: string;
   __natstackContextId?: string;
   __natstackKind?: "panel" | "shell";
@@ -87,7 +86,6 @@ function stubPanelWindow(): EventTarget & { __natstackStateArgs?: Record<string,
 describe("initRuntime", () => {
   afterEach(() => {
     delete g.__natstackEntityId;
-    delete g.__natstackId;
     delete g.__natstackSlotId;
     delete g.__natstackContextId;
     delete g.__natstackKind;
@@ -119,7 +117,6 @@ describe("initRuntime", () => {
     });
 
     expect(config.entityId).toBe("panel:panel-1");
-    expect(config.id).toBe("panel:panel-1");
     expect(config.slotId).toBe("slot-1");
     expect(runtime.rpc.selfId).toBe("panel:panel-1");
   });

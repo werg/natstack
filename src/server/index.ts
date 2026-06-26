@@ -2412,10 +2412,6 @@ async function main() {
         // whole-tree `vcs:workspace` migration). Runs once the gad store is
         // attached, before any context fork / build needs a repo log.
         await workspaceVcs.ensureRepoLogsFromDisk();
-        // One-shot legacy GC: drop residual whole-tree `vcs:workspace` refs from
-        // pre-per-repo workspaces (idempotent; dead data once per-repo is authority).
-        const gced = await workspaceVcs.gcLegacyWorkspaceLog().catch(() => ({ deleted: 0 }));
-        if (gced.deleted > 0) console.log(`[Vcs] GC'd ${gced.deleted} legacy vcs:workspace ref(s)`);
         workspaceVcs.enableMemoryIndexing();
         console.log("[Vcs] Attached to gad-store DO");
         return workspaceVcs;

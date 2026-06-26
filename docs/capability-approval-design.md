@@ -116,7 +116,7 @@ is approved once; different code (a spawned deputy) re-prompts.
 | `vcs.publish` | `vcsService.ts:301` | user-facing: capability-gated ✓; do/worker: blunt block (308) | Replace the blunt block with the capability gate so an agent can publish **with approval**; removes the spawn-a-panel bypass |
 | `workerd.lifecycle` | `workerd.createInstance/destroyInstance` | policy-only, **ungated** | Add `requestCapabilityPermission`; resource = worker source |
 | `workerd.do-storage` (destructive) | `workerd.cloneDO/destroyDO` | policy-only, **ungated** | Add gate; `destroyDO` is irreversible (flag `severity` on the prompt — presentation only, NOT a scope) |
-| `credentials.mutate` | `credentials.storeCredential/revokeCredential/grantCredential` | policy-only, **ungated** (credential *use* at `credentialService.ts:780` is already gated) | Add gate on the mutating methods |
+| `credentials.mutate` | `credentials.storeCredential/revokeCredential` | policy-only, **ungated** (credential *use* at `credentialService.ts:780` is already gated) | Add gate on the mutating methods |
 | `workspace.*` | `workspace.create/switchTo/setInitPanels/setConfig` | `requireWorkspaceApproval` ✓ | Keep (reference pattern) |
 | `vcs.applyEdits` | `vcsService.ts:176` | confined to caller's own context head by `resolveWriteHead` | **Do NOT gate** — editing one's own head is the normal edit-first operation, not system modification |
 
@@ -187,6 +187,6 @@ to declarative `@rpc({ callers })` default-deny (all ~150 DO methods). Docs in
 - `vcs.publish` — the blunt do/worker block removed; agents publish their OWN
   context head **with approval** via the existing `mainAdvanceOptions` →
   `mainAdvanceApproval` capability gate (already handles do/worker).
-- `credentials` — **no new gate**: `grantCredential` is already deprecated,
-  credential *use* is already capability-gated, and `storeCredential` is
-  host-OAuth-flow-internal; the existing credential approval machinery suffices.
+- `credentials` — **no new gate**: credential *use* is already capability-gated,
+  and `storeCredential` is host-OAuth-flow-internal; the existing credential
+  approval machinery suffices.

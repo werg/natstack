@@ -11,7 +11,6 @@ export interface CredentialClient {
     listStoredCredentials(): Promise<StoredCredentialSummary[]>;
     inspectStoredCredentials(): Promise<ManagedCredentialSummary[]>;
     revokeCredential(credentialId: string): Promise<void>;
-    grantCredential(input: GrantUrlBoundCredentialRequest): Promise<StoredCredentialSummary>;
     resolveCredential(input: ResolveUrlBoundCredentialRequest): Promise<StoredCredentialSummary | null>;
     fetch(url: string | URL, init?: RequestInit, opts?: {
         credentialId?: string;
@@ -107,9 +106,6 @@ export function createCredentialClient(rpc: RpcCaller): CredentialClient {
         },
         async revokeCredential(credentialId) {
             await rpc.call<void>("main", "credentials.revokeCredential", [{ credentialId }]);
-        },
-        async grantCredential(input) {
-            return rpc.call<StoredCredentialSummary>("main", "credentials.grantCredential", [input]);
         },
         async resolveCredential(input) {
             return rpc.call<StoredCredentialSummary | null>("main", "credentials.resolveCredential", [input]);

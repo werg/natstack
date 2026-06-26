@@ -784,19 +784,6 @@ export const CredentialIdParamsSchema = z
   })
   .strict();
 
-export const GrantCredentialParamsSchema = z
-  .object({
-    credentialId: IdentifierSchema.describe("Id of the stored credential (legacy/no-op)."),
-    callerId: IdentifierSchema.describe("Caller to grant use to (legacy/no-op)."),
-    grantedBy: z
-      .string()
-      .min(1)
-      .max(128)
-      .optional()
-      .describe("Who authorized the grant (legacy/no-op)."),
-  })
-  .strict();
-
 export const ResolveCredentialParamsSchema = z
   .object({
     url: z.string().url().optional().describe("Target URL to match a stored credential against."),
@@ -1026,7 +1013,6 @@ export type ConnectCredentialParams = z.infer<typeof ConnectCredentialParamsSche
 export type DeleteClientConfigParams = z.infer<typeof DeleteClientConfigParamsSchema>;
 export type ForwardOAuthCallbackParams = z.infer<typeof ForwardOAuthCallbackParamsSchema>;
 export type CredentialIdParams = z.infer<typeof CredentialIdParamsSchema>;
-export type GrantCredentialParams = z.infer<typeof GrantCredentialParamsSchema>;
 export type ResolveCredentialParams = z.infer<typeof ResolveCredentialParamsSchema>;
 export type ProxyFetchParams = z.infer<typeof ProxyFetchParamsSchema>;
 export type ProxyGitHttpParams = z.infer<typeof ProxyGitHttpParamsSchema>;
@@ -1156,17 +1142,6 @@ export const credentialsMethods = defineServiceMethods({
     returns: z.void(),
     access: REVOKE_CREDENTIAL_ACCESS,
     examples: [{ args: [{ credentialId: "cred-123" }] }],
-  },
-  grantCredential: {
-    description:
-      "Deprecated no-op: scoped approval grants replaced explicit caller grants, so this always throws after a shell/server gate.",
-    args: z.tuple([GrantCredentialParamsSchema]),
-    returns: StoredCredentialSummarySchema,
-    access: { sensitivity: "admin" },
-    deprecated: {
-      replacedBy: "scoped approval grants (resolveCredential approval flow)",
-      reason: "credentials.grantCredential was replaced by scoped approval grants",
-    },
   },
   resolveCredential: {
     description:

@@ -21,8 +21,7 @@ import { applyStateArgsSnapshot } from "@natstack/shared/panel/applyStateArgsSna
 import { createWsTransport, type TransportBridge } from "../preload/wsTransport.js";
 
 type BrowserTransportGlobals = typeof globalThis & {
-  __natstackId: string;
-  __natstackEntityId?: string;
+  __natstackEntityId: string;
   __natstackGatewayToken: string;
   __natstackGatewayRpcWsUrl: string;
   __natstackConnectionId?: string;
@@ -47,7 +46,7 @@ function isRuntimeEventMessage(message: unknown): message is RuntimeEventMessage
 }
 
 const globals = globalThis as BrowserTransportGlobals;
-const viewId: string = globals.__natstackEntityId ?? globals.__natstackId;
+const viewId: string = globals.__natstackEntityId;
 const authToken: string = globals.__natstackGatewayToken;
 const wsUrl: string = globals.__natstackGatewayRpcWsUrl;
 

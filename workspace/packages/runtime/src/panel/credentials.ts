@@ -79,10 +79,6 @@ export async function revokeCredential(credentialId: string): Promise<void> {
   await requireClient().revokeCredential(credentialId);
 }
 
-export async function grantCredential(input: GrantUrlBoundCredentialRequest): Promise<StoredCredentialSummary> {
-  return requireClient().grantCredential(input);
-}
-
 export async function resolveCredential(
   input: ResolveUrlBoundCredentialRequest,
 ): Promise<StoredCredentialSummary | null> {

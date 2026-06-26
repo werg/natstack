@@ -18,8 +18,6 @@ export interface GatewayConfig {
 declare global {
   /** Runtime entity ID for this panel or worker */
   var __natstackEntityId: string | undefined;
-  /** Deprecated alias for __natstackEntityId. */
-  var __natstackId: string | undefined;
   /** Stable workspace slot id for panel tree operations. */
   var __natstackSlotId: string | undefined;
   /** Context ID for storage partition (format: {mode}_{type}_{identifier}) */
@@ -44,7 +42,6 @@ declare global {
 
 export interface InjectedConfig {
   entityId: PanelEntityId;
-  id: PanelEntityId;
   slotId?: PanelSlotId;
   contextId: string;
   kind: "panel" | "shell";
@@ -60,7 +57,6 @@ export interface InjectedConfig {
 // where globals are set on the context object
 const g = globalThis as unknown as {
   __natstackEntityId?: string;
-  __natstackId?: string;
   __natstackSlotId?: string;
   __natstackContextId?: string;
   __natstackKind?: "panel" | "shell";
@@ -70,7 +66,6 @@ const g = globalThis as unknown as {
   __natstackGatewayConfig?: GatewayConfig;
   __natstackSourceRepo?: string;
   __natstackEffectiveVersion?: string | null;
-  __natstackGitConfig?: unknown;
   __natstackEnv?: Record<string, string>;
 };
 
@@ -104,15 +99,10 @@ function normalizeGatewayConfigForBrowser(config: GatewayConfig): GatewayConfig 
  * Get the injected configuration from globals.
  */
 export function getInjectedConfig(): InjectedConfig {
-  const entityId = g.__natstackEntityId ?? g.__natstackId;
+  const entityId = g.__natstackEntityId;
   if (typeof entityId === "undefined" || !entityId) {
     throw new Error(
       "NatStack runtime globals not found. Expected __natstackEntityId to be defined."
-    );
-  }
-  if (typeof g.__natstackGitConfig !== "undefined") {
-    throw new Error(
-      "Legacy NatStack runtime globals are not supported. Expected __natstackGatewayConfig only."
     );
   }
   if (!g.__natstackGatewayConfig?.serverUrl || !g.__natstackGatewayConfig?.token) {
@@ -127,7 +117,6 @@ export function getInjectedConfig(): InjectedConfig {
 
   return {
     entityId: entityId as PanelEntityId,
-    id: entityId as PanelEntityId,
     slotId: g.__natstackSlotId as PanelSlotId | undefined,
     contextId: g.__natstackContextId ?? "",
     kind: g.__natstackKind ?? "panel",

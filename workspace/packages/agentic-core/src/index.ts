@@ -27,7 +27,6 @@ export type {
 } from "./types.js";
 // Model catalog shared types (re-exported so chat/panel import one surface).
 export type {
-  AgentThinkingLevel as ModelAgentThinkingLevel,
   ModelCatalog,
   ModelCatalogEntry,
   ModelCatalogProvider,

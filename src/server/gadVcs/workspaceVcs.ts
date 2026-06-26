@@ -1320,14 +1320,6 @@ export class WorkspaceVcs implements WorkspaceStateSource, BuildSourceProvider {
   }
 
   /**
-   * Schema v20 removed encoded VCS refs entirely. Kept as a no-op startup hook
-   * for callers that still run the old cleanup step.
-   */
-  async gcLegacyWorkspaceLog(): Promise<{ deleted: number }> {
-    return { deleted: 0 };
-  }
-
-  /**
    * Fork a repo's entire `main` history into a NEW repo at `toPath` — a no-copy
    * lineage fork (`forkLog`): the new repo's `vcs:repo:<toPath>` history descends
    * from the source, so `log --repo <toPath>` shows the inherited events and

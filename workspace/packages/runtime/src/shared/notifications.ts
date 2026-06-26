@@ -20,8 +20,6 @@ type NotificationShowOptions = {
     type?: "info" | "success" | "warning" | "error" | "consent";
     title: string;
     message?: string;
-    /** Alias for `message`, accepted for browser Notification API familiarity. */
-    body?: string;
     ttl?: number;
     actions?: NotificationAction[];
 };
@@ -84,9 +82,8 @@ export function createNotificationClient(rpc: RpcCaller): NotificationClient {
                 }
                 await ensureActionSubscription();
             }
-            const { body, ...rest } = opts;
             return rpc.call<string>("main", "notification.show", [
-                { type: "info", ...rest, message: opts.message ?? body, id, actions },
+                { type: "info", ...opts, id, actions },
             ]);
         },
         async dismiss(id) {

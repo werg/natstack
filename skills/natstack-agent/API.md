@@ -107,7 +107,6 @@ Allowed callers: `shell`, `app`, `panel`, `server`, `worker`, `do`, `extension`
 | `credentials.listStoredCredentials` | List summaries of stored URL-bound credentials visible to the caller; secret material is never included. |
 | `credentials.inspectStoredCredentials` | List administrator-facing credential summaries with runtime usage metadata; secret material is never included. |
 | `credentials.revokeCredential` | Revoke a stored credential by id (marks it revoked and best-effort revokes the upstream provider token); only an authorized administrator of the credential may call it. |
-| `credentials.grantCredential` | Deprecated no-op: scoped approval grants replaced explicit caller grants, so this always throws after a shell/server gate. |
 | `credentials.resolveCredential` | Locate a stored credential by url/provider/id and authorize its use for the caller, returning a summary, null when nothing matches, or a DeferredResult while a use-approval prompt is awaited. |
 | `credentials.proxyFetch` | Forward an outbound HTTP request through the egress proxy, injecting the resolved credential; returns status, ordered header pairs, final URL, and a base64 body. |
 | `credentials.proxyGitHttp` | Forward a Git smart-HTTP request through the egress proxy with credential injection; the request/response bodies are base64-encoded. |

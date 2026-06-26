@@ -35,7 +35,6 @@ import type {
   DeleteClientConfigRequest,
   ForwardOAuthCallbackRequest,
   GetClientConfigStatusRequest,
-  GrantUrlBoundCredentialRequest,
   OAuthConnectionErrorCode,
   OAuthConnectionTransactionState,
   OAuthAccountValidationSpec,
@@ -73,7 +72,6 @@ import {
   type DeleteClientConfigParams,
   type ForwardOAuthCallbackParams,
   type GetClientConfigStatusParams,
-  type GrantCredentialParams,
   type ProxyFetchParams,
   type ProxyGitHttpParams,
   type RequestClientConfigParams,
@@ -3423,17 +3421,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
     }
   }
 
-  async function grantCredential(
-    ctx: ServiceContext,
-    params: GrantCredentialParams
-  ): Promise<StoredCredentialSummary> {
-    requireShellOrServer(ctx, "grantCredential", deps);
-    const request = params as GrantUrlBoundCredentialRequest;
-    void request.callerId;
-    void request.grantedBy;
-    throw new Error("credentials.grantCredential was replaced by scoped approval grants");
-  }
-
   async function resolveCredential(
     ctx: ServiceContext,
     params: ResolveCredentialParams
@@ -4126,8 +4113,6 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
           return inspectStoredCredentials();
         case "revokeCredential":
           return revokeCredential(ctx, (args as [CredentialIdParams])[0]);
-        case "grantCredential":
-          return grantCredential(ctx, (args as [GrantCredentialParams])[0]);
         case "resolveCredential":
           return resolveCredential(ctx, (args as [ResolveCredentialParams])[0]);
         case "proxyFetch":
@@ -4779,16 +4764,6 @@ function gitRemoteFromUrl(targetUrl: URL): string {
   pathname = pathname.replace(/\/(?:info\/refs|git-upload-pack|git-receive-pack)$/, "");
   remote.pathname = pathname || "/";
   return remote.toString();
-}
-
-function requireShellOrServer(
-  ctx: ServiceContext,
-  method: string,
-  deps: Pick<CredentialServiceDeps, "hasAppCapability">
-): void {
-  if (!isAuthorizedChrome(ctx.caller, { hasAppCapability: deps.hasAppCapability })) {
-    throw new Error(`credentials.${method} is restricted to authorized chrome callers`);
-  }
 }
 
 function grantForDecision(

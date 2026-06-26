@@ -10,12 +10,7 @@
  * are needed inside synchronous SQL transactions.
  */
 
-import { canonicalJson, sortForCanonicalJson } from "./canonical-json.js";
-
-/** @deprecated alias — use sortForCanonicalJson from canonical-json.ts */
-export const sortJson = sortForCanonicalJson;
-/** @deprecated alias — use canonicalJson from canonical-json.ts */
-export const stableJson = canonicalJson;
+import { canonicalJson } from "./canonical-json.js";
 
 const SHA256_K = [
   0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
@@ -85,7 +80,7 @@ export function sha256HexSyncText(text: string): string {
 }
 
 export function stableSha256Hex(value: unknown): string {
-  return sha256HexSyncText(stableJson(value));
+  return sha256HexSyncText(canonicalJson(value));
 }
 
 // ---------------------------------------------------------------------------

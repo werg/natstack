@@ -53,7 +53,6 @@ import { createGatewayFetch, type GatewayFetch } from "../shared/gatewayFetch.js
 import { createMainCaller } from "../shared/mainRpc.js";
 import {
   createPanelRuntime,
-  type OpenPanelOptions,
   type PanelRuntimeApi,
 } from "../shared/panelRuntime.js";
 import { createHostedRuntime, type RuntimeHost, type WorkspaceRuntime } from "../shared/hostedRuntime.js";
@@ -149,7 +148,6 @@ export type { WorkspaceRuntime } from "../shared/hostedRuntime.js";
 // Note: createTestDO is intentionally NOT exported here because it depends on
 // sql.js test-only helpers that should not be bundled into production workers.
 // Import directly from "@workspace/runtime/src/worker/durable-test-utils" in tests.
-export type RuntimeOpenPanelOptions = OpenPanelOptions;
 // Cache runtime per worker ID to avoid creating multiple bridges
 let cachedRuntime: WorkerRuntime | null = null;
 let cachedWorkerId: string | null = null;

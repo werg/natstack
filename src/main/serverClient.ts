@@ -78,8 +78,6 @@ export interface ServerClientOptions {
   onRecovery?: (kind: "resubscribe" | "cold-recover") => void | Promise<void>;
   /** Enable automatic reconnection on disconnect (default: false for local, true if wsUrl is set) */
   reconnect?: boolean;
-  /** Deprecated. Reconnect is now unbounded and this option is ignored. */
-  maxReconnectAttempts?: number;
   /** Refresh the caller token after an auth failure during reconnect. */
   refreshAuthToken?: () => Promise<string>;
 }

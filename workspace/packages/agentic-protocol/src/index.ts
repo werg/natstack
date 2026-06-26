@@ -140,7 +140,6 @@ export {
   assertAgenticEventStoredValuesEncoded,
   assertNoStoredValueRefs,
   collectStoredValueRefs,
-  encodeBoundedJsonForStorage,
   encodeChannelPayloadStoredValues,
   encodeAgenticEventStoredValues,
   findUnencodedAgenticEventStoredValues,
@@ -231,6 +230,7 @@ export {
   checkTrajectoryIntegrity,
   computeEventHash,
   sha256Hex,
+  sortForCanonicalJson,
   verifyEventHash,
 } from "./hash.js";
 

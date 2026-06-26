@@ -61,7 +61,6 @@ export const CREDENTIALS_MEMBERS = [
   "listStoredCredentials",
   "inspectStoredCredentials",
   "revokeCredential",
-  "grantCredential",
   "resolveCredential",
   "fetch",
   "hookForUrl",

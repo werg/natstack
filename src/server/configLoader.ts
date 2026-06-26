@@ -104,7 +104,6 @@ export const CONFIG_LOADER_JS = `(async () => {
   }
 
   globalThis.__natstackEntityId = entityId;
-  globalThis.__natstackId = entityId;
   globalThis.__natstackSlotId = slotId;
   const gatewayConfig = cfg.gatewayConfig;
   const gatewayRpcWsUrl = gatewayConfig.serverUrl.replace(/^https:/, "wss:").replace(/^http:/, "ws:").replace(/\\/$/, "") + "/rpc";

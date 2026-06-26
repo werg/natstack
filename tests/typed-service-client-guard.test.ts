@@ -20,6 +20,9 @@ const approvedRawMainCalls = new Set([
   // Durable Object target, and subsequent calls intentionally address that
   // userland target rather than a typed host service table.
   "packages/shared/src/userlandServiceRpc.ts:workers.resolveService",
+  // Help-text/documentation string: evalSurfaceHelp renders an example showing
+  // eval users the raw call form for a low-level method — not an actual call site.
+  "src/server/internalDOs/evalSurfaceHelp.ts:workers.listSources",
 ]);
 
 const rawMainCallPattern =

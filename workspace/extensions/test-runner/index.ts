@@ -81,7 +81,7 @@ export {};
 globalThis.__natstackModuleMap__ = globalThis.__natstackModuleMap__ ?? {};
 globalThis.__natstackRequire__ = (id) => globalThis.__natstackModuleMap__[id];
 globalThis.__natstackRequireAsync__ = async (id) => globalThis.__natstackModuleMap__[id];
-globalThis.__natstackId = "test-panel";
+globalThis.__natstackEntityId = "test-panel";
 globalThis.__natstackContextId = "ctx-test";
 `;
 

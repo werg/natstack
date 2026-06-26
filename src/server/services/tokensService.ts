@@ -6,8 +6,6 @@ import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 
 export function createTokensService(deps: {
   tokenManager: TokenManager;
-  /** @deprecated Panel token side effects were removed. */
-  fsService?: unknown;
   /**
    * Optional — omit in IPC (Electron-embedded) mode where the admin token
    * lives in Electron parent memory and is never persisted centrally. When

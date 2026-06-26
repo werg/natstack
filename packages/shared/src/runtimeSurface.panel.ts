@@ -54,7 +54,7 @@ export const panelRuntimeSurface: RuntimeSurface = {
     // Panel-only namespaces.
     panel: namespaceEntry(
       PANEL_MEMBERS,
-      "Panel-only affordances: identity (entityId/slotId/parentId/env), introspection (getInfo/getTheme/onThemeChange/onFocus/onConnectionError), lifecycle (focusPanel/onChildCreated/reopen), and stateArgs (get/set/use/setForPanel)."
+      "Panel-only affordances: identity (entityId/slotId/parentId/env), introspection (getInfo/getTheme/onThemeChange/onFocus/onConnectionError), lifecycle (focusPanel/onChildCreated/reopen), and stateArgs (get/set/setForPanel)."
     ),
     journal: namespaceEntry(
       ["Journal", "with", "current"],

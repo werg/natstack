@@ -350,11 +350,6 @@ describe("WorkspaceVcs.ensureRepoLogsFromDisk (disk bootstrap)", () => {
     });
   });
 
-  it("Tier 4: gcLegacyWorkspaceLog is a no-op after the structured-head schema cut", async () => {
-    const res = await vcs.gcLegacyWorkspaceLog();
-    expect(res.deleted).toBe(0);
-  });
-
   it("Tier 4: a brand-new repo created mid-session gets a ctx head + first push creates main", async () => {
     const ctxId = "ctx-new";
     const head = vcsContextHead(ctxId);

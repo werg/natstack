@@ -252,7 +252,6 @@ describe("ServerClient reconnect auth refresh", () => {
     let refreshCalled = false;
     const client = await createServerClient(port, "old-token", {
       reconnect: true,
-      maxReconnectAttempts: 2,
       refreshAuthToken: async () => {
         refreshCalled = true;
         return "new-token";
