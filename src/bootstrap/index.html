@@ -44,6 +44,13 @@
         font-size: 12px;
         font-weight: 650;
         user-select: none;
+        /* Draggable — but this is ONLY safe because ViewManager fully detaches
+           this view (removeChildView) on handoff to the hosted shell; see
+           hideBootstrapShell(). The bootstrap and hosted shell are separate
+           WebContentsViews in one BaseWindow, and a hidden-but-attached view
+           keeps this drag region registered on the native window, where it
+           leaks onto the hosted shell's titlebar and makes its controls drag
+           instead of click. If you ever stop detaching, make this no-drag. */
         app-region: drag;
         -webkit-app-region: drag;
       }

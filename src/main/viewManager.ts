@@ -191,6 +191,10 @@ export class ViewManager {
   private window: BaseWindow;
   private views = new Map<string, ManagedView>();
   private shellView: WebContentsView;
+  /** Whether the bootstrap launch-gate view is currently a child of the window.
+   *  It is fully detached on handoff to the hosted shell so its titlebar drag
+   *  region is cleared from the shared BaseWindow (see show/hideBootstrapShell). */
+  private bootstrapShellAttached = true;
   private nativeShellOverlay: ShellOverlayView;
   private currentThemeCss: string | null = null;
   /** Per-view locks to prevent concurrent withViewVisible operations */
@@ -386,10 +390,44 @@ export class ViewManager {
   }
 
   private updateShellBounds(): void {
+    // The bootstrap view is detached while the hosted shell owns the window
+    // (see hideBootstrapShell); there is nothing to size then.
+    if (!this.bootstrapShellAttached) return;
     const size = this.window.getContentSize();
     const width = size[0] ?? 0;
     const height = size[1] ?? 0;
     this.shellView.setBounds({ x: 0, y: 0, width, height });
+  }
+
+  /**
+   * Show the bootstrap launch gate, re-attaching the view if it was detached on
+   * handoff to the hosted shell. A WebContentsView must be attached (not merely
+   * setVisible(true)) for its content to render and its titlebar drag region to
+   * apply.
+   */
+  private showBootstrapShell(): void {
+    if (!this.bootstrapShellAttached) {
+      this.window.contentView.addChildView(this.shellView);
+      this.bootstrapShellAttached = true;
+    }
+    this.updateShellBounds();
+    this.shellView.setVisible(true);
+  }
+
+  /**
+   * Hide the bootstrap launch gate once the hosted shell is up. Fully detaches
+   * the view (removeChildView) rather than only setVisible(false): a
+   * hidden-but-attached WebContentsView keeps its `-webkit-app-region: drag`
+   * titlebar region registered on the shared BaseWindow, which leaks onto the
+   * hosted shell's titlebar and makes its chrome controls drag the window
+   * instead of click. Detaching clears that region.
+   */
+  private hideBootstrapShell(): void {
+    this.shellView.setVisible(false);
+    if (this.bootstrapShellAttached) {
+      this.window.contentView.removeChildView(this.shellView);
+      this.bootstrapShellAttached = false;
+    }
   }
 
   private fullWindowBounds(): ViewBounds {
@@ -507,7 +545,7 @@ export class ViewManager {
           this.clearAllPanelSlots();
           managed.visible = false;
           managed.view.setVisible(false);
-          this.shellView.setVisible(true);
+          this.showBootstrapShell();
           this.reconcileNativeLayerOrder();
         }
         if (["crashed", "oom", "launch-failed"].includes(details.reason)) {
@@ -780,7 +818,7 @@ export class ViewManager {
         log.verbose(
           ` Hosted shell ready reasserted by ${ownerViewId} (gen ${this.nativePanelSlots.hostedShellGeneration}); keeping ${this.nativePanelSlots.activeSlots.size} slot(s)`
         );
-        this.shellView.setVisible(false);
+        this.hideBootstrapShell();
         this.setViewVisible(ownerViewId, true);
         this.refreshActivePanelSlots();
         return;
@@ -792,7 +830,7 @@ export class ViewManager {
       this.clearAllPanelSlots();
       this.nativePanelSlots.activeHostedShellViewId = ownerViewId;
       this.nativePanelSlots.hostedShellReady = true;
-      this.shellView.setVisible(false);
+      this.hideBootstrapShell();
       this.setViewVisible(ownerViewId, true);
       this.reconcileNativeLayerOrder();
       return;
@@ -814,7 +852,7 @@ export class ViewManager {
     this.clearAllPanelSlots();
     owner.visible = false;
     owner.view.setVisible(false);
-    this.shellView.setVisible(true);
+    this.showBootstrapShell();
     this.reconcileNativeLayerOrder();
   }
 
@@ -2008,7 +2046,7 @@ export class ViewManager {
       this.clearAllPanelSlots();
       managed.visible = false;
       managed.view.setVisible(false);
-      this.shellView.setVisible(true);
+      this.showBootstrapShell();
       this.reconcileNativeLayerOrder();
     }
     managed.appIdentity = nextIdentity;
