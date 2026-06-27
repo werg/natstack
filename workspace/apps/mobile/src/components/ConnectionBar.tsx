@@ -20,8 +20,8 @@ import type { ConnectionStatus } from "../services/mobileTransport";
 interface ConnectionBarProps {
   /**
    * Invoked when the user chooses "Re-pair" from the disconnected bar.
-   * Screens that can route to the pairing flow (Main/Settings) pass this;
-   * when omitted, only an immediate reconnect is offered.
+   * Screens that can return to the native pairing bootstrap pass this; when
+   * omitted, only an immediate reconnect is offered.
    */
   onRepair?: () => void;
 }

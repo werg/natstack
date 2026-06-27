@@ -3,7 +3,7 @@ import { View, Text, StyleSheet, Pressable, SafeAreaView, Alert } from "react-na
 import type { StackNavigationProp } from "@react-navigation/stack";
 import { useAtomValue, useSetAtom } from "jotai";
 import type { RootStackParamList } from "../navigation/RootNavigator";
-import { clearCredentials } from "../services/auth";
+import { clearCredentials, resetToNativeBootstrap } from "../services/auth";
 import { shellClientAtom, panelTreeAtom } from "../state/shellClientAtom";
 import { serverUrlAtom, isAuthenticatedAtom } from "../state/authAtoms";
 import { activePanelIdAtom } from "../state/navigationAtoms";
@@ -34,21 +34,25 @@ export function SettingsScreen({ navigation }: SettingsScreenProps) {
     setPanelTree([]);
     setActivePanelId(null);
 
-    // Clear stored credentials
     try {
-      await clearCredentials();
+      await resetToNativeBootstrap();
     } catch (error) {
-      console.warn("[SettingsScreen] Failed to clear stored credentials:", error);
-    } finally {
+      console.warn("[SettingsScreen] Failed to reset native bootstrap:", error);
+      await clearCredentials().catch((clearError) => {
+        console.warn("[SettingsScreen] Failed to clear stored credentials:", clearError);
+      });
       setAuthenticated(false);
       navigation.replace("Login");
+      return;
     }
+
+    setAuthenticated(false);
   };
 
   const handleDisconnect = () => {
     Alert.alert(
       "Disconnect this device?",
-      "This clears the stored pairing for this server. You'll need a new pairing code to reconnect.",
+      "This clears the stored pairing and returns to the native pairing screen.",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Disconnect", style: "destructive", onPress: () => void performDisconnect() },
@@ -70,7 +74,7 @@ export function SettingsScreen({ navigation }: SettingsScreenProps) {
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: colors.background }]}>
-      <ConnectionBar onRepair={() => navigation.navigate("Login")} />
+      <ConnectionBar onRepair={() => void performDisconnect()} />
 
       <View style={styles.content}>
         <View style={styles.headerRow}>

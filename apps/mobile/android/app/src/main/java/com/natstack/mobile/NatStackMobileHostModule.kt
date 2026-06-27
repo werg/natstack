@@ -59,6 +59,27 @@ class NatStackMobileHostModule(
     }
 
     @ReactMethod
+    fun resetToNativeBootstrap(promise: Promise) {
+        try {
+            clearStoredCredentials()
+            NatStackBundleStore.clearActive(reactApplicationContext)
+            promise.resolve(Arguments.createMap().apply {
+                putBoolean("reloading", true)
+            })
+            Handler(Looper.getMainLooper()).post {
+                try {
+                    Log.i(TAG, "[NatStackMobileSmoke] phase=native-bootstrap-reset")
+                    reloadReactNative()
+                } catch (error: Exception) {
+                    Log.e(TAG, "Failed to reload React Native after bootstrap reset", error)
+                }
+            }
+        } catch (error: Exception) {
+            promise.reject("bootstrap_reset_failed", error.message, error)
+        }
+    }
+
+    @ReactMethod
     fun pairServer(serverUrl: String, code: String, promise: Promise) {
         thread(start = true, isDaemon = true, name = "NatStackPairing") {
             try {

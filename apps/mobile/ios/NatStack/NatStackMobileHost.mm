@@ -62,6 +62,22 @@ RCT_EXPORT_METHOD(clearCredentials:(RCTPromiseResolveBlock)resolve
   resolve(nil);
 }
 
+RCT_EXPORT_METHOD(resetToNativeBootstrap:(RCTPromiseResolveBlock)resolve
+                  rejecter:(RCTPromiseRejectBlock)reject)
+{
+  @try {
+    [self clearStoredCredentials];
+    [self clearActiveBundle];
+    resolve(@{ @"reloading": @YES });
+    dispatch_async(dispatch_get_main_queue(), ^{
+      RCTReloadCommandSetBundleURL(nil);
+      RCTTriggerReloadCommandListeners(@"NatStack mobile host reset");
+    });
+  } @catch (NSException *exception) {
+    reject(@"bootstrap_reset_failed", exception.reason, nil);
+  }
+}
+
 RCT_EXPORT_METHOD(pairServer:(NSString *)serverUrl
                   code:(NSString *)code
                   resolver:(RCTPromiseResolveBlock)resolve
@@ -381,6 +397,16 @@ RCT_EXPORT_METHOD(activatePreparedAppBundle:(NSString *)localPath
 {
   [self deleteCredential];
   [[NSUserDefaults standardUserDefaults] removeObjectForKey:NatStackActiveBundleSource];
+}
+
+- (void)clearActiveBundle
+{
+  NSUserDefaults *defaults = [NSUserDefaults standardUserDefaults];
+  [defaults removeObjectForKey:NatStackActiveBundleLocalPath];
+  [defaults removeObjectForKey:NatStackActiveBundleBuildKey];
+  [defaults removeObjectForKey:NatStackActiveBundleIntegrity];
+  [defaults removeObjectForKey:NatStackActiveBundleSource];
+  [defaults synchronize];
 }
 
 - (BOOL)isWorkspaceMobileAppCaller:(NSString *)callerId deviceId:(NSString *)deviceId

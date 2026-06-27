@@ -48,6 +48,7 @@ import {
   type AppLifecyclePayload,
 } from "../services/appUpdatePrompt";
 import { copyToClipboard, openExternalUrl } from "../services/nativeCapabilities";
+import { resetToNativeBootstrap } from "../services/auth";
 import {
   buildPanelChromeState,
   buildAddressAutocompleteItems,
@@ -1279,9 +1280,17 @@ export function MainScreen() {
     const subscription = BackHandler.addEventListener("hardwareBackPress", onBackPress);
     return () => subscription.remove();
   }, [activePanelId, activePanelParentId, activatePanel, webViewNavigation]);
+  const handleRepair = useCallback(() => {
+    void resetToNativeBootstrap().catch((error) => {
+      Alert.alert(
+        "Re-pair failed",
+        error instanceof Error ? error.message : "Could not return to the pairing screen."
+      );
+    });
+  }, []);
   return (
     <View style={[styles.container, { backgroundColor: colors.background }]}>
-      <ConnectionBar onRepair={() => navigation.getParent()?.navigate("Login" as never)} />
+      <ConnectionBar onRepair={handleRepair} />
       <AppBar
         title={activePanelTitle}
         onMenuPress={handleMenuPress}

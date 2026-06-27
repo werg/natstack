@@ -7,6 +7,7 @@ import {
   listWorkspaces,
   pairServer,
   prepareAppBundle,
+  resetToNativeBootstrap,
   selectWorkspace,
   StoredCredentialsNeedRepairError,
 } from "./auth";
@@ -18,6 +19,7 @@ const nativeHost = NativeModules["NatStackMobileHost"] as {
   listWorkspaces: jest.Mock;
   pairServer: jest.Mock;
   prepareAppBundle: jest.Mock;
+  resetToNativeBootstrap: jest.Mock;
   selectWorkspace: jest.Mock;
   activatePreparedAppBundle: jest.Mock;
 };
@@ -25,6 +27,7 @@ const nativeHost = NativeModules["NatStackMobileHost"] as {
 describe("native-held mobile credentials", () => {
   beforeEach(() => {
     nativeHost.clearCredentials.mockReset().mockResolvedValue(undefined);
+    nativeHost.resetToNativeBootstrap.mockReset().mockResolvedValue({ reloading: true });
     nativeHost.pairServer.mockReset().mockResolvedValue({
       serverUrl: "https://server.example",
       hubUrl: "https://server.example",
@@ -257,5 +260,10 @@ describe("native-held mobile credentials", () => {
   it("clears credentials through the native host", async () => {
     await clearCredentials();
     expect(nativeHost.clearCredentials).toHaveBeenCalled();
+  });
+
+  it("resets to the native bootstrap", async () => {
+    await expect(resetToNativeBootstrap()).resolves.toEqual({ reloading: true });
+    expect(nativeHost.resetToNativeBootstrap).toHaveBeenCalled();
   });
 });

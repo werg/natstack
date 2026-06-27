@@ -70,6 +70,10 @@ export interface ActivatePreparedAppBundleResult {
   activated: boolean;
 }
 
+export interface ResetToNativeBootstrapResult {
+  reloading: boolean;
+}
+
 export function isWorkspaceMobileAppCallerId(callerId: string, deviceId?: string): boolean {
   if (!callerId.startsWith("app:apps/")) return false;
   if (deviceId && !callerId.endsWith(`:${deviceId}`)) return false;
@@ -92,6 +96,7 @@ export function isWorkspaceMobileHostCallerId(callerId: string, deviceId?: strin
 interface NatStackMobileHostNative {
   getCredentials(): Promise<Credentials | null>;
   clearCredentials(): Promise<void>;
+  resetToNativeBootstrap(): Promise<ResetToNativeBootstrapResult>;
   pairServer(serverUrl: string, code: string): Promise<ServerPairingResponse>;
   listWorkspaces(): Promise<{ workspaces: RemoteWorkspaceEntry[] }>;
   selectWorkspace(name: string, source: string | null): Promise<PairingResponse>;
@@ -160,6 +165,14 @@ export async function getCredentials(): Promise<Credentials | null> {
 
 export async function clearCredentials(): Promise<void> {
   await nativeHost().clearCredentials();
+}
+
+export async function resetToNativeBootstrap(): Promise<ResetToNativeBootstrapResult> {
+  const response = await nativeHost().resetToNativeBootstrap();
+  if (!response || typeof response.reloading !== "boolean") {
+    throw new Error("Native host returned an invalid bootstrap reset response");
+  }
+  return response;
 }
 
 export async function pairServer(serverUrl: string, code: string): Promise<ServerPairingResponse> {

@@ -7,6 +7,7 @@ import { spawn } from "child_process";
 import { fileURLToPath } from "url";
 import { createPnpmInvocation } from "./lib/package-manager.mjs";
 import { createServerInvocation, serverEntryArg } from "./lib/server-entry.mjs";
+import { createConnectDeepLink } from "./lib/connect-utils.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const mobileDir = path.join(repoRoot, "apps", "mobile");
@@ -208,6 +209,49 @@ async function adb(device, ...args) {
   return runCommand("adb", makeAdbArgs(device, args), { label: "adb" });
 }
 
+function shellQuote(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function shellCommand(args) {
+  return args.map(shellQuote).join(" ");
+}
+
+async function startConnectIntent(device, link) {
+  const packageResult = await adb(
+    device,
+    "shell",
+    shellCommand([
+      "am",
+      "start",
+      "-W",
+      "-a",
+      "android.intent.action.VIEW",
+      "-d",
+      link,
+      "-p",
+      appPackage,
+    ])
+  ).catch((error) => error);
+  if (!(packageResult instanceof Error)) return;
+
+  await adb(
+    device,
+    "shell",
+    shellCommand([
+      "am",
+      "start",
+      "-W",
+      "-a",
+      "android.intent.action.VIEW",
+      "-d",
+      link,
+      "-n",
+      appActivity,
+    ])
+  );
+}
+
 async function hasAdbDevice(device) {
   try {
     await adb(device, "get-state");
@@ -228,24 +272,6 @@ async function waitForAndroidBoot(device, timeoutMs = 180_000) {
   throw new Error("Timed out waiting for Android boot completion");
 }
 
-async function writeDevBootstrap(serverUrl, pairingCode, workspaceName) {
-  await runCommand("node", [
-    "scripts/write-mobile-dev-bootstrap.mjs",
-    "--server-url",
-    serverUrl,
-    "--pairing-code",
-    pairingCode,
-    "--workspace-name",
-    workspaceName,
-    "--auto-connect",
-    "true",
-  ], { label: "bootstrap" });
-}
-
-async function clearDevBootstrap() {
-  await runCommand("node", ["scripts/write-mobile-dev-bootstrap.mjs", "--clear"], { label: "bootstrap" });
-}
-
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
@@ -262,11 +288,6 @@ async function main() {
     if (cleanedUp) return;
     cleanedUp = true;
 
-    try {
-      await clearDevBootstrap();
-    } catch (error) {
-      console.warn(`[mobile-dev] Failed to clear bootstrap: ${error instanceof Error ? error.message : String(error)}`);
-    }
     try {
       await fsp.unlink(readyFilePath);
     } catch {}
@@ -361,7 +382,10 @@ async function main() {
 
     const ready = await waitForServerReady(readyFilePath, serverChild);
     readyInfo = ready;
-    await writeDevBootstrap(ready.connectUrl ?? ready.gatewayUrl, ready.pairingCode, "dev");
+    const connectLink = createConnectDeepLink(
+      ready.connectUrl ?? ready.gatewayUrl,
+      ready.qrPairingCode ?? ready.pairingCode
+    );
 
     await adb(options.device, "reverse", `tcp:${metroPort}`, `tcp:${metroPort}`);
     await adb(options.device, "reverse", `tcp:${ready.gatewayPort}`, `tcp:${ready.gatewayPort}`);
@@ -380,7 +404,8 @@ async function main() {
     }
 
     if (!options.noLaunch) {
-      await adb(options.device, "shell", "am", "start", "-n", appActivity);
+      await adb(options.device, "shell", "am", "force-stop", appPackage).catch(() => null);
+      await startConnectIntent(options.device, connectLink);
     }
 
     console.log(`[mobile-dev] Ready`);

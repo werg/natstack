@@ -76,6 +76,7 @@ const { NativeModules } = jest.requireActual("react-native");
 NativeModules.NatStackMobileHost = {
   firebaseConfigured: true,
   clearCredentials: jest.fn(async () => undefined),
+  resetToNativeBootstrap: jest.fn(async () => ({ reloading: true })),
   pairServer: jest.fn(async () => ({
     serverUrl: "https://server.example",
     hubUrl: "https://server.example",

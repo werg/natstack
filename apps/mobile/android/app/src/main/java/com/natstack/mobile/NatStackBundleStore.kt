@@ -9,6 +9,7 @@ object NatStackBundleStore {
     private const val ACTIVE_LOCAL_PATH = "activeBundle.localPath"
     private const val ACTIVE_BUILD_KEY = "activeBundle.buildKey"
     private const val ACTIVE_INTEGRITY = "activeBundle.integrity"
+    private const val ACTIVE_SOURCE = "activeBundle.source"
 
     fun activeBundlePath(context: Context): String? {
         val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -53,6 +54,22 @@ object NatStackBundleStore {
             .putString(ACTIVE_INTEGRITY, integrity)
             .commit()
         return changed
+    }
+
+    fun clearActive(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        val hadActiveBundle =
+            prefs.contains(ACTIVE_LOCAL_PATH) ||
+                prefs.contains(ACTIVE_BUILD_KEY) ||
+                prefs.contains(ACTIVE_INTEGRITY) ||
+                prefs.contains(ACTIVE_SOURCE)
+        prefs.edit()
+            .remove(ACTIVE_LOCAL_PATH)
+            .remove(ACTIVE_BUILD_KEY)
+            .remove(ACTIVE_INTEGRITY)
+            .remove(ACTIVE_SOURCE)
+            .commit()
+        return hadActiveBundle
     }
 
     private fun isUnderBundleCache(context: Context, file: File): Boolean {
