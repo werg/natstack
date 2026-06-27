@@ -1,6 +1,25 @@
 {
-  "//": "Editor/ESLint project coverage for the workspace-owned mobile app. The shippable type-check still runs through apps/mobile/tsconfig.json (which supplies the React Native lib/types). This file only ensures typed-aware tooling can resolve these sources at their workspace location.",
-  "extends": "../../../apps/mobile/tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2020"],
+    "jsx": "react-jsx",
+    "noEmit": true,
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitReturns": true,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": true,
+    "allowUnusedLabels": false,
+    "allowUnreachableCode": false,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "forceConsistentCasingInFileNames": true,
+    "resolveJsonModule": true,
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true
+  },
   "include": ["**/*.ts", "**/*.tsx"],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "jest.setup.ts", "**/*.test.ts", "**/*.test.tsx"]
 }

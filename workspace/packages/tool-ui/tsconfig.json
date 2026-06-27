@@ -1,16 +1,21 @@
 {
-  "extends": "../../../tsconfig.json",
   "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "forceConsistentCasingInFileNames": true,
     "outDir": "./dist",
     "rootDir": "./src",
     "declaration": true,
     "declarationMap": true,
     "composite": true,
     "jsx": "react-jsx",
-    "baseUrl": ".",
-    "paths": {
-      "@natstack/types": ["../../../packages/types/src/index.ts"]
-    }
+    "baseUrl": "."
   },
   "include": ["src"]
 }
