@@ -110,7 +110,7 @@ describe("materializeMobilePanel", () => {
         entityId: "entity-1",
         slotId: "panel-1",
         clientLabel: "Mobile",
-        leaseConnectionId: expect.stringMatching(/^mobile-panel-1-/),
+        connectionId: expect.stringMatching(/^mobile-panel-1-/),
       },
     });
   });

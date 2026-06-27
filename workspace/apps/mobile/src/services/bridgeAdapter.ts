@@ -13,6 +13,7 @@ export function createBridgeAdapter(deps: {
   panelManager: PanelManager;
   transport: MobileRpcClient;
   callbacks: BridgeAdapterCallbacks;
+  getPanelInit?: (panelId: string) => Promise<unknown>;
 }) {
   // Tree mutations from hosted webviews route through the single server
   // authority (panelTree); the mirror updates reactively via the broadcast.
@@ -23,6 +24,7 @@ export function createBridgeAdapter(deps: {
       const slotId = asPanelSlotId(panelId);
       switch (method) {
         case "getPanelInit":
+          if (deps.getPanelInit) return deps.getPanelInit(panelId);
           return deps.panelManager.getPanelInit(slotId);
         case "getInfo":
           return deps.panelManager.getInfo(slotId);

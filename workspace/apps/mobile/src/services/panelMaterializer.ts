@@ -35,7 +35,7 @@ export async function materializeMobilePanel(opts: {
 }): Promise<MobileMaterializedPanel> {
   const snapshot = getCurrentSnapshot(opts.panel);
   const managed = !snapshot.source.startsWith("browser:");
-  const leaseConnectionId = `mobile-${opts.panelId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const connectionId = `mobile-${opts.panelId}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   const leaseClient = opts.leaseMode === "takeOver" ? opts.takeOverLease : opts.acquireLease;
   const panelInit = await opts.getPanelInit(opts.panelId);
   const runtimeEntityId =
@@ -48,7 +48,7 @@ export async function materializeMobilePanel(opts: {
     throw new Error(`Panel ${opts.panelId} did not provide a runtime entity id`);
   }
   const lease = await leaseClient(opts.panelId, runtimeEntityId, {
-    connectionId: leaseConnectionId,
+    connectionId,
   });
   if (!lease.acquired) {
     throw new Error(formatPanelRuntimeLeaseDeniedMessage(opts.panelId, lease.lease));
@@ -67,7 +67,11 @@ export async function materializeMobilePanel(opts: {
     managed: true,
     panelInit:
       panelInit && typeof panelInit === "object"
-        ? { ...(panelInit as Record<string, unknown>), leaseConnectionId, clientLabel: "Mobile" }
+        ? {
+            ...(panelInit as Record<string, unknown>),
+            connectionId,
+            clientLabel: "Mobile",
+          }
         : panelInit,
   };
 }

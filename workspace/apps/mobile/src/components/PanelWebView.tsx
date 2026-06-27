@@ -284,8 +284,8 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
         );
 
       const shell = {
-        getPanelInit: () => Promise.resolve(panelInit),
-        getBootstrapConfig: () => Promise.resolve(panelInit),
+        getPanelInit: () => callHost("getPanelInit", []),
+        getBootstrapConfig: () => callHost("getPanelInit", []),
         getInfo: () => callHost("getInfo", []),
         focusPanel: (panelId) => callHost("focusPanel", [panelId]),
         openDevtools: () => callHost("openDevtools", []),

@@ -93,7 +93,7 @@ describe("HeadlessHost lifecycle guards", () => {
     const makeLease = (slotId: string, keepLoaded: boolean, acquiredAt: number) =>
       ({
         slotId,
-        runtimeEntityId: `panel:${slotId}`,
+        runtimeEntityId: `panel:nav-${slotId.slice("panel:tree/".length)}`,
         clientSessionId: "headless-test",
         hostConnectionId: "headless-test",
         connectionId: `c-${slotId}`,
@@ -104,14 +104,16 @@ describe("HeadlessHost lifecycle guards", () => {
         keepLoaded,
         acquiredAt,
       }) as unknown as PanelRuntimeLease;
+    const pinnedOld = "panel:tree/pinned-old";
+    const freeNew = "panel:tree/free-new";
     tracker.reconcile({
       version: { epoch: "e1", counter: 1 },
-      leases: [makeLease("pinned-old", true, 1), makeLease("free-new", false, 2)],
+      leases: [makeLease(pinnedOld, true, 1), makeLease(freeNew, false, 2)],
     });
 
     const lastUsed = new Map<string, number>([
-      ["pinned-old", 100],
-      ["free-new", 200],
+      [pinnedOld, 100],
+      [freeNew, 200],
     ]);
     const releaseAndUnload = vi.fn(async () => undefined);
     Object.assign(
@@ -123,7 +125,7 @@ describe("HeadlessHost lifecycle guards", () => {
       {
         tracker,
         pages: {
-          slots: () => ["pinned-old", "free-new"],
+          slots: () => [pinnedOld, freeNew],
           lastUsedAt: (slotId: string) => lastUsed.get(slotId),
         },
         releaseAndUnload,
@@ -133,7 +135,7 @@ describe("HeadlessHost lifecycle guards", () => {
     await (host as unknown as { enforcePanelCap(): Promise<void> }).enforcePanelCap();
 
     // Oldest (pinned) was skipped; the next-oldest free panel is evicted instead.
-    expect(releaseAndUnload).toHaveBeenCalledWith("free-new", "panel cap");
+    expect(releaseAndUnload).toHaveBeenCalledWith(freeNew, "panel cap");
   });
 
   it("idle-unloads stale panels via the shared selector but exempts keepLoaded ones", () => {
@@ -142,7 +144,7 @@ describe("HeadlessHost lifecycle guards", () => {
     const makeLease = (slotId: string, keepLoaded: boolean) =>
       ({
         slotId,
-        runtimeEntityId: `panel:${slotId}`,
+        runtimeEntityId: `panel:nav-${slotId.slice("panel:tree/".length)}`,
         clientSessionId: "headless-test",
         hostConnectionId: "headless-test",
         connectionId: `c-${slotId}`,
@@ -153,16 +155,19 @@ describe("HeadlessHost lifecycle guards", () => {
         keepLoaded,
         acquiredAt: 1,
       }) as unknown as PanelRuntimeLease;
+    const pinnedIdle = "panel:tree/pinned-idle";
+    const freeIdle = "panel:tree/free-idle";
+    const fresh = "panel:tree/fresh";
     tracker.reconcile({
       version: { epoch: "e1", counter: 1 },
-      leases: [makeLease("pinned-idle", true), makeLease("free-idle", false)],
+      leases: [makeLease(pinnedIdle, true), makeLease(freeIdle, false)],
     });
 
     const now = Date.now();
     const lastUsed = new Map<string, number>([
-      ["pinned-idle", now - 120_000], // idle, but keepLoaded → exempt
-      ["free-idle", now - 120_000], // idle + free → unloaded
-      ["fresh", now - 1_000], // not idle → retained
+      [pinnedIdle, now - 120_000], // idle, but keepLoaded → exempt
+      [freeIdle, now - 120_000], // idle + free → unloaded
+      [fresh, now - 1_000], // not idle → retained
     ]);
     const releaseAndUnload = vi.fn(async () => undefined);
     Object.assign(
@@ -174,7 +179,7 @@ describe("HeadlessHost lifecycle guards", () => {
       {
         tracker,
         pages: {
-          slots: () => ["pinned-idle", "free-idle", "fresh"],
+          slots: () => [pinnedIdle, freeIdle, fresh],
           lastUsedAt: (slotId: string) => lastUsed.get(slotId),
         },
         releaseAndUnload,
@@ -183,8 +188,8 @@ describe("HeadlessHost lifecycle guards", () => {
 
     (host as unknown as { checkIdle(): void }).checkIdle();
 
-    expect(releaseAndUnload).toHaveBeenCalledWith("free-idle", "idle");
-    expect(releaseAndUnload).not.toHaveBeenCalledWith("pinned-idle", "idle");
-    expect(releaseAndUnload).not.toHaveBeenCalledWith("fresh", "idle");
+    expect(releaseAndUnload).toHaveBeenCalledWith(freeIdle, "idle");
+    expect(releaseAndUnload).not.toHaveBeenCalledWith(pinnedIdle, "idle");
+    expect(releaseAndUnload).not.toHaveBeenCalledWith(fresh, "idle");
   });
 });

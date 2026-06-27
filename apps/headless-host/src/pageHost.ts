@@ -34,7 +34,7 @@ export interface LoadPanelInput {
   slotId: string;
   contextId: string;
   panelUrl: string;
-  /** Full bootstrap payload incl. leaseConnectionId; injected pre-navigation. */
+  /** Full bootstrap payload incl. connectionId; injected pre-navigation. */
   panelInit: unknown;
   tabId: number;
 }

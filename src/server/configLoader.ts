@@ -64,7 +64,6 @@ export const CONFIG_LOADER_JS = `(async () => {
       const stored = value && typeof value === "object" ? { ...value } : value;
       if (stored && typeof stored === "object") {
         delete stored.connectionId;
-        delete stored.leaseConnectionId;
       }
       sessionStorage.setItem(storageKey(), JSON.stringify(stored));
     } catch {
@@ -94,8 +93,7 @@ export const CONFIG_LOADER_JS = `(async () => {
   const entityId = cfg?.entityId;
   const slotId = cfg?.slotId ?? entityId;
   const url = new URL(location.href);
-  const configuredConnectionId = cfg?.connectionId ?? cfg?.leaseConnectionId;
-  const connectionId = typeof configuredConnectionId === "string" ? configuredConnectionId : undefined;
+  const connectionId = typeof cfg?.connectionId === "string" ? cfg.connectionId : undefined;
 
   if (!cfg || !entityId || !cfg.gatewayConfig || !cfg.gatewayConfig.serverUrl || !cfg.gatewayConfig.token) {
     const root = document.getElementById("root");

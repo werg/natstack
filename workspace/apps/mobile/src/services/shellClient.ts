@@ -186,6 +186,7 @@ class MobilePanels implements PanelHost {
       this.bridgeAdapterInstance = createBridgeAdapter({
         panelManager: core.panelManager,
         transport: this.deps.transport,
+        getPanelInit: (panelId) => this.getPanelInit(panelId),
         callbacks: {
           navigateToPanel: this.deps.navigateToPanel,
         },
@@ -410,7 +411,15 @@ class MobilePanels implements PanelHost {
     }
   }
   async getPanelInit(panelId: string): Promise<unknown> {
-    return this.requireManager().getPanelInit(asPanelSlotId(panelId));
+    const slotId = asPanelSlotId(panelId);
+    const panelInit = await this.requireManager().getPanelInit(slotId);
+    const lease = this.runtimeConnectionBySlot.get(String(slotId));
+    if (!lease || !panelInit || typeof panelInit !== "object") return panelInit;
+    return {
+      ...(panelInit as Record<string, unknown>),
+      connectionId: lease.connectionId,
+      clientLabel: "Mobile",
+    };
   }
   async acquireLease(
     panelId: string,

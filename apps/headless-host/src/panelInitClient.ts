@@ -34,7 +34,7 @@ export interface PanelLoadInfo {
   panelUrl: string;
   contextId: string;
   source: string;
-  /** Bootstrap payload incl. leaseConnectionId — inject as __natstackPanelInit. */
+  /** Bootstrap payload incl. connectionId — inject as __natstackPanelInit. */
   panelInit: Record<string, unknown>;
 }
 
@@ -58,6 +58,8 @@ export class PanelInitClient {
       getSlotHistory: (slotId) => call<SlotHistoryRow[]>("workspace-state.slot.history", [slotId]),
       resolveActiveEntity: (id) =>
         call<EntityRecord | null>("workspace-state.entity.resolveActive", [id]),
+      resolveSlotByEntity: (entityId) =>
+        call<string | null>("workspace-state.slot.resolveByEntity", [entityId]),
       createSlot: (input: SlotCreateInput) => callVoid("workspace-state.slot.create", [input]),
       appendSlotHistory: (slotId, entry: SlotHistoryEntryInput) =>
         call<number>("workspace-state.slot.appendHistory", [slotId, entry]),
@@ -112,7 +114,7 @@ export class PanelInitClient {
    * the lease connectionId merged in. Fetch fresh on every (re)load — the
    * embedded gateway token is single-use.
    */
-  async getPanelLoadInfo(slotId: string, leaseConnectionId: string): Promise<PanelLoadInfo> {
+  async getPanelLoadInfo(slotId: string, connectionId: string): Promise<PanelLoadInfo> {
     const init = (await this.panelManager.getPanelInit(asPanelSlotId(slotId))) as Record<
       string,
       unknown
@@ -141,7 +143,7 @@ export class PanelInitClient {
       source,
       panelInit: {
         ...init,
-        leaseConnectionId,
+        connectionId,
         clientLabel: this.clientLabel,
       },
     };
@@ -151,30 +153,30 @@ export class PanelInitClient {
     slotId: string,
     source: string,
     options: NavigatePanelOptions | undefined,
-    leaseConnectionId: string
+    connectionId: string
   ): Promise<CreatePanelResult> {
     const normalizedSlotId = asPanelSlotId(slotId);
     const result = await this.panelManager.navigate(normalizedSlotId, source, options);
-    await this.acquireCurrentPanelLease(normalizedSlotId, slotId, leaseConnectionId);
+    await this.acquireCurrentPanelLease(normalizedSlotId, slotId, connectionId);
     return result;
   }
 
   async navigatePanelHistory(
     slotId: string,
     delta: -1 | 1,
-    leaseConnectionId: string
+    connectionId: string
   ): Promise<{ id: string; title: string } | null> {
     const normalizedSlotId = asPanelSlotId(slotId);
     const panel = await this.panelManager.navigateHistory(normalizedSlotId, delta);
     if (!panel) return null;
-    await this.acquireCurrentPanelLease(normalizedSlotId, slotId, leaseConnectionId);
+    await this.acquireCurrentPanelLease(normalizedSlotId, slotId, connectionId);
     return { id: panel.id, title: panel.title };
   }
 
   private async acquireCurrentPanelLease(
     normalizedSlotId: PanelSlotId,
     slotId: string,
-    leaseConnectionId: string
+    connectionId: string
   ): Promise<void> {
     const runtimeEntityId = await this.panelManager.getCurrentEntityId(normalizedSlotId);
     const acquired = await this.rpc.call<PanelRuntimeAcquireResult>(
@@ -186,7 +188,7 @@ export class PanelInitClient {
           slotId,
           clientSessionId: this.clientSessionId,
           hostConnectionId: this.clientSessionId,
-          connectionId: leaseConnectionId,
+          connectionId,
         }),
       ]
     );

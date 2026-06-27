@@ -17,9 +17,8 @@ describe("CONFIG_LOADER_JS", () => {
 
   it("keeps runtime lease ids out of persisted/userland bootstrap state", () => {
     expect(CONFIG_LOADER_JS).not.toContain('url.searchParams.get("connectionId")');
-    expect(CONFIG_LOADER_JS).toContain('typeof configuredConnectionId === "string"');
+    expect(CONFIG_LOADER_JS).toContain('typeof cfg?.connectionId === "string"');
     expect(CONFIG_LOADER_JS).toContain("delete stored.connectionId");
-    expect(CONFIG_LOADER_JS).toContain("delete stored.leaseConnectionId");
     expect(CONFIG_LOADER_JS).toContain("delete globalThis.__natstackConnectionId");
   });
 

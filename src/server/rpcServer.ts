@@ -567,8 +567,8 @@ export class RpcServer {
         this.getConnection(targetId, connectionId)
       );
     }
-    const leaseConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
-    if (leaseConnectionId) return this.getConnection(routedTargetId, leaseConnectionId);
+    const routeConnectionId = this.deps.runtimeCoordinator?.resolveRouteConnection(targetId);
+    if (routeConnectionId) return this.getConnection(routedTargetId, routeConnectionId);
     return this.pickPrimary(targetId);
   }
 

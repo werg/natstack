@@ -14,6 +14,7 @@ import type {
 } from "@natstack/shared/panel/panelLease";
 import { createPanelHostRegistration } from "@natstack/shared/panel/panelLease";
 import { LeaseTracker, type LeaseIntent } from "@natstack/shared/panel/leaseTracker";
+import { asPanelSlotId } from "@natstack/shared/panel/ids";
 import {
   selectCapEvictionVictims,
   selectIdlePanelVictims,
@@ -233,6 +234,7 @@ export class HeadlessHost implements PanelHost {
     action: string,
     args: unknown[]
   ): Promise<unknown> {
+    const panelSlotId = asPanelSlotId(slotId);
     switch (action) {
       case "accessibilityTree":
         return this.pages!.accessibilityTree(slotId);
@@ -243,17 +245,17 @@ export class HeadlessHost implements PanelHost {
         );
       case "rebuildPanel":
       case "rebuildAndReload": {
-        const lease = this.tracker.heldLease(slotId);
+        const lease = this.tracker.heldLease(panelSlotId);
         if (!lease) throw new Error(`no lease held for panel ${slotId}`);
-        const info = await this.panelInit!.getPanelLoadInfo(slotId, lease.connectionId);
-        await this.pages!.reloadPanel(slotId, info.panelUrl, info.panelInit);
+        const info = await this.panelInit!.getPanelLoadInfo(panelSlotId, lease.connectionId);
+        await this.pages!.reloadPanel(panelSlotId, info.panelUrl, info.panelInit);
         return { action, status: "reloaded" };
       }
       case "reloadPanel": {
-        const lease = this.tracker.heldLease(slotId);
+        const lease = this.tracker.heldLease(panelSlotId);
         if (!lease) throw new Error(`no lease held for panel ${slotId}`);
-        const info = await this.panelInit!.getPanelLoadInfo(slotId, lease.connectionId);
-        await this.pages!.reloadPanel(slotId, info.panelUrl, info.panelInit);
+        const info = await this.panelInit!.getPanelLoadInfo(panelSlotId, lease.connectionId);
+        await this.pages!.reloadPanel(panelSlotId, info.panelUrl, info.panelInit);
         return {
           panelId: slotId,
           operation: "reload",
@@ -264,7 +266,9 @@ export class HeadlessHost implements PanelHost {
         };
       }
       case "navigatePanel": {
-        if (!this.tracker.heldLease(slotId)) throw new Error(`no lease held for panel ${slotId}`);
+        if (!this.tracker.heldLease(panelSlotId)) {
+          throw new Error(`no lease held for panel ${slotId}`);
+        }
         const source = typeof args[0] === "string" ? args[0] : "";
         if (!source) throw new Error("navigatePanel requires a source");
         const options =
@@ -277,16 +281,27 @@ export class HeadlessHost implements PanelHost {
               })
             : undefined;
         const connectionId = `navigate-${slotId}-${randomUUID()}`;
-        const result = await this.panelInit!.navigatePanel(slotId, source, options, connectionId);
+        const result = await this.panelInit!.navigatePanel(
+          panelSlotId,
+          source,
+          options,
+          connectionId
+        );
         await this.reconcile();
         return { id: result.panelId, title: result.title };
       }
       case "navigatePanelHistory": {
-        if (!this.tracker.heldLease(slotId)) throw new Error(`no lease held for panel ${slotId}`);
+        if (!this.tracker.heldLease(panelSlotId)) {
+          throw new Error(`no lease held for panel ${slotId}`);
+        }
         const delta = args[0] === -1 || args[0] === 1 ? args[0] : 0;
         if (!delta) throw new Error("navigatePanelHistory requires delta -1 or 1");
         const connectionId = `history-${slotId}-${randomUUID()}`;
-        const result = await this.panelInit!.navigatePanelHistory(slotId, delta, connectionId);
+        const result = await this.panelInit!.navigatePanelHistory(
+          panelSlotId,
+          delta,
+          connectionId
+        );
         await this.reconcile();
         return result;
       }
@@ -378,7 +393,7 @@ export class HeadlessHost implements PanelHost {
   }
 
   private readonly gcIsKeepLoaded = (slotId: string): boolean =>
-    !!this.tracker.heldLease(slotId)?.keepLoaded;
+    !!this.tracker.heldLease(asPanelSlotId(slotId))?.keepLoaded;
 
   private async enforcePanelCap(): Promise<void> {
     if (!this.pages) return;
@@ -395,8 +410,9 @@ export class HeadlessHost implements PanelHost {
 
   private async releaseAndUnload(slotId: string, why: string): Promise<void> {
     log.info(`releasing panel ${slotId} (${why})`);
-    const lease = this.tracker.heldLease(slotId);
-    this.tracker.drop(slotId);
+    const panelSlotId = asPanelSlotId(slotId);
+    const lease = this.tracker.heldLease(panelSlotId);
+    this.tracker.drop(panelSlotId);
     this.bridge?.unregisterTarget(slotId);
     this.tabIds.delete(slotId);
     await this.pages?.unloadPanel(slotId);
