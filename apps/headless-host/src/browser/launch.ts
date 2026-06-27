@@ -4,6 +4,8 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { createDevLogger } from "@natstack/dev-log";
 
 const log = createDevLogger("HeadlessHost:launch");
@@ -17,16 +19,46 @@ export interface LaunchedChromium {
   kill(): void;
 }
 
+function snapNameFromExecutablePath(executablePath: string): string | null {
+  const normalized = path.resolve(executablePath);
+  if (path.dirname(normalized) !== "/snap/bin") return null;
+  return path.basename(normalized) || null;
+}
+
+function isHiddenHomePath(candidate: string, homeDir: string): boolean {
+  const relative = path.relative(homeDir, path.resolve(candidate));
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return false;
+  return relative.split(path.sep).some((segment) => segment.startsWith("."));
+}
+
+export function resolveChromiumProfileDir(opts: {
+  executablePath: string;
+  profileDir: string;
+  homeDir?: string;
+}): string {
+  const homeDir = opts.homeDir ?? os.homedir();
+  const snapName = snapNameFromExecutablePath(opts.executablePath);
+  if (!snapName || !isHiddenHomePath(opts.profileDir, homeDir)) return opts.profileDir;
+  return path.join(homeDir, "snap", snapName, "common", "natstack", "headless-host");
+}
+
 export async function launchChromium(opts: {
   executablePath: string;
   profileDir: string;
   extraArgs?: string[];
 }): Promise<LaunchedChromium> {
-  fs.mkdirSync(opts.profileDir, { recursive: true });
+  const profileDir = resolveChromiumProfileDir({
+    executablePath: opts.executablePath,
+    profileDir: opts.profileDir,
+  });
+  if (profileDir !== opts.profileDir) {
+    log.info(`Using snap-accessible Chromium profile dir: ${profileDir}`);
+  }
+  fs.mkdirSync(profileDir, { recursive: true });
   const args = [
     "--headless=new",
     "--remote-debugging-port=0",
-    `--user-data-dir=${opts.profileDir}`,
+    `--user-data-dir=${profileDir}`,
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-background-timer-throttling",

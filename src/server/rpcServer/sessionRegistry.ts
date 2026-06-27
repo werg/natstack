@@ -1,9 +1,8 @@
-import type { RpcMessage, RpcResponse } from "@natstack/rpc";
+import type { RpcEnvelope, RpcResponse } from "@natstack/rpc";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 
 export type RelayInboxMessage = {
-  fromId: string;
-  message: RpcMessage;
+  envelope: RpcEnvelope;
 };
 
 export type RelayCallContext = {
@@ -101,7 +100,7 @@ export class SessionRegistry {
     }, this.ttlMs[callerKind]);
   }
 
-  enqueue(callerId: string, fromId: string, message: RpcMessage): boolean {
+  enqueue(callerId: string, envelope: RpcEnvelope): boolean {
     const session = this.sessions.get(callerId);
     if (!session) return false;
     if (session.inbox.length >= this.inboxCapacity) {
@@ -109,12 +108,18 @@ export class SessionRegistry {
       session.dirty = true;
       return false;
     }
-    session.inbox.push({ fromId, message });
+    session.inbox.push({ envelope });
     return true;
   }
 
   enqueueResponse(callerId: string, fromId: string, response: RpcResponse): boolean {
-    return this.enqueue(callerId, fromId, response);
+    return this.enqueue(callerId, {
+      from: fromId,
+      target: callerId,
+      delivery: { caller: { callerId: fromId, callerKind: "unknown" } },
+      provenance: [{ callerId: fromId, callerKind: "unknown" }],
+      message: response,
+    });
   }
 
   takeInbox(callerId: string): RelayInboxMessage[] {

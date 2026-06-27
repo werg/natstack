@@ -1,4 +1,9 @@
-import type { EnvelopeRpcTransport, RpcConnectionStatus, RpcEnvelope, RpcMessage } from "../types.js";
+import type {
+  EnvelopeRpcTransport,
+  RpcConnectionStatus,
+  RpcEnvelope,
+  RpcMessage,
+} from "../types.js";
 import type { WsClientMessage, WsServerMessage } from "../protocol/wsProtocol.js";
 import type { RecoveryKind } from "../protocol/recoveryCoordinator.js";
 import type { WsLike, WsTransportAdapter } from "../protocol/wsAdapter.js";
@@ -15,7 +20,7 @@ export interface WsClientTransportConfig {
   translateEvent?: (
     event: string,
     payload: unknown,
-    deliver: (message: RpcMessage) => void,
+    deliver: (message: RpcMessage) => void
   ) => boolean;
   onServerEvent?: (event: string, payload: unknown) => void;
   onRecovery?: (kind: RecoveryKind) => void | Promise<void>;
@@ -138,7 +143,10 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
         lastSeenBootId = nextBootId;
         reconnectAttempt = 0;
         setStatus("connected");
-        if (msg.sessionDirty === true || (isReconnect && previousBootId && nextBootId && previousBootId !== nextBootId)) {
+        if (
+          msg.sessionDirty === true ||
+          (isReconnect && previousBootId && nextBootId && previousBootId !== nextBootId)
+        ) {
           emitRecovery("cold-recover");
         } else {
           emitRecovery("resubscribe");
@@ -146,28 +154,12 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
         return;
       }
       case "ws:rpc":
-      case "ws:routed":
-        if (msg.envelope) {
-          for (const listener of messageListeners) listener(msg.envelope);
-          return;
-        }
-        if (msg.message) {
-          const legacyFrom =
-            "fromId" in msg.message && typeof msg.message.fromId === "string"
-              ? msg.message.fromId
-              : "unknown";
-          const from = msg.type === "ws:routed" ? (msg.fromId ?? legacyFrom) : "main";
-          const callerKind = msg.type === "ws:routed" ? (msg.fromKind ?? "unknown") : "server";
-          const envelope: RpcEnvelope = {
-            from,
-            target: config.selfId,
-            delivery: { caller: { callerId: from, callerKind } },
-            provenance: [{ callerId: from, callerKind }],
-            message: msg.message,
-          };
-          for (const listener of messageListeners) listener(envelope);
-        }
+      case "ws:routed": {
+        const envelope = msg.envelope;
+        if (!envelope?.message) return;
+        for (const listener of messageListeners) listener(envelope);
         return;
+      }
       case "ws:event":
         if (
           config.translateEvent?.(msg.event, msg.payload, (message) => {
@@ -191,7 +183,7 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
         // call settles instead of hanging forever (silent-drop class).
         const prefix = config.logPrefix ?? "wsClientTransport";
         console.warn(
-          `[${prefix}] routed request to ${msg.targetId} failed (requestId=${msg.requestId}): ${msg.error}`,
+          `[${prefix}] routed request to ${msg.targetId} failed (requestId=${msg.requestId}): ${msg.error}`
         );
         const errorMessage: RpcMessage = {
           type: "response",
@@ -214,7 +206,7 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
         // promise to reject, but the drop MUST be observable rather than silent.
         const prefix = config.logPrefix ?? "wsClientTransport";
         console.warn(
-          `[${prefix}] routed event "${msg.event}" to ${msg.targetId} dropped: ${msg.error}`,
+          `[${prefix}] routed event "${msg.event}" to ${msg.targetId} dropped: ${msg.error}`
         );
         return;
       }
@@ -264,7 +256,7 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
           token,
           connectionId,
           ...config.getAuthMessageFields?.(),
-        } satisfies WsClientMessage),
+        } satisfies WsClientMessage)
       );
     };
     nextSocket.onmessage = (event) => {
@@ -320,7 +312,9 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
             ? null
             : setTimeout(
                 () =>
-                  reject(new Error(`Server WS connection timeout (${timeoutMs}ms): ${config.getWsUrl()}`)),
+                  reject(
+                    new Error(`Server WS connection timeout (${timeoutMs}ms): ${config.getWsUrl()}`)
+                  ),
                 timeoutMs
               );
         firstConnectPromise!.then(
@@ -331,7 +325,7 @@ export function wsClientTransport(config: WsClientTransportConfig): EnvelopeRpcT
           (error) => {
             if (timeout) clearTimeout(timeout);
             reject(error);
-          },
+          }
         );
       });
     },

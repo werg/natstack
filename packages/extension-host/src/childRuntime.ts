@@ -520,7 +520,7 @@ async function connectRuntimeBridge(): Promise<RpcClient> {
         stampedMessage === envelope.message ? envelope : { ...envelope, message: stampedMessage };
       const frame: WsClientMessage =
         stampedEnvelope.target === "main" || stampedEnvelope.target === "server"
-          ? { type: "ws:rpc", envelope: stampedEnvelope, message: stampedMessage }
+          ? { type: "ws:rpc", envelope: stampedEnvelope }
           : { type: "ws:route", envelope: stampedEnvelope };
       ws.send(JSON.stringify(frame));
     },
@@ -580,22 +580,9 @@ async function connectRuntimeBridge(): Promise<RpcClient> {
       return;
     }
     if (message.type === "ws:rpc" || message.type === "ws:routed") {
-      const fromId = message.type === "ws:routed" ? (message.fromId ?? "unknown") : "main";
-      const callerKind = message.type === "ws:routed" ? (message.fromKind ?? "unknown") : "server";
-      const envelope =
-        message.envelope ??
-        (message.message
-          ? envelopeFromMessage({
-              selfId: extensionName,
-              from: fromId,
-              target: extensionName,
-              callerKind,
-              message: message.message,
-            })
-          : null);
-      if (envelope) {
-        for (const listener of listeners) listener(envelope);
-      }
+      const envelope = message.envelope;
+      if (!envelope?.message) return;
+      for (const listener of listeners) listener(envelope);
     } else if (message.type === "ws:routed-response-error") {
       // The server could not deliver our routed request. Synthesize a rejecting
       // response so the pending call settles instead of hanging (silent-drop class).

@@ -55,6 +55,43 @@ function missingNativeHostError() {
   return new Error("NatStackMobileHost native module is unavailable");
 }
 
+function randomRequestId(prefix = "mobile-bootstrap") {
+  if (typeof globalThis.crypto?.randomUUID === "function") {
+    return `${prefix}-${globalThis.crypto.randomUUID()}`;
+  }
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+}
+
+function callerKindFromId(callerId) {
+  if (typeof callerId !== "string") return "app";
+  if (callerId.startsWith("shell:")) return "shell";
+  if (callerId.startsWith("app:") || callerId.startsWith("@workspace-apps/")) return "app";
+  if (callerId.startsWith("panel:")) return "panel";
+  if (callerId.startsWith("worker:")) return "worker";
+  if (callerId.startsWith("do:")) return "do";
+  if (callerId.startsWith("extension:")) return "extension";
+  return "app";
+}
+
+function rpcCallerFromGrant(grant) {
+  const callerId =
+    typeof grant?.callerId === "string" && grant.callerId.length > 0
+      ? grant.callerId
+      : "mobile-host";
+  return { callerId, callerKind: callerKindFromId(callerId) };
+}
+
+function rpcEnvelopeFromGrant(grant, message, target = "main") {
+  const caller = rpcCallerFromGrant(grant);
+  return {
+    from: caller.callerId,
+    target,
+    delivery: { caller },
+    provenance: [caller],
+    message,
+  };
+}
+
 function parseConnectDeepLink(rawUrl) {
   if (typeof rawUrl !== "string" || !rawUrl.startsWith("natstack://connect")) return null;
   const parsed = parseConnectLink(rawUrl);
@@ -94,20 +131,35 @@ async function activateApprovedWorkspaceApp(options = {}) {
   return true;
 }
 
-async function rpc(serverUrl, token, method, args = []) {
-  const response = await fetch(serverRpcHttpUrl(serverUrl).toString(), {
+async function rpc(grant, method, args = []) {
+  const requestId = randomRequestId();
+  const envelope = rpcEnvelopeFromGrant(grant, {
+    type: "request",
+    requestId,
+    fromId: rpcCallerFromGrant(grant).callerId,
+    method,
+    args,
+  });
+  const response = await fetch(serverRpcHttpUrl(grant.serverUrl).toString(), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
-      Authorization: `Bearer ${token}`,
+      Authorization: `Bearer ${grant.connectionGrant}`,
     },
-    body: JSON.stringify({ method, args }),
+    body: JSON.stringify(envelope),
   });
   const json = await response.json().catch(() => ({}));
-  if (!response.ok || json.error) {
+  if (!response.ok) {
     throw new Error(json.error || `RPC ${method} failed with HTTP ${response.status}`);
   }
-  return json.result;
+  const responseEnvelope = json?.envelope || json;
+  const message = responseEnvelope?.message;
+  if (!message) {
+    throw new Error(json.error || `RPC ${method} returned a malformed response`);
+  }
+  if (message.error) throw new Error(String(message.error));
+  if (!("result" in message)) throw new Error(`RPC ${method} returned a malformed response`);
+  return message.result;
 }
 
 function rpcWsUrl(serverUrl) {
@@ -210,16 +262,17 @@ function createLaunchReadinessEventClient(grant) {
         }
         for (const name of eventNames) {
           requestIndex += 1;
+          const requestId = `bootstrap-event-${requestIndex}`;
           ws?.send(
             JSON.stringify({
               type: "ws:rpc",
-              message: {
+              envelope: rpcEnvelopeFromGrant(grant, {
                 type: "request",
-                requestId: `bootstrap-event-${requestIndex}`,
+                requestId,
                 fromId: callerId,
                 method: "events.subscribe",
                 args: [name],
-              },
+              }),
             })
           );
         }
@@ -347,12 +400,7 @@ function NatStackMobileHostBootstrap() {
     const deadline = Date.now() + 120000;
     let eventClient = null;
     try {
-      let session = await rpc(
-        grant.serverUrl,
-        grant.connectionGrant,
-        "workspace.hostTargets.beginLaunch",
-        ["react-native"]
-      );
+      let session = await rpc(grant, "workspace.hostTargets.beginLaunch", ["react-native"]);
       for (;;) {
         if (!isCurrent()) return;
         setLaunchSession(session);
@@ -388,12 +436,9 @@ function NatStackMobileHostBootstrap() {
             session = observed;
             continue;
           }
-          const refreshed = await rpc(
-            grant.serverUrl,
-            grant.connectionGrant,
-            "workspace.hostTargets.getLaunchSession",
-            [session.sessionId]
-          );
+          const refreshed = await rpc(grant, "workspace.hostTargets.getLaunchSession", [
+            session.sessionId,
+          ]);
           if (!isCurrent()) return;
           if (refreshed) {
             session = refreshed;
@@ -417,8 +462,7 @@ function NatStackMobileHostBootstrap() {
       setStatus(decision === "once" ? "Approving workspace app..." : "Denying workspace app...");
       try {
         const session = await rpc(
-          launchGrant.serverUrl,
-          launchGrant.connectionGrant,
+          launchGrant,
           "workspace.hostTargets.resolveLaunchSessionApproval",
           [launchSession.sessionId, decision]
         );
@@ -490,7 +534,9 @@ function NatStackMobileHostBootstrap() {
       }
       if (credentials.workspaceId && !isSelectedWorkspaceUrl(credentials.serverUrl)) {
         await nativeHost.clearCredentials?.().catch(() => {});
-        setStatus("Stored mobile credentials are not scoped to a workspace. Scan a new pairing QR code.");
+        setStatus(
+          "Stored mobile credentials are not scoped to a workspace. Scan a new pairing QR code."
+        );
         return;
       }
       const grant = await nativeHost.issueConnectionGrant();
@@ -570,7 +616,11 @@ function NatStackMobileHostBootstrap() {
   }, [presentConnectLink]);
 
   const activeStep =
-    approvals.length > 0 ? "approve" : pendingConnect || pendingWorkspaces.length > 0 ? "pair" : "load";
+    approvals.length > 0
+      ? "approve"
+      : pendingConnect || pendingWorkspaces.length > 0
+        ? "pair"
+        : "load";
 
   return (
     <SafeAreaView style={styles.root}>
@@ -669,9 +719,7 @@ function NatStackMobileHostBootstrap() {
               <View style={styles.connectCard}>
                 <Text style={styles.eyebrow}>Workspace</Text>
                 <Text style={styles.sectionTitle}>Choose a workspace</Text>
-                <Text style={styles.hostLabel}>
-                  {pendingConnect?.serverUrl ?? "Paired server"}
-                </Text>
+                <Text style={styles.hostLabel}>{pendingConnect?.serverUrl ?? "Paired server"}</Text>
               </View>
               {pendingWorkspaces.map((workspace) => (
                 <Pressable
@@ -686,7 +734,10 @@ function NatStackMobileHostBootstrap() {
                   <View>
                     <Text style={styles.workspaceName}>{workspace.name}</Text>
                     <Text style={styles.workspaceMeta}>
-                      {[workspace.ephemeral ? "temporary" : "saved", workspace.running ? "running" : null]
+                      {[
+                        workspace.ephemeral ? "temporary" : "saved",
+                        workspace.running ? "running" : null,
+                      ]
                         .filter(Boolean)
                         .join(" · ")}
                     </Text>

@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
+import { envelopeFromMessage, type RpcEnvelope, type RpcResponse } from "@natstack/rpc";
 import { createServerClient } from "./serverClient.js";
 
 const cleanup: Array<() => Promise<void> | void> = [];
@@ -28,18 +29,13 @@ async function startRpcHarness() {
           type?: string;
           token?: string;
           envelope?: {
+            from?: string;
             message?: {
               type?: string;
               requestId?: string;
               method?: string;
               args?: unknown[];
             };
-          };
-          message?: {
-            type?: string;
-            requestId?: string;
-            method?: string;
-            args?: unknown[];
           };
         };
         if (msg.type === "ws:auth") {
@@ -77,42 +73,50 @@ async function startRpcHarness() {
           }
           return;
         }
-        const message = msg.envelope?.message ?? msg.message;
-        if (msg.type !== "ws:rpc" || message?.type !== "request") return;
+        const envelope = msg.envelope as RpcEnvelope | undefined;
+        const message = envelope?.message;
+        if (msg.type !== "ws:rpc" || message?.type !== "request" || !envelope) return;
         const { requestId, method, args = [] } = message;
-        if (callerKind === "shell" && method === "auth.grantConnection") {
-          grantRequests.push(args);
-          const principalId = String(args[0] ?? "");
+        const sendResponse = (response: RpcResponse) => {
           ws.send(
             JSON.stringify({
               type: "ws:rpc",
-              message: {
-                type: "response",
-                requestId,
-                result: {
-                  token: principalId.startsWith("panel:") ? "panel-grant" : "app-grant",
-                },
-              },
+              envelope: envelopeFromMessage({
+                selfId: "main",
+                from: "main",
+                target: envelope.from,
+                callerKind: "server",
+                message: response,
+              }),
             })
           );
+        };
+        if (callerKind === "shell" && method === "auth.grantConnection") {
+          grantRequests.push(args);
+          const principalId = String(args[0] ?? "");
+          sendResponse({
+            type: "response",
+            requestId,
+            result: {
+              token: principalId.startsWith("panel:") ? "panel-grant" : "app-grant",
+            },
+          });
           return;
         }
         if ((callerKind === "app" || callerKind === "panel") && method === "workspace.getInfo") {
           scopedRequests.push({ callerId, callerKind, method });
-          ws.send(
-            JSON.stringify({
-              type: "ws:rpc",
-              message: { type: "response", requestId, result: { callerId, callerKind } },
-            })
-          );
+          sendResponse({
+            type: "response",
+            requestId,
+            result: { callerId, callerKind },
+          });
           return;
         }
-        ws.send(
-          JSON.stringify({
-            type: "ws:rpc",
-            message: { type: "response", requestId, error: `unexpected ${callerKind}:${method}` },
-          })
-        );
+        sendResponse({
+          type: "response",
+          requestId,
+          error: `unexpected ${callerKind}:${method}`,
+        });
       });
     });
   });

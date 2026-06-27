@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { envelopeFromMessage } from "@natstack/rpc";
 import { SessionRegistry } from "./sessionRegistry.js";
 
 describe("SessionRegistry", () => {
@@ -52,20 +53,38 @@ describe("SessionRegistry", () => {
     sessions.markDisconnected("panel-b", "panel");
 
     expect(
-      sessions.enqueue("panel-b", "panel-a", {
-        type: "event",
-        fromId: "panel-a",
-        event: "one",
-        payload: null,
-      })
+      sessions.enqueue(
+        "panel-b",
+        envelopeFromMessage({
+          selfId: "panel-a",
+          from: "panel-a",
+          target: "panel-b",
+          callerKind: "panel",
+          message: {
+            type: "event",
+            fromId: "panel-a",
+            event: "one",
+            payload: null,
+          },
+        })
+      )
     ).toBe(true);
     expect(
-      sessions.enqueue("panel-b", "panel-a", {
-        type: "event",
-        fromId: "panel-a",
-        event: "two",
-        payload: null,
-      })
+      sessions.enqueue(
+        "panel-b",
+        envelopeFromMessage({
+          selfId: "panel-a",
+          from: "panel-a",
+          target: "panel-b",
+          callerKind: "panel",
+          message: {
+            type: "event",
+            fromId: "panel-a",
+            event: "two",
+            payload: null,
+          },
+        })
+      )
     ).toBe(false);
 
     expect(sessions.markConnected("panel-b", "panel")).toEqual({ sessionDirty: true });

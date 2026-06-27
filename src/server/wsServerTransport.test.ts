@@ -118,11 +118,12 @@ describe("createWsServerTransport", () => {
     const call = bridge.call<number>("panel:4", "echo", [7]);
     // Pull the requestId out of the sent frame and deliver a genuine response.
     const frame = JSON.parse(ws.sent[0] ?? "{}") as {
-      message: { requestId: string };
+      envelope: RpcEnvelope;
     };
+    expect(frame).not.toHaveProperty("message");
     transport.deliver("panel:4", {
       type: "response",
-      requestId: frame.message.requestId,
+      requestId: frame.envelope.message.type === "request" ? frame.envelope.message.requestId : "",
       result: 7,
     });
     await expect(call).resolves.toBe(7);
@@ -145,18 +146,17 @@ describe("createWsServerTransport", () => {
     });
     const frame = JSON.parse(ws.sent[0] ?? "{}") as {
       envelope: RpcEnvelope;
-      message: { requestId: string };
     };
 
     expect(frame.envelope.delivery).toMatchObject({
       idempotencyKey: "idem-1",
       readOnly: true,
     });
-    expect(frame.message).toEqual(frame.envelope.message);
+    expect(frame).not.toHaveProperty("message");
 
     transport.deliver("panel:5", {
       type: "response",
-      requestId: frame.message.requestId,
+      requestId: frame.envelope.message.type === "request" ? frame.envelope.message.requestId : "",
       result: 5,
     });
 

@@ -76,6 +76,21 @@ function parseDOTarget(targetId: string): { source: string; className: string; o
 /** The server's identity stamped onto response envelopes it returns over /rpc. */
 const SERVER_RESPONDER = { callerId: "main", callerKind: "server" as const };
 
+function envelopeForWsDelivery(
+  fromId: string,
+  fromKind: CallerKind | "unknown",
+  targetId: string,
+  message: RpcMessage
+): RpcEnvelope {
+  return envelopeFromMessage({
+    selfId: fromId,
+    from: fromId,
+    target: targetId,
+    callerKind: fromKind,
+    message,
+  });
+}
+
 function envelopeTransportFromWsServer(transport: WsServerTransportInternal): EnvelopeRpcTransport {
   return {
     async send(envelope) {
@@ -811,8 +826,7 @@ export class RpcServer {
       for (const queued of this.sessions.takeInbox(callerId)) {
         this.sendToWs(ws, {
           type: "ws:routed",
-          fromId: queued.fromId,
-          message: queued.message,
+          envelope: queued.envelope,
         });
       }
     }
@@ -871,8 +885,15 @@ export class RpcServer {
 
     switch (msg.type) {
       case "ws:rpc": {
-        const rpcMessage = msg.envelope?.message ?? msg.message;
-        if (!rpcMessage) return;
+        const envelope = (msg as { envelope?: RpcEnvelope }).envelope;
+        if (!envelope?.message) {
+          log.warn("malformed ws:rpc frame without envelope", {
+            callerId: client.caller.runtime.id,
+            callerKind: client.caller.runtime.kind,
+          });
+          return;
+        }
+        const rpcMessage = envelope.message;
         // If the message belongs to a server-initiated call via the client's RPC bridge,
         // route it to the client transport. Streaming responses use `stream-frame`; without
         // this branch, server -> extension stream callers wait forever for HEAD.
@@ -891,24 +912,27 @@ export class RpcServer {
             return;
           }
         }
-        void this.handleRpc(client, rpcMessage, msg.envelope);
+        void this.handleRpc(client, rpcMessage, envelope);
         break;
       }
       case "ws:tool-result":
         this.handleToolResult(msg.callId, msg.result as ToolExecutionResult);
         break;
       case "ws:route":
-        if (msg.envelope) {
-          this.handleRoute(
-            client,
-            msg.envelope.target,
-            msg.envelope.message,
-            msg.targetConnectionId,
-            msg.envelope
-          );
-        } else if (msg.targetId && msg.message) {
-          this.handleRoute(client, msg.targetId, msg.message, msg.targetConnectionId);
+        if (!msg.envelope?.message) {
+          log.warn("malformed ws:route frame without envelope", {
+            callerId: client.caller.runtime.id,
+            callerKind: client.caller.runtime.kind,
+          });
+          return;
         }
+        this.handleRoute(
+          client,
+          msg.envelope.target,
+          msg.envelope.message,
+          msg.targetConnectionId,
+          msg.envelope
+        );
         break;
       case "ws:auth":
         // Ignore duplicate auth messages
@@ -933,7 +957,7 @@ export class RpcServer {
   private async handleRpc(
     client: WsClientState,
     message: RpcMessage,
-    envelope?: RpcEnvelope
+    envelope: RpcEnvelope
   ): Promise<void> {
     if (message.type === "stream-request") {
       await this.handleWsStreamRequest(client, message, envelope);
@@ -961,11 +985,11 @@ export class RpcServer {
     if (!parsed) {
       this.sendToWs(client.ws, {
         type: "ws:rpc",
-        message: {
+        envelope: responseEnvelopeFor(envelope, SERVER_RESPONDER, {
           type: "response",
           requestId: request.requestId,
           error: `Invalid method format: "${request.method}". Expected "service.method"`,
-        },
+        }),
       });
       return;
     }
@@ -977,17 +1001,17 @@ export class RpcServer {
     } catch (error) {
       this.sendToWs(client.ws, {
         type: "ws:rpc",
-        message: {
+        envelope: responseEnvelopeFor(envelope, SERVER_RESPONDER, {
           type: "response",
           requestId: request.requestId,
           error: error instanceof Error ? error.message : String(error),
-        },
+        }),
       });
       return;
     }
 
-    const idempotencyKey = envelope?.delivery.idempotencyKey;
-    const readOnly = envelope?.delivery.readOnly === true;
+    const idempotencyKey = envelope.delivery.idempotencyKey;
+    const readOnly = envelope.delivery.readOnly === true;
     const ctx = this.serviceContextForRpcMessage(client, request, {
       ...(request.requestId ? { requestId: request.requestId } : {}),
       ...(idempotencyKey ? { idempotencyKey } : {}),
@@ -1000,18 +1024,22 @@ export class RpcServer {
       const result = await dispatcher.dispatch(ctx, service, method, request.args);
       this.sendToWs(client.ws, {
         type: "ws:rpc",
-        message: { type: "response", requestId: request.requestId, result },
+        envelope: responseEnvelopeFor(envelope, SERVER_RESPONDER, {
+          type: "response",
+          requestId: request.requestId,
+          result,
+        }),
       });
     } catch (error) {
       const errorCode = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
       this.sendToWs(client.ws, {
         type: "ws:rpc",
-        message: {
+        envelope: responseEnvelopeFor(envelope, SERVER_RESPONDER, {
           type: "response",
           requestId: request.requestId,
           error: error instanceof Error ? error.message : String(error),
           ...(errorCode ? { errorCode } : {}),
-        },
+        }),
       });
     }
   }
@@ -1029,8 +1057,8 @@ export class RpcServer {
     client: WsClientState,
     targetId: string,
     message: RpcMessage,
-    targetConnectionId?: string,
-    routeEnvelope?: RpcEnvelope
+    targetConnectionId: string | undefined,
+    routeEnvelope: RpcEnvelope
   ): void {
     const auth = this.checkRelayAuth(
       client.caller.runtime.id,
@@ -1074,9 +1102,7 @@ export class RpcServer {
         (originClient) => {
           this.sendToWs(originClient.ws, {
             type: "ws:routed",
-            fromId: client.caller.runtime.id,
-            fromKind: client.caller.runtime.kind,
-            message,
+            envelope: routeEnvelope,
           });
         },
         (err) => this.sendRouteError(client, targetId, message, err)
@@ -1163,10 +1189,7 @@ export class RpcServer {
 
     this.sendToWs(targetClient.ws, {
       type: "ws:routed",
-      ...(routeEnvelope ? { envelope: routeEnvelope } : {}),
-      fromId: client.caller.runtime.id,
-      fromKind: client.caller.runtime.kind,
-      message,
+      envelope: routeEnvelope,
     });
   }
 
@@ -1189,13 +1212,12 @@ export class RpcServer {
     if (message.type === "request") {
       this.sendToWs(client.ws, {
         type: "ws:routed",
-        fromId: targetId,
-        message: {
+        envelope: envelopeForWsDelivery(targetId, "unknown", client.caller.runtime.id, {
           type: "response",
           requestId: message.requestId,
           error: errorMessage,
           ...(errorCode ? { errorCode } : {}),
-        },
+        }),
       });
       return;
     }
@@ -1298,8 +1320,7 @@ export class RpcServer {
     const originClient = await this.resolveWsRelayTarget(origin.callerId, origin.connectionId);
     this.sendToWs(originClient.ws, {
       type: "ws:routed",
-      fromId,
-      message,
+      envelope: envelopeForWsDelivery(fromId, "unknown", origin.callerId, message),
     });
   }
 
@@ -2139,20 +2160,20 @@ export class RpcServer {
   private async handleWsStreamRequest(
     client: WsClientState,
     request: import("@natstack/rpc").RpcStreamRequest,
-    envelope?: RpcEnvelope
+    envelope: RpcEnvelope
   ): Promise<void> {
-    const idempotencyKey = envelope?.delivery.idempotencyKey;
-    const readOnly = envelope?.delivery.readOnly === true;
+    const idempotencyKey = envelope.delivery.idempotencyKey;
+    const readOnly = envelope.delivery.readOnly === true;
     const sendFrame = (frameType: number, payload: string): void => {
       this.sendToWs(client.ws, {
         type: "ws:rpc",
-        message: {
+        envelope: responseEnvelopeFor(envelope, SERVER_RESPONDER, {
           type: "stream-frame",
           requestId: request.requestId,
           fromId: "main",
           frameType,
           payload,
-        },
+        }),
       });
     };
 
@@ -2448,8 +2469,7 @@ export class RpcServer {
     if (client?.ws.readyState === WebSocket.OPEN) {
       this.sendToWs(client.ws, {
         type: "ws:routed",
-        fromId,
-        message: response,
+        envelope: envelopeForWsDelivery(fromId, "unknown", targetId, response),
       });
       return;
     }
@@ -2631,9 +2651,12 @@ export class RpcServer {
       for (const wsClient of wsClients) {
         this.sendToWs(wsClient.ws, {
           type: "ws:routed",
-          fromId,
-          fromKind,
-          message: { type: "event", fromId, event, payload },
+          envelope: envelopeForWsDelivery(fromId, fromKind, routedTargetId, {
+            type: "event",
+            fromId,
+            event,
+            payload,
+          }),
         });
       }
       return;

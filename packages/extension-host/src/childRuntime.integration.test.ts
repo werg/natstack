@@ -7,7 +7,13 @@ import * as esbuild from "esbuild";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocketServer } from "ws";
 import { createNodeProcessAdapter, type ProcessAdapter } from "@natstack/process-adapter";
-import type { RpcEnvelope, RpcMessage, RpcRequest, RpcResponse } from "@natstack/rpc";
+import {
+  envelopeFromMessage,
+  type RpcEnvelope,
+  type RpcMessage,
+  type RpcRequest,
+  type RpcResponse,
+} from "@natstack/rpc";
 import type {
   WsClientMessage,
   WsServerMessage,
@@ -23,6 +29,21 @@ function waitForMessage<T>(
 ): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     subscribe(resolve, reject);
+  });
+}
+
+function makeEnvelope(
+  from: string,
+  target: string,
+  callerKind: RpcEnvelope["delivery"]["caller"]["callerKind"],
+  message: RpcMessage
+): RpcEnvelope {
+  return envelopeFromMessage({
+    selfId: from,
+    from,
+    target,
+    callerKind,
+    message,
   });
 }
 
@@ -106,35 +127,36 @@ describe("extension child runtime process", () => {
                 const envelope = message.envelope as RpcEnvelope | undefined;
                 const rpc = envelope?.message as RpcMessage | undefined;
                 if (!envelope || rpc?.type !== "request") return;
+                const response: RpcResponse = {
+                  type: "response",
+                  requestId: rpc.requestId,
+                  result: {
+                    targetId: envelope.target,
+                    method: rpc.method,
+                    args: rpc.args,
+                  },
+                };
                 ws.send(
                   JSON.stringify({
                     type: "ws:routed",
-                    fromId: envelope.target,
-                    fromKind: "do",
-                    message: {
-                      type: "response",
-                      requestId: rpc.requestId,
-                      result: {
-                        targetId: envelope.target,
-                        method: rpc.method,
-                        args: rpc.args,
-                      },
-                    } satisfies RpcResponse,
+                    envelope: makeEnvelope(envelope.target, envelope.from, "do", response),
                   } satisfies WsServerMessage)
                 );
                 return;
               }
               if (message.type !== "ws:rpc") return;
-              const rpc = message.message as RpcMessage;
-              if (rpc.type !== "request") return;
+              const envelope = message.envelope as RpcEnvelope | undefined;
+              const rpc = envelope?.message as RpcMessage | undefined;
+              if (!envelope || rpc?.type !== "request") return;
+              const response: RpcResponse = {
+                type: "response",
+                requestId: rpc.requestId,
+                result: null,
+              };
               ws.send(
                 JSON.stringify({
                   type: "ws:rpc",
-                  message: {
-                    type: "response",
-                    requestId: rpc.requestId,
-                    result: null,
-                  } satisfies RpcResponse,
+                  envelope: makeEnvelope("main", envelope.from, "server", response),
                 } satisfies WsServerMessage)
               );
               if (rpc.method === "extensions.ready") {
@@ -170,8 +192,8 @@ describe("extension child runtime process", () => {
         try {
           const message = JSON.parse(String(raw)) as WsClientMessage;
           if (message.type !== "ws:rpc") return;
-          const rpc = message.message as RpcMessage;
-          if (rpc.type === "response" && rpc.requestId === requestId) {
+          const rpc = message.envelope?.message as RpcMessage | undefined;
+          if (rpc?.type === "response" && rpc.requestId === requestId) {
             resolve(rpc);
           }
         } catch (err) {
@@ -181,7 +203,7 @@ describe("extension child runtime process", () => {
       ready.ws.send(
         JSON.stringify({
           type: "ws:rpc",
-          message: {
+          envelope: makeEnvelope("main", "@workspace-extensions/process-test", "server", {
             type: "request",
             requestId,
             fromId: "main",
@@ -196,7 +218,7 @@ describe("extension child runtime process", () => {
                 caller: { callerId: "test", callerKind: "shell" },
               },
             ],
-          } satisfies RpcRequest,
+          } satisfies RpcRequest),
         } satisfies WsServerMessage)
       );
     });
@@ -235,7 +257,7 @@ describe("extension child runtime process", () => {
       ready.ws.on("message", (raw) => {
         try {
           const message = JSON.parse(String(raw)) as WsRpcResponseMessage;
-          const rpc = message.envelope?.message ?? message.message;
+          const rpc = message.envelope?.message;
           if (rpc?.type === "response" && rpc.requestId === serverTargetRequestId) {
             resolve(message);
           }
@@ -247,7 +269,6 @@ describe("extension child runtime process", () => {
         JSON.stringify({
           type: "ws:rpc",
           envelope: serverTargetEnvelope,
-          message: serverTargetRequest,
         } satisfies WsServerMessage)
       );
     });
@@ -270,8 +291,8 @@ describe("extension child runtime process", () => {
         try {
           const message = JSON.parse(String(raw)) as WsClientMessage;
           if (message.type !== "ws:rpc") return;
-          const rpc = message.message as RpcMessage;
-          if (rpc.type === "response" && rpc.requestId === contextRequestId) {
+          const rpc = message.envelope?.message as RpcMessage | undefined;
+          if (rpc?.type === "response" && rpc.requestId === contextRequestId) {
             resolve(rpc);
           }
         } catch (err) {
@@ -281,7 +302,7 @@ describe("extension child runtime process", () => {
       ready.ws.send(
         JSON.stringify({
           type: "ws:rpc",
-          message: {
+          envelope: makeEnvelope("main", "@workspace-extensions/process-test", "server", {
             type: "request",
             requestId: contextRequestId,
             fromId: "main",
@@ -303,7 +324,7 @@ describe("extension child runtime process", () => {
                 },
               },
             ],
-          } satisfies RpcRequest,
+          } satisfies RpcRequest),
         } satisfies WsServerMessage)
       );
     });
@@ -320,8 +341,8 @@ describe("extension child runtime process", () => {
         try {
           const message = JSON.parse(String(raw)) as WsClientMessage;
           if (message.type !== "ws:rpc") return;
-          const rpc = message.message as RpcMessage;
-          if (rpc.type === "response" && rpc.requestId === targetRequestId) {
+          const rpc = message.envelope?.message as RpcMessage | undefined;
+          if (rpc?.type === "response" && rpc.requestId === targetRequestId) {
             resolve(rpc);
           }
         } catch (err) {
@@ -331,7 +352,7 @@ describe("extension child runtime process", () => {
       ready.ws.send(
         JSON.stringify({
           type: "ws:rpc",
-          message: {
+          envelope: makeEnvelope("main", "@workspace-extensions/process-test", "server", {
             type: "request",
             requestId: targetRequestId,
             fromId: "main",
@@ -346,7 +367,7 @@ describe("extension child runtime process", () => {
                 caller: { callerId: "test", callerKind: "shell" },
               },
             ],
-          } satisfies RpcRequest,
+          } satisfies RpcRequest),
         } satisfies WsServerMessage)
       );
     });

@@ -15,7 +15,7 @@
 
 import type { WebSocket } from "ws";
 import type { RpcEnvelope, RpcMessage, RpcTransport } from "@natstack/rpc";
-import { createHandlerRegistry } from "@natstack/rpc";
+import { createHandlerRegistry, envelopeFromMessage } from "@natstack/rpc";
 
 /** Error code stamped on rejections caused by the underlying WS closing. */
 export const CONNECTION_LOST_CODE = "CONNECTION_LOST";
@@ -92,7 +92,7 @@ export function createWsServerTransport(
   };
   ws.on("close", onClose);
 
-  const sendFrame = async (message: RpcMessage, envelope?: RpcEnvelope): Promise<void> => {
+  const sendFrame = async (message: RpcMessage, envelope: RpcEnvelope): Promise<void> => {
     if (closed || ws.readyState !== ws.OPEN) {
       // A3: throw rather than silently resolve — a swallowed send leaves the
       // caller's awaiter hanging forever. Throwing rejects the pending call.
@@ -101,14 +101,21 @@ export function createWsServerTransport(
     if (message.type === "request" || message.type === "stream-request") {
       inFlightRequests.add(message.requestId);
     }
-    // Include both shapes: modern clients use `envelope` for delivery
-    // metadata, while legacy clients/tests still consume `message`.
-    ws.send(JSON.stringify({ type: "ws:rpc", ...(envelope ? { envelope } : {}), message }));
+    ws.send(JSON.stringify({ type: "ws:rpc", envelope }));
   };
 
   const transport: WsServerTransportInternal = {
-    async send(_targetId: string, message: RpcMessage): Promise<void> {
-      await sendFrame(message);
+    async send(targetId: string, message: RpcMessage): Promise<void> {
+      await sendFrame(
+        message,
+        envelopeFromMessage({
+          selfId: "server",
+          from: "server",
+          target: targetId,
+          callerKind: "server",
+          message,
+        })
+      );
     },
 
     async sendEnvelope(envelope: RpcEnvelope): Promise<void> {
