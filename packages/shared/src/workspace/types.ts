@@ -424,4 +424,8 @@ import type { WorkspaceEntry } from "../types.js";
 export interface CentralData {
   /** Managed workspaces (sorted by lastOpened desc) */
   workspaces: WorkspaceEntry[];
+  /** Last workspace target opened by this client. */
+  lastWorkspaceTarget?:
+    | { kind: "local"; name: string; lastOpened: number }
+    | { kind: "remote"; url: string; workspaceName?: string; lastOpened: number };
 }

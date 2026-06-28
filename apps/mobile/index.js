@@ -174,6 +174,16 @@ function isSelectedWorkspaceUrl(serverUrl) {
   }
 }
 
+function autoLaunchWorkspaceName(workspaces) {
+  if (!Array.isArray(workspaces)) return null;
+  const ephemeralDev = workspaces.find(
+    (workspace) => workspace?.name === "dev" && workspace?.ephemeral === true
+  );
+  if (ephemeralDev) return ephemeralDev.name;
+  if (workspaces.length === 1 && workspaces[0]?.name === "default") return "default";
+  return null;
+}
+
 function createLaunchReadinessEventClient(grant) {
   const eventNames = HOST_TARGET_LAUNCH_SESSION_WAKE_EVENTS;
   const callerId = grant.callerId || "mobile-host";
@@ -507,6 +517,22 @@ function NatStackMobileHostBootstrap() {
     }
   }, []);
 
+  const selectWorkspaceAndRun = useCallback(
+    async (workspaceName, consumedUrl = null) => {
+      setBusy(true);
+      setStatus(`Opening ${workspaceName}...`);
+      const grant = await nativeHost.selectWorkspace(workspaceName, null);
+      smokePhase("embedded-workspace-selected");
+      if (consumedUrl) {
+        await markConnectLinkConsumed(consumedUrl).catch(() => {});
+      }
+      setPendingConnect(null);
+      setPendingWorkspaces([]);
+      await runLaunchGate(grant);
+    },
+    [runLaunchGate]
+  );
+
   const load = useCallback(async () => {
     setBusy(true);
     setApprovals([]);
@@ -528,7 +554,13 @@ function NatStackMobileHostBootstrap() {
       }
       if (!credentials.workspaceName && !credentials.workspaceId) {
         const response = await nativeHost.listWorkspaces();
-        setPendingWorkspaces(Array.isArray(response?.workspaces) ? response.workspaces : []);
+        const workspaces = Array.isArray(response?.workspaces) ? response.workspaces : [];
+        const autoWorkspace = autoLaunchWorkspaceName(workspaces);
+        if (autoWorkspace) {
+          await selectWorkspaceAndRun(autoWorkspace);
+          return;
+        }
+        setPendingWorkspaces(workspaces);
         setStatus("Choose a workspace on the paired server.");
         return;
       }
@@ -546,7 +578,7 @@ function NatStackMobileHostBootstrap() {
     } finally {
       setBusy(false);
     }
-  }, [presentConnectLink, runLaunchGate]);
+  }, [presentConnectLink, runLaunchGate, selectWorkspaceAndRun]);
 
   const confirmPendingConnect = useCallback(async () => {
     if (!pendingConnect) return;
@@ -554,6 +586,11 @@ function NatStackMobileHostBootstrap() {
     setStatus("Pairing server...");
     try {
       const workspaces = await pairParsedLink(pendingConnect);
+      const autoWorkspace = autoLaunchWorkspaceName(workspaces);
+      if (autoWorkspace) {
+        await selectWorkspaceAndRun(autoWorkspace, pendingConnect.rawUrl);
+        return;
+      }
       setPendingWorkspaces(workspaces);
       setStatus(
         workspaces.length > 0
@@ -565,28 +602,19 @@ function NatStackMobileHostBootstrap() {
     } finally {
       setBusy(false);
     }
-  }, [pendingConnect]);
+  }, [pendingConnect, selectWorkspaceAndRun]);
 
   const selectPendingWorkspace = useCallback(
     async (workspaceName) => {
-      setBusy(true);
-      setStatus(`Opening ${workspaceName}...`);
       try {
-        const grant = await nativeHost.selectWorkspace(workspaceName, null);
-        smokePhase("embedded-workspace-selected");
-        if (pendingConnect?.rawUrl) {
-          await markConnectLinkConsumed(pendingConnect.rawUrl).catch(() => {});
-        }
-        setPendingConnect(null);
-        setPendingWorkspaces([]);
-        await runLaunchGate(grant);
+        await selectWorkspaceAndRun(workspaceName, pendingConnect?.rawUrl ?? null);
       } catch (error) {
         setStatus(error instanceof Error ? error.message : String(error));
       } finally {
         setBusy(false);
       }
     },
-    [pendingConnect, runLaunchGate]
+    [pendingConnect, selectWorkspaceAndRun]
   );
 
   const cancelPendingConnect = useCallback(() => {

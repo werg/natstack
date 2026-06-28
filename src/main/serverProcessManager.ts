@@ -41,6 +41,7 @@ export class ServerProcessManager {
       wsDir: string;
       appRoot: string;
       isEphemeral?: boolean;
+      autoApproveStartupUnits?: boolean;
       logLevel?: string;
       /** Called if the server process exits unexpectedly */
       onCrash: (code: number | null) => void;
@@ -225,9 +226,14 @@ export class ServerProcessManager {
       NATSTACK_WORKSPACE_DIR: this.config.wsDir,
       NATSTACK_APP_ROOT: this.config.appRoot,
       ...(esbuildBinaryPath ? { ESBUILD_BINARY_PATH: esbuildBinaryPath } : {}),
-      ...(this.config.isEphemeral ? { NATSTACK_WORKSPACE_EPHEMERAL: "1" } : {}),
+      NATSTACK_WORKSPACE_EPHEMERAL: this.config.isEphemeral ? "1" : undefined,
+      NATSTACK_AUTO_APPROVE_STARTUP_UNITS: this.config.autoApproveStartupUnits ? "1" : undefined,
       ...(this.config.logLevel ? { NATSTACK_LOG_LEVEL: this.config.logLevel } : {}),
     };
+    if (!this.config.isEphemeral) delete env["NATSTACK_WORKSPACE_EPHEMERAL"];
+    if (!this.config.autoApproveStartupUnits) {
+      delete env["NATSTACK_AUTO_APPROVE_STARTUP_UNITS"];
+    }
 
     // Heap headroom for the server child. It is a single Node process that runs
     // builds (esbuild), git, and the DO relay hub, so V8's default ~2 GB old-space

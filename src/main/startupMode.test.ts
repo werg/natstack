@@ -1,5 +1,5 @@
 /**
- * startupMode — priority tests for `parseRemoteStartupMode`.
+ * startupMode — priority tests for remote startup resolution.
  *
  * Order: env vars > safeStorage-backed store.
  * Covered here: each "wins" case, missing-data -> null, invalid-URL throws,
@@ -7,13 +7,14 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { assertPresent, deleteDynamicProperty } from "../lintHelpers";
+import { deleteDynamicProperty } from "../lintHelpers";
 
 // Mocks must be set up before the startupMode module is imported, so we
 // resetModules + re-import in each test.
 
 const mockLoadRemoteCredentials = vi.fn();
 const mockResolveWorkspaceName = vi.fn(() => null as string | null);
+const mockIsDev = vi.fn(() => false);
 const mockResolveLocalWorkspaceStartup = vi.fn((_opts?: unknown) => ({
   resolved: {
     wsDir: "/tmp/natstack-test-workspace",
@@ -44,7 +45,7 @@ vi.mock("./paths.js", () => ({
   getCentralConfigDirectory: () => "/tmp",
 }));
 
-vi.mock("./utils.js", () => ({ isDev: () => false }));
+vi.mock("./utils.js", () => ({ isDev: () => mockIsDev() }));
 
 // Keep env clean per test.
 const ENV_KEYS = [
@@ -64,7 +65,24 @@ function setArgv(args: string[]) {
   process.argv = [...ORIGINAL_ARGV.slice(0, 2), ...args];
 }
 
-describe("parseRemoteStartupMode priority", () => {
+function readyRemoteStartup(mod: typeof import("./startupMode.js")) {
+  const result = mod.resolveRemoteStartup();
+  expect(result.status).toBe("ready");
+  if (result.status !== "ready") throw new Error("expected ready remote startup");
+  return result.credentials;
+}
+
+type LastWorkspaceTarget = ReturnType<
+  import("@natstack/shared/centralData").CentralDataManager["getLastWorkspaceTarget"]
+>;
+
+function testCentralData(lastTarget: LastWorkspaceTarget = null) {
+  return {
+    getLastWorkspaceTarget: vi.fn(() => lastTarget),
+  } as never;
+}
+
+describe("resolveRemoteStartup priority", () => {
   let mod: typeof import("./startupMode.js");
 
   beforeEach(async () => {
@@ -73,6 +91,8 @@ describe("parseRemoteStartupMode priority", () => {
     mockResolveWorkspaceName.mockReset();
     mockResolveWorkspaceName.mockReturnValue(null);
     mockResolveLocalWorkspaceStartup.mockClear();
+    mockIsDev.mockReset();
+    mockIsDev.mockReturnValue(false);
     mockLoadRemoteCredentials.mockReset();
     mockLoadRemoteCredentials.mockReturnValue(null);
     vi.resetModules();
@@ -83,8 +103,8 @@ describe("parseRemoteStartupMode priority", () => {
     setArgv([]);
   });
 
-  it("returns null when nothing is configured", () => {
-    expect(mod.parseRemoteStartupMode()).toBeNull();
+  it("returns none when nothing is configured", () => {
+    expect(mod.resolveRemoteStartup()).toEqual({ status: "none" });
   });
 
   it("env vars win over store", () => {
@@ -95,7 +115,7 @@ describe("parseRemoteStartupMode priority", () => {
       url: "https://store:1/_workspace/store",
       adminToken: "store-token",
     });
-    const result = assertPresent(mod.parseRemoteStartupMode());
+    const result = readyRemoteStartup(mod);
     expect(result.remoteUrl.href).toBe("https://env:1/_workspace/dev");
     expect(result.adminToken).toBe("env-token");
   });
@@ -108,7 +128,7 @@ describe("parseRemoteStartupMode priority", () => {
       deviceId: "dev_store",
       refreshToken: "refresh-store",
     });
-    const result = assertPresent(mod.parseRemoteStartupMode());
+    const result = readyRemoteStartup(mod);
     expect(result.remoteUrl.href).toBe("https://store:1/_workspace/dev");
     expect(result.adminToken).toBe("store-token");
     expect(result.bootstrap).toBe("hybrid");
@@ -123,7 +143,7 @@ describe("parseRemoteStartupMode priority", () => {
       deviceId: "dev_store",
       refreshToken: "refresh-store",
     });
-    const result = assertPresent(mod.parseRemoteStartupMode());
+    const result = readyRemoteStartup(mod);
     expect(result.bootstrap).toBe("device");
     expect(result.adminToken).toBeUndefined();
     expect(result.deviceId).toBe("dev_store");
@@ -141,7 +161,7 @@ describe("parseRemoteStartupMode priority", () => {
       deviceId: "dev_store",
       refreshToken: "refresh-store",
     });
-    const result = assertPresent(mod.parseRemoteStartupMode());
+    const result = readyRemoteStartup(mod);
     expect(result.deviceId).toBe("dev_env");
     expect(result.refreshToken).toBe("refresh-env");
   });
@@ -149,19 +169,19 @@ describe("parseRemoteStartupMode priority", () => {
   it("throws on malformed URL", () => {
     process.env["NATSTACK_REMOTE_URL"] = "not a url";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
-    expect(() => mod.parseRemoteStartupMode()).toThrow(/Invalid/i);
+    expect(() => mod.resolveRemoteStartup()).toThrow(/Invalid/i);
   });
 
   it("rejects unsupported protocols", () => {
     process.env["NATSTACK_REMOTE_URL"] = "ftp://x";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
-    expect(() => mod.parseRemoteStartupMode()).toThrow(/http or https/i);
+    expect(() => mod.resolveRemoteStartup()).toThrow(/http or https/i);
   });
 
   it("accepts loopback HTTP origins", () => {
     process.env["NATSTACK_REMOTE_URL"] = "http://localhost:1455/_workspace/dev";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
-    const result = assertPresent(mod.parseRemoteStartupMode());
+    const result = readyRemoteStartup(mod);
     expect(result.remoteUrl.href).toBe("http://localhost:1455/_workspace/dev");
   });
 
@@ -175,7 +195,7 @@ describe("parseRemoteStartupMode priority", () => {
       clearEnv();
       process.env["NATSTACK_REMOTE_URL"] = `${url}/_workspace/dev`;
       process.env["NATSTACK_REMOTE_TOKEN"] = "t";
-      const result = assertPresent(mod.parseRemoteStartupMode());
+      const result = readyRemoteStartup(mod);
       expect(result.remoteUrl.href).toBe(`${url}/_workspace/dev`);
     }
   });
@@ -183,46 +203,42 @@ describe("parseRemoteStartupMode priority", () => {
   it("rejects untrusted cleartext HTTP origins", () => {
     process.env["NATSTACK_REMOTE_URL"] = "http://server.example.com:1455/_workspace/dev";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
-    expect(() => mod.parseRemoteStartupMode()).toThrow(
-      /requires HTTPS, or trusted cleartext HTTP/i
-    );
+    expect(() => mod.resolveRemoteStartup()).toThrow(/requires HTTPS, or trusted cleartext HTTP/i);
   });
 
   it("rejects localhost subdomains for HTTP remote origins", () => {
     process.env["NATSTACK_REMOTE_URL"] = "http://panel.localhost:1455/_workspace/dev";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
-    expect(() => mod.parseRemoteStartupMode()).toThrow(
-      /requires HTTPS, or trusted cleartext HTTP/i
-    );
+    expect(() => mod.resolveRemoteStartup()).toThrow(/requires HTTPS, or trusted cleartext HTTP/i);
   });
 
   it("rejects remote startup URLs that have not selected a workspace", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://host.tailnet.ts.net";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
-    expect(() => mod.parseRemoteStartupMode()).toThrow(/selected workspace URL/i);
+    expect(() => mod.resolveRemoteStartup()).toThrow(/selected workspace URL/i);
   });
 
   it("rejects remote startup URLs below the selected workspace base", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://host.tailnet.ts.net/_workspace/dev/rpc";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
-    expect(() => mod.parseRemoteStartupMode()).toThrow(/selected workspace URL/i);
+    expect(() => mod.resolveRemoteStartup()).toThrow(/selected workspace URL/i);
   });
 
   it("returns null if URL or token is partially set", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://a:1/_workspace/dev";
     // no token
-    expect(mod.parseRemoteStartupMode()).toBeNull();
+    expect(mod.resolveRemoteStartup()).toEqual({ status: "none" });
     clearEnv();
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
     // no URL
-    expect(mod.parseRemoteStartupMode()).toBeNull();
+    expect(mod.resolveRemoteStartup()).toEqual({ status: "none" });
   });
 
   it("normalizes a 64-hex-no-separator fingerprint to colon form", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://a:1/_workspace/dev";
     process.env["NATSTACK_REMOTE_TOKEN"] = "t";
     process.env["NATSTACK_REMOTE_FINGERPRINT"] = "a".repeat(64);
-    const result = assertPresent(mod.parseRemoteStartupMode());
+    const result = readyRemoteStartup(mod);
     expect(result.tls?.fingerprint).toMatch(/^AA(:AA){31}$/);
   });
 
@@ -236,7 +252,7 @@ describe("parseRemoteStartupMode priority", () => {
       adminToken: "t",
       fingerprint: "00:11:22",
     });
-    const result = assertPresent(mod.parseRemoteStartupMode());
+    const result = readyRemoteStartup(mod);
     expect(result.tls?.fingerprint).toBe("AB:CD:EF");
   });
 });
@@ -250,6 +266,8 @@ describe("resolveStartupMode interactive desktop policy", () => {
     mockResolveWorkspaceName.mockReset();
     mockResolveWorkspaceName.mockReturnValue(null);
     mockResolveLocalWorkspaceStartup.mockClear();
+    mockIsDev.mockReset();
+    mockIsDev.mockReturnValue(false);
     mockLoadRemoteCredentials.mockReset();
     mockLoadRemoteCredentials.mockReturnValue(null);
     vi.resetModules();
@@ -260,13 +278,14 @@ describe("resolveStartupMode interactive desktop policy", () => {
     setArgv([]);
   });
 
-  it("waits for user choice instead of launching a local workspace by default", () => {
-    expect(mod.resolveStartupMode({} as never, { interactiveDesktop: true })).toEqual({
-      kind: "pending",
+  it("launches the local default/last workspace by default", () => {
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: true })).toMatchObject({
+      kind: "local",
+      workspaceName: "test-workspace",
     });
   });
 
-  it("does not auto-connect stored credentials in the interactive desktop chooser", () => {
+  it("does not auto-connect stored credentials when no remote workspace was last opened", () => {
     mockLoadRemoteCredentials.mockReturnValue({
       kind: "device",
       url: "https://store:1/_workspace/dev",
@@ -274,9 +293,66 @@ describe("resolveStartupMode interactive desktop policy", () => {
       refreshToken: "refresh-store",
     });
 
-    expect(mod.resolveStartupMode({} as never, { interactiveDesktop: true })).toEqual({
-      kind: "pending",
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: true })).toMatchObject({
+      kind: "local",
     });
+  });
+
+  it("opens the chooser when explicitly requested even with a stale remote target", () => {
+    mockIsDev.mockReturnValue(true);
+    setArgv([mod.CHOOSE_CONNECTION_ARG]);
+
+    expect(
+      mod.resolveStartupMode(
+        testCentralData({
+          kind: "remote",
+          url: "https://store:1/_workspace/dev",
+          workspaceName: "dev",
+          lastOpened: 123,
+        }),
+        { interactiveDesktop: true }
+      )
+    ).toEqual({ kind: "pending" });
+    expect(mockResolveLocalWorkspaceStartup).not.toHaveBeenCalled();
+  });
+
+  it("connects stored credentials when the last opened target was remote", () => {
+    mockLoadRemoteCredentials.mockReturnValue({
+      kind: "device",
+      url: "https://store:1/_workspace/dev",
+      deviceId: "dev_store",
+      refreshToken: "refresh-store",
+    });
+
+    expect(
+      mod.resolveStartupMode(
+        testCentralData({
+          kind: "remote",
+          url: "https://store:1/_workspace/dev",
+          workspaceName: "dev",
+          lastOpened: 123,
+        }),
+        { interactiveDesktop: true }
+      )
+    ).toMatchObject({
+      kind: "remote",
+      bootstrap: "device",
+      deviceId: "dev_store",
+    });
+  });
+
+  it("launches a persisted local target before falling back to generic local resolution", () => {
+    expect(
+      mod.resolveStartupMode(
+        testCentralData({ kind: "local", name: "client-work", lastOpened: 123 }),
+        { interactiveDesktop: true }
+      )
+    ).toMatchObject({
+      kind: "local",
+    });
+    expect(mockResolveLocalWorkspaceStartup).toHaveBeenLastCalledWith(
+      expect.objectContaining({ name: "client-work" })
+    );
   });
 
   it("connects stored credentials when the chooser relaunches into selected remote mode", () => {
@@ -288,7 +364,7 @@ describe("resolveStartupMode interactive desktop policy", () => {
       refreshToken: "refresh-store",
     });
 
-    expect(mod.resolveStartupMode({} as never, { interactiveDesktop: true })).toMatchObject({
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: true })).toMatchObject({
       kind: "remote",
       bootstrap: "device",
       deviceId: "dev_store",
@@ -299,7 +375,7 @@ describe("resolveStartupMode interactive desktop policy", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://env:1/_workspace/dev";
     process.env["NATSTACK_REMOTE_TOKEN"] = "env-token";
 
-    expect(mod.resolveStartupMode({} as never, { interactiveDesktop: true })).toMatchObject({
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: true })).toMatchObject({
       kind: "remote",
       bootstrap: "admin-token",
       adminToken: "env-token",
@@ -318,7 +394,7 @@ describe("resolveStartupMode interactive desktop policy", () => {
 
     // A headless host (interactiveDesktop: false) must not throw — it surfaces pending so it can
     // drive workspace selection (auto-select/relaunch) rather than hard-quit at startup.
-    expect(mod.resolveStartupMode({} as never, { interactiveDesktop: false })).toEqual({
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: false })).toEqual({
       kind: "pending",
     });
   });
@@ -331,7 +407,7 @@ describe("resolveStartupMode interactive desktop policy", () => {
       refreshToken: "refresh-store",
     });
 
-    expect(mod.resolveStartupMode({} as never, { interactiveDesktop: false })).toMatchObject({
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: false })).toMatchObject({
       kind: "remote",
       bootstrap: "device",
       deviceId: "dev_store",
@@ -342,7 +418,7 @@ describe("resolveStartupMode interactive desktop policy", () => {
     process.env["NATSTACK_REMOTE_URL"] = "https://env:1";
     process.env["NATSTACK_REMOTE_TOKEN"] = "env-token";
 
-    expect(() => mod.resolveStartupMode({} as never, { interactiveDesktop: false })).toThrow(
+    expect(() => mod.resolveStartupMode(testCentralData(), { interactiveDesktop: false })).toThrow(
       /selected workspace URL/i
     );
   });
@@ -354,6 +430,20 @@ describe("resolveStartupMode interactive desktop policy", () => {
       "default",
       mod.WORKSPACE_CREATE_IF_MISSING_ARG,
     ]);
+  });
+
+  it("builds chooser relaunch args that strip stale startup selections", () => {
+    expect(
+      mod.chooseConnectionRelaunchArgs([
+        "--foo",
+        "--workspace",
+        "old",
+        mod.CONNECT_SELECTED_REMOTE_ARG,
+        mod.WORKSPACE_CREATE_IF_MISSING_ARG,
+        mod.EPHEMERAL_WORKSPACE_ARG,
+        mod.CHOOSE_CONNECTION_ARG,
+      ])
+    ).toEqual(["--foo", mod.CHOOSE_CONNECTION_ARG]);
   });
 
   it("builds ephemeral-workspace relaunch args that pin the name and tag it disposable", () => {
@@ -382,7 +472,7 @@ describe("resolveStartupMode interactive desktop policy", () => {
       mod.EPHEMERAL_WORKSPACE_ARG,
     ]);
 
-    expect(mod.resolveStartupMode({} as never, { interactiveDesktop: true })).toMatchObject({
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: true })).toMatchObject({
       kind: "local",
       isEphemeral: true,
     });
@@ -392,7 +482,7 @@ describe("resolveStartupMode interactive desktop policy", () => {
     mockResolveWorkspaceName.mockReturnValue("default");
     setArgv(["--workspace", "default", mod.WORKSPACE_CREATE_IF_MISSING_ARG]);
 
-    expect(mod.resolveStartupMode({} as never, { interactiveDesktop: true })).toMatchObject({
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: true })).toMatchObject({
       kind: "local",
       wsDir: "/tmp/natstack-test-workspace",
       workspaceId: "test-workspace",
@@ -406,12 +496,30 @@ describe("resolveStartupMode interactive desktop policy", () => {
 
     mockResolveLocalWorkspaceStartup.mockClear();
     setArgv(["--workspace", "default"]);
-    expect(mod.resolveStartupMode({} as never, { interactiveDesktop: true })).toMatchObject({
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: true })).toMatchObject({
       kind: "local",
     });
     expect(mockResolveLocalWorkspaceStartup).toHaveBeenLastCalledWith(
       expect.not.objectContaining({ init: true })
     );
+  });
+
+  it("auto-approves startup units for a newly created default workspace", () => {
+    mockResolveLocalWorkspaceStartup.mockReturnValueOnce({
+      resolved: {
+        wsDir: "/tmp/natstack-default-workspace",
+        workspace: { config: { id: "default-id" } },
+        name: "default",
+        created: true,
+      },
+      isEphemeral: false,
+    });
+
+    expect(mod.resolveStartupMode(testCentralData(), { interactiveDesktop: true })).toMatchObject({
+      kind: "local",
+      workspaceName: "default",
+      autoApproveStartupUnits: true,
+    });
   });
 });
 
@@ -424,9 +532,10 @@ describe("shouldRequestSingleInstanceLock", () => {
         {
           kind: "local",
           wsDir: "/workspace",
+          workspaceName: "dev",
           workspaceId: "dev",
           isEphemeral: true,
-          createdFromTemplate: false,
+          autoApproveStartupUnits: false,
         },
         { isHeadlessHost: false, isDevelopment: true }
       )
@@ -441,9 +550,10 @@ describe("shouldRequestSingleInstanceLock", () => {
         {
           kind: "local",
           wsDir: "/workspace",
+          workspaceName: "default",
           workspaceId: "default",
           isEphemeral: false,
-          createdFromTemplate: false,
+          autoApproveStartupUnits: false,
         },
         { isHeadlessHost: false, isDevelopment: false }
       )

@@ -133,6 +133,30 @@ describe("ServerUnitApprovalCoordinator", () => {
     expect(denyApp).toHaveBeenCalledOnce();
   });
 
+  it("auto-approves startup unit batches when explicitly enabled", async () => {
+    const approvalQueue = {
+      request: vi.fn(async () => "deny" as const),
+    };
+    const coordinator = new ServerUnitApprovalCoordinator({
+      approvalQueue,
+      delayMs: 1,
+      autoApproveStartupUnits: true,
+    });
+    const applyApp = vi.fn(async () => undefined);
+    const denyApp = vi.fn();
+
+    await coordinator.enqueue({
+      trigger: "startup",
+      entries: [unit("app", "shell")],
+      applyApproved: applyApp,
+      applyDenied: denyApp,
+    });
+
+    expect(approvalQueue.request).not.toHaveBeenCalled();
+    expect(applyApp).toHaveBeenCalledOnce();
+    expect(denyApp).not.toHaveBeenCalled();
+  });
+
   it("can publish a queued batch before the timer fires", async () => {
     let resolveDecision!: (decision: "once") => void;
     const approvalQueue = {

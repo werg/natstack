@@ -717,6 +717,7 @@ async function main() {
   const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({
     approvalQueue,
     delayMs: 250,
+    autoApproveStartupUnits: process.env["NATSTACK_AUTO_APPROVE_STARTUP_UNITS"] === "1",
   });
   const requireMobileReady =
     args.requireMobileReady || process.env["NATSTACK_REQUIRE_MOBILE_READY"] === "1";

@@ -85,11 +85,12 @@ import {
   getPendingUserDataDir,
   workspaceRelaunchArgs,
   connectSelectedRemoteRelaunchArgs,
+  chooseConnectionRelaunchArgs,
   ephemeralWorkspaceRelaunchArgs,
-  stripStartupSelectionArgs,
   type StartupMode,
   type ConnectedStartupMode,
 } from "./startupMode.js";
+import { autoLaunchRemoteWorkspaceName } from "./remoteWorkspaceAutoSelect.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
 import { clearRemoteCredentials, loadRemoteCredentials } from "./remoteCredentialStore.js";
 import type { ServerClient } from "./serverClient.js";
@@ -194,6 +195,15 @@ if (startupMode.kind === "local") {
     path.join(startupMode.wsDir, IS_HEADLESS_HOST ? "state-headless-host" : "state")
   );
 } else if (startupMode.kind === "remote") {
+  const remoteWorkspaceName = startupMode.remoteUrl.pathname
+    .replace(/\/+$/, "")
+    .split("/")
+    .filter(Boolean)
+    .pop();
+  centralData.markRemoteWorkspaceOpened({
+    url: startupMode.remoteUrl.href,
+    ...(remoteWorkspaceName ? { workspaceName: remoteWorkspaceName } : {}),
+  });
   app.setPath(
     "userData",
     IS_HEADLESS_HOST ? path.join(getRemoteUserDataDir(), "headless-host") : getRemoteUserDataDir()
@@ -216,7 +226,7 @@ function returnToBootstrapAfterRemoteCredentialFailure(error: unknown): never {
   const message = error instanceof Error ? error.message : String(error);
   log.warn(`[Workspace] Remote credential invalid; returning to server chooser: ${message}`);
   clearRemoteCredentials();
-  relaunchWithArgs(stripStartupSelectionArgs(process.argv.slice(1)));
+  relaunchWithArgs(chooseConnectionRelaunchArgs(process.argv.slice(1)));
   throw error instanceof Error ? error : new Error(message);
 }
 
@@ -1293,10 +1303,10 @@ function getBootstrapConnectionState(): BootstrapConnectionState {
 }
 
 function normalizeBootstrapWorkspaceName(rawName: unknown): string {
-  const name =
-    typeof rawName === "string" && rawName.trim().length > 0
-      ? rawName.trim()
-      : (centralData.getLastOpenedWorkspace()?.name ?? "default");
+  if (typeof rawName !== "string" || rawName.trim().length === 0) {
+    throw new Error("Workspace name is required");
+  }
+  const name = rawName.trim();
   if (!WORKSPACE_NAME_RE.test(name)) {
     throw new Error("Workspace name must contain only letters, numbers, hyphens, and underscores");
   }
@@ -1332,16 +1342,32 @@ function relaunchWithArgs(args: string[]): void {
  * create/select a workspace or set NATSTACK_REMOTE_URL and restart).
  */
 async function recoverHeadlessPendingWorkspace(): Promise<void> {
+  await recoverPendingRemoteWorkspace({
+    openChooserOnNoAutoSelect: false,
+    autoLaunchSingleWorkspace: true,
+  });
+}
+
+async function recoverPendingRemoteWorkspace(opts: {
+  openChooserOnNoAutoSelect: boolean;
+  autoLaunchSingleWorkspace?: boolean;
+}): Promise<void> {
   try {
     const { listRemoteWorkspaces, selectRemoteWorkspace } =
       await import("./services/remoteCredService.js");
     const workspaces = await listRemoteWorkspaces();
-    if (workspaces.length === 1) {
-      const only = workspaces[0];
-      if (!only) return;
-      log.info(`[headless] Auto-selecting the only remote workspace "${only.name}"`);
-      await selectRemoteWorkspace(only.name);
+    const autoWorkspaceName = autoLaunchRemoteWorkspaceName(workspaces, {
+      allowSingleWorkspace: opts.autoLaunchSingleWorkspace === true,
+    });
+    if (autoWorkspaceName) {
+      log.info(`[bootstrap] Auto-selecting remote workspace "${autoWorkspaceName}"`);
+      await selectRemoteWorkspace(autoWorkspaceName);
       relaunchWithArgs(connectSelectedRemoteRelaunchArgs());
+      return;
+    }
+    if (opts.openChooserOnNoAutoSelect) {
+      performance.mark("startup:window-created");
+      createWindow();
       return;
     }
     log.error(
@@ -1358,6 +1384,10 @@ async function recoverHeadlessPendingWorkspace(): Promise<void> {
         error instanceof Error ? error.message : String(error)
       }`
     );
+    if (opts.openChooserOnNoAutoSelect) {
+      performance.mark("startup:window-created");
+      createWindow();
+    }
   }
 }
 
@@ -1367,7 +1397,7 @@ function installBootstrapConnectionHandlers(): void {
     return getBootstrapConnectionState();
   });
 
-  ipcMain.handle("natstack:bootstrap:launch-local-workspace", (event, workspaceName?: string) => {
+  ipcMain.handle("natstack:bootstrap:launch-local-workspace", (event, workspaceName: string) => {
     requireBootstrapShellSender(event, "natstack:bootstrap:launch-local-workspace");
     const name = normalizeBootstrapWorkspaceName(workspaceName);
     log.info(`[bootstrap] Launching local workspace "${name}" by user request`);
@@ -1806,8 +1836,7 @@ app.on("ready", async () => {
       void recoverHeadlessPendingWorkspace();
       return;
     }
-    performance.mark("startup:window-created");
-    createWindow();
+    void recoverPendingRemoteWorkspace({ openChooserOnNoAutoSelect: true });
     return;
   }
 
@@ -2617,11 +2646,11 @@ app.on("will-quit", (event) => {
   // Cleanup helper for ephemeral dev workspaces (called sync, after servers stop)
   const isEphemeral = startupMode.kind === "local" && startupMode.isEphemeral;
   const cleanupDevWorkspace = () => {
-    if (isEphemeral && workspaceId) {
+    if (isEphemeral && startupMode.kind === "local") {
       try {
-        deleteWorkspaceDir(workspaceId);
-        centralData.removeWorkspace(workspaceId);
-        console.log(`[App] Deleted ephemeral dev workspace "${workspaceId}"`);
+        deleteWorkspaceDir(startupMode.workspaceName);
+        centralData.removeWorkspace(startupMode.workspaceName);
+        console.log(`[App] Deleted ephemeral dev workspace "${startupMode.workspaceName}"`);
       } catch (e) {
         console.error("[App] Failed to delete dev workspace:", e);
       }

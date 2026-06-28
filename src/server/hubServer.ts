@@ -8,6 +8,7 @@ import { randomBytes } from "node:crypto";
 import type { Duplex } from "node:stream";
 import { getCentralConfigPaths } from "@natstack/shared/workspace/loader";
 import { CentralDataManager } from "@natstack/shared/centralData";
+import { getWorkspaceDir } from "@natstack/env-paths";
 import { TokenManager, constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import { resolveHostConfig } from "@natstack/shared/hostConfig";
 import {
@@ -182,6 +183,13 @@ function listHubWorkspaces(state: HubRuntimeState): Array<Record<string, unknown
       lastOpened: entry.lastOpened,
       running: isRuntimeRunning(state, entry.name),
     }));
+  if (!state.args.ephemeral && entries.length === 0) {
+    entries.push({
+      name: "default",
+      lastOpened: 0,
+      running: isRuntimeRunning(state, "default"),
+    });
+  }
   if (state.args.ephemeral && !entries.some((entry) => entry["name"] === "dev")) {
     entries.unshift({
       name: "dev",
@@ -196,6 +204,10 @@ function listHubWorkspaces(state: HubRuntimeState): Array<Record<string, unknown
 function isRuntimeRunning(state: HubRuntimeState, name: string): boolean {
   const runtime = state.runtimes.get(name);
   return !!runtime && "child" in runtime && runtime.child.exitCode === null;
+}
+
+function workspaceConfigExists(name: string): boolean {
+  return fs.existsSync(path.join(getWorkspaceDir(name), "source", "meta/natstack.yml"));
 }
 
 function normalizeWorkspaceName(raw: unknown): string {
@@ -624,6 +636,10 @@ async function startWorkspaceRuntime(
   advertisedName: string
 ): Promise<WorkspaceRuntime> {
   const isEphemeralDevWorkspace = state.args.ephemeral && advertisedName === "dev";
+  const shouldAutoApproveDefaultStartup =
+    advertisedName === "default" &&
+    !state.centralData.hasWorkspace("default") &&
+    !workspaceConfigExists("default");
   const childWorkspaceName = isEphemeralDevWorkspace
     ? `dev-${randomBytes(4).toString("hex")}`
     : advertisedName;
@@ -654,25 +670,36 @@ async function startWorkspaceRuntime(
   if (state.args.requireMobileReady) childArgs.push("--require-mobile-ready");
   if (state.args.requireElectronReady) childArgs.push("--require-electron-ready");
 
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    NATSTACK_APP_ROOT: state.appRoot,
+    NATSTACK_HOST: "127.0.0.1",
+    NATSTACK_BIND_HOST: "127.0.0.1",
+    NATSTACK_PROTOCOL: "http",
+    NATSTACK_NO_VPN_DETECT: "1",
+    NATSTACK_WORKSPACE: childWorkspaceName,
+    NATSTACK_AUTH_STORE_PATH: state.authStorePath,
+    NATSTACK_DISABLE_STARTUP_PAIRING: "1",
+    NATSTACK_FORCE_WORKSPACE_SERVER: "1",
+    NATSTACK_HUB_URL: state.connectUrl,
+  };
+  delete childEnv["NATSTACK_GATEWAY_PORT"];
+  delete childEnv["NATSTACK_WORKSPACE_DIR"];
+  delete childEnv["NATSTACK_REQUIRE_PUBLIC_URL"];
+  if (isEphemeralDevWorkspace) {
+    childEnv["NATSTACK_WORKSPACE_EPHEMERAL"] = "1";
+  } else {
+    delete childEnv["NATSTACK_WORKSPACE_EPHEMERAL"];
+  }
+  if (shouldAutoApproveDefaultStartup) {
+    childEnv["NATSTACK_AUTO_APPROVE_STARTUP_UNITS"] = "1";
+  } else {
+    delete childEnv["NATSTACK_AUTO_APPROVE_STARTUP_UNITS"];
+  }
+
   const child = spawn(process.execPath, [...process.execArgv, ...childArgs], {
     cwd: state.appRoot,
-    env: {
-      ...process.env,
-      NATSTACK_APP_ROOT: state.appRoot,
-      NATSTACK_HOST: "127.0.0.1",
-      NATSTACK_BIND_HOST: "127.0.0.1",
-      NATSTACK_PROTOCOL: "http",
-      NATSTACK_GATEWAY_PORT: undefined,
-      NATSTACK_NO_VPN_DETECT: "1",
-      NATSTACK_REQUIRE_PUBLIC_URL: undefined,
-      NATSTACK_WORKSPACE: childWorkspaceName,
-      NATSTACK_WORKSPACE_DIR: undefined,
-      NATSTACK_AUTH_STORE_PATH: state.authStorePath,
-      NATSTACK_DISABLE_STARTUP_PAIRING: "1",
-      NATSTACK_FORCE_WORKSPACE_SERVER: "1",
-      NATSTACK_HUB_URL: state.connectUrl,
-      ...(isEphemeralDevWorkspace ? { NATSTACK_WORKSPACE_EPHEMERAL: "1" } : {}),
-    },
+    env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
 

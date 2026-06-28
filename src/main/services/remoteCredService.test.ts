@@ -74,9 +74,10 @@ describe("remoteCredService", () => {
       startupMode: {
         kind: "local",
         wsDir: "/tmp/ws",
+        workspaceName: "ws",
         workspaceId: "ws",
         isEphemeral: false,
-        createdFromTemplate: false,
+        autoApproveStartupUnits: false,
       },
     });
 
@@ -272,9 +273,10 @@ describe("remoteCredService", () => {
       startupMode: {
         kind: "local",
         wsDir: "/tmp/ws",
+        workspaceName: "ws",
         workspaceId: "ws",
         isEphemeral: false,
-        createdFromTemplate: false,
+        autoApproveStartupUnits: false,
       },
       getServerClient: () => ({ call }) as never,
     });

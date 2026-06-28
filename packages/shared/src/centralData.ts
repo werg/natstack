@@ -11,6 +11,10 @@ import { getCentralConfigPaths } from "./workspace/loader.js";
 import { getWorkspaceDir } from "@natstack/env-paths";
 import type { CentralData, WorkspaceEntry } from "./workspace/types.js";
 
+export type LastWorkspaceTarget =
+  | { kind: "local"; name: string; lastOpened: number }
+  | { kind: "remote"; url: string; workspaceName?: string; lastOpened: number };
+
 /**
  * Default empty central data structure
  */
@@ -43,11 +47,17 @@ export class CentralDataManager {
       const content = fs.readFileSync(this.dataPath, "utf-8");
       const parsed = JSON.parse(content) as Record<string, unknown>;
 
+      const result = getDefaultData();
       if (Array.isArray(parsed["workspaces"])) {
-        return { workspaces: parsed["workspaces"] as WorkspaceEntry[] };
+        result.workspaces = parsed["workspaces"] as WorkspaceEntry[];
       }
 
-      return getDefaultData();
+      const lastWorkspaceTarget = parseLastWorkspaceTarget(parsed["lastWorkspaceTarget"]);
+      if (lastWorkspaceTarget) {
+        result.lastWorkspaceTarget = lastWorkspaceTarget;
+      }
+
+      return result;
     } catch (error) {
       console.warn("[CentralData] Failed to load:", error);
       return getDefaultData();
@@ -106,12 +116,14 @@ export class CentralDataManager {
   addWorkspace(name: string): void {
     // Remove existing entry if present
     this.data.workspaces = this.data.workspaces.filter((w) => w.name !== name);
+    const now = Date.now();
 
     this.data.workspaces.unshift({
       name,
-      lastOpened: Date.now(),
+      lastOpened: now,
     });
 
+    this.data.lastWorkspaceTarget = { kind: "local", name, lastOpened: now };
     this.save();
   }
 
@@ -128,10 +140,20 @@ export class CentralDataManager {
    */
   touchWorkspace(name: string): void {
     const workspace = this.data.workspaces.find((w) => w.name === name);
+    const now = Date.now();
     if (workspace) {
-      workspace.lastOpened = Date.now();
+      workspace.lastOpened = now;
+      this.data.lastWorkspaceTarget = { kind: "local", name, lastOpened: now };
       this.save();
+      return;
     }
+
+    const configPath = path.join(getWorkspaceDir(name), "source", "meta/natstack.yml");
+    if (!fs.existsSync(configPath)) return;
+
+    this.data.workspaces.unshift({ name, lastOpened: now });
+    this.data.lastWorkspaceTarget = { kind: "local", name, lastOpened: now };
+    this.save();
   }
 
   /**
@@ -159,4 +181,46 @@ export class CentralDataManager {
     if (pruned) this.save();
     return null;
   }
+
+  markRemoteWorkspaceOpened(target: { url: string; workspaceName?: string }): void {
+    this.data.lastWorkspaceTarget = {
+      kind: "remote",
+      url: target.url,
+      ...(target.workspaceName ? { workspaceName: target.workspaceName } : {}),
+      lastOpened: Date.now(),
+    };
+    this.save();
+  }
+
+  getLastWorkspaceTarget(): LastWorkspaceTarget | null {
+    const target = this.data.lastWorkspaceTarget;
+    if (!target) return null;
+    if (target.kind === "remote") return target;
+    if (this.hasWorkspace(target.name)) return target;
+    if (this.data.lastWorkspaceTarget?.kind === "local") {
+      delete this.data.lastWorkspaceTarget;
+      this.save();
+    }
+    return null;
+  }
+}
+
+function parseLastWorkspaceTarget(value: unknown): LastWorkspaceTarget | null {
+  if (!value || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  const lastOpened = typeof record["lastOpened"] === "number" ? record["lastOpened"] : 0;
+  if (record["kind"] === "local" && typeof record["name"] === "string") {
+    return { kind: "local", name: record["name"], lastOpened };
+  }
+  if (record["kind"] === "remote" && typeof record["url"] === "string") {
+    const workspaceName =
+      typeof record["workspaceName"] === "string" ? record["workspaceName"] : undefined;
+    return {
+      kind: "remote",
+      url: record["url"],
+      ...(workspaceName ? { workspaceName } : {}),
+      lastOpened,
+    };
+  }
+  return null;
 }

@@ -34,7 +34,7 @@ type ShellTransportBridge = {
 
 type BootstrapBridge = {
   getState: () => Promise<unknown>;
-  launchLocalWorkspace: (workspaceName?: string) => Promise<unknown>;
+  launchLocalWorkspace: (workspaceName: string) => Promise<unknown>;
   launchEphemeralWorkspace: () => Promise<unknown>;
   connectSelectedRemoteWorkspace: () => Promise<unknown>;
   listRemoteWorkspaces: () => Promise<unknown>;

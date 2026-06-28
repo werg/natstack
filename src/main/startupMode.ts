@@ -19,6 +19,7 @@ import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("StartupMode");
 export const CONNECT_SELECTED_REMOTE_ARG = "--connect-selected-remote";
+export const CHOOSE_CONNECTION_ARG = "--choose-connection";
 export const WORKSPACE_CREATE_IF_MISSING_ARG = "--workspace-create-if-missing";
 /**
  * Marks a local launch as a disposable dev workspace: the workspace dir is deleted on exit
@@ -41,9 +42,10 @@ export type StartupMode =
   | {
       kind: "local";
       wsDir: string;
+      workspaceName: string;
       workspaceId: string;
       isEphemeral: boolean;
-      createdFromTemplate: boolean;
+      autoApproveStartupUnits: boolean;
     }
   | {
       kind: "remote";
@@ -177,21 +179,6 @@ export function resolveRemoteStartup(opts?: {
 }
 
 /**
- * Parse remote startup mode from env vars or the safeStorage-backed store.
- * Returns null when not in (ready) remote mode. Throws on an explicit env misconfiguration.
- */
-export function parseRemoteStartupMode(): RemoteStartupCredentials | null {
-  return parseRemoteStartupModeWithOptions();
-}
-
-export function parseRemoteStartupModeWithOptions(opts?: {
-  includeStoredCredentials?: boolean;
-}): RemoteStartupCredentials | null {
-  const resolution = resolveRemoteStartup(opts);
-  return resolution.status === "ready" ? resolution.credentials : null;
-}
-
-/**
  * Normalize a fingerprint string to uppercase colon-separated hex.
  * Accepts lowercase, spaces, or no separators.
  */
@@ -238,8 +225,26 @@ export function resolveStartupMode(
     return toRemoteStartupMode(explicitRemote.credentials);
   }
 
+  if (hasExplicitWorkspaceSelection()) {
+    return resolveLocalStartupMode(centralData);
+  }
+
+  const connectSelectedRemote = process.argv.includes(CONNECT_SELECTED_REMOTE_ARG);
+  if (process.argv.includes(CHOOSE_CONNECTION_ARG) && opts?.interactiveDesktop === true) {
+    log.info("[Workspace] Waiting for user to choose a server or local workspace");
+    return { kind: "pending" };
+  }
+
+  if (opts?.interactiveDesktop === true && isDev() && !connectSelectedRemote) {
+    return resolveLocalStartupMode(centralData);
+  }
+
+  const lastTarget =
+    typeof centralData.getLastWorkspaceTarget === "function"
+      ? centralData.getLastWorkspaceTarget()
+      : null;
   const shouldUseStoredRemote =
-    process.argv.includes(CONNECT_SELECTED_REMOTE_ARG) || opts?.interactiveDesktop !== true;
+    connectSelectedRemote || opts?.interactiveDesktop !== true || lastTarget?.kind === "remote";
   if (shouldUseStoredRemote) {
     const storedRemote = resolveRemoteStartup();
     if (storedRemote.status === "ready") {
@@ -256,9 +261,8 @@ export function resolveStartupMode(
     }
   }
 
-  if (opts?.interactiveDesktop === true && !hasExplicitWorkspaceSelection()) {
-    log.info("[Workspace] Waiting for user to choose a server or local workspace");
-    return { kind: "pending" };
+  if (lastTarget?.kind === "local") {
+    return resolveLocalStartupMode(centralData, lastTarget.name);
   }
 
   return resolveLocalStartupMode(centralData);
@@ -295,6 +299,7 @@ export function stripStartupSelectionArgs(rawArgs: readonly string[]): string[] 
     }
     if (arg?.startsWith("--workspace=")) continue;
     if (arg === CONNECT_SELECTED_REMOTE_ARG) continue;
+    if (arg === CHOOSE_CONNECTION_ARG) continue;
     if (arg === WORKSPACE_CREATE_IF_MISSING_ARG) continue;
     if (arg === EPHEMERAL_WORKSPACE_ARG) continue;
     if (arg !== undefined) filteredArgs.push(arg);
@@ -315,6 +320,10 @@ export function connectSelectedRemoteRelaunchArgs(rawArgs = process.argv.slice(1
   return [...stripStartupSelectionArgs(rawArgs), CONNECT_SELECTED_REMOTE_ARG];
 }
 
+export function chooseConnectionRelaunchArgs(rawArgs = process.argv.slice(1)): string[] {
+  return [...stripStartupSelectionArgs(rawArgs), CHOOSE_CONNECTION_ARG];
+}
+
 /**
  * Relaunch into a fresh disposable dev workspace. Pins the generated name via `--workspace` so the
  * workspace is stable across relaunches in the session, and tags it ephemeral so it is deleted on
@@ -333,9 +342,12 @@ export function ephemeralWorkspaceRelaunchArgs(
   ];
 }
 
-export function resolveLocalStartupMode(centralData: CentralDataManager): LocalStartupMode {
+export function resolveLocalStartupMode(
+  centralData: CentralDataManager,
+  preferredName?: string
+): LocalStartupMode {
   // Local mode: resolve workspace from disk
-  const wsName = resolveWorkspaceName();
+  const wsName = resolveWorkspaceName() ?? preferredName;
   const appRoot = getAppRoot();
   const startup = resolveLocalWorkspaceStartup({
     appRoot,
@@ -347,13 +359,16 @@ export function resolveLocalStartupMode(centralData: CentralDataManager): LocalS
   log.info(
     `[Workspace] Loaded: ${startup.resolved.wsDir} (id: ${startup.resolved.workspace.config.id})`
   );
+  const isEphemeral = startup.isEphemeral || process.argv.includes(EPHEMERAL_WORKSPACE_ARG);
   return {
     kind: "local",
     wsDir: startup.resolved.wsDir,
+    workspaceName: startup.resolved.name,
     workspaceId: startup.resolved.workspace.config.id,
     // A named launch tagged --ephemeral-workspace (the dev "new ephemeral workspace" button) is
     // disposable even though it was resolved by name; mark it so will-quit deletes it.
-    isEphemeral: startup.isEphemeral || process.argv.includes(EPHEMERAL_WORKSPACE_ARG),
-    createdFromTemplate: startup.resolved.created,
+    isEphemeral,
+    autoApproveStartupUnits:
+      startup.resolved.name === "default" && startup.resolved.created && !isEphemeral,
   };
 }
