@@ -750,7 +750,66 @@ function streamAdb(
   streamArgs: string[]
 ): Response {
   if (!pidProbeArgs) return streamProcess("adb", adbArgs(device, streamArgs));
-  return streamProcess("adb", adbArgs(device, streamArgs));
+  return streamAdbAfterPidProbe(device, pidProbeArgs, streamArgs);
+}
+
+function streamAdbAfterPidProbe(
+  device: string | undefined,
+  pidProbeArgs: string[],
+  streamArgs: string[]
+): Response {
+  const encoder = new TextEncoder();
+  let child: ReturnType<typeof spawn> | null = null;
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      const probe = spawn("adb", adbArgs(device, pidProbeArgs), {
+        env: process.env,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child = probe;
+      const stdout: Buffer[] = [];
+      const stderr: Buffer[] = [];
+      probe.stdout?.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
+      probe.stderr?.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
+      probe.on("error", (err) => controller.error(err));
+      probe.on("exit", (code) => {
+        if (cancelled) return;
+        const pid = firstPid(Buffer.concat(stdout).toString("utf8"));
+        if (code !== 0 || !pid) {
+          const message =
+            Buffer.concat(stderr).toString("utf8").trim() || "package process is not running";
+          controller.enqueue(encoder.encode(`${message}\n`));
+          controller.close();
+          return;
+        }
+        const scopedArgs = pidScopedLogcatArgs(streamArgs, pid);
+        const streamChild = spawn("adb", adbArgs(device, scopedArgs), {
+          env: process.env,
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        child = streamChild;
+        streamChild.stdout?.on("data", (chunk) => controller.enqueue(Buffer.from(chunk)));
+        streamChild.stderr?.on("data", (chunk) => controller.enqueue(encoder.encode(String(chunk))));
+        streamChild.on("error", (err) => controller.error(err));
+        streamChild.on("exit", () => controller.close());
+      });
+    },
+    cancel() {
+      cancelled = true;
+      child?.kill("SIGTERM");
+    },
+  });
+  return new Response(stream, { headers: { "content-type": "application/octet-stream" } });
+}
+
+export function pidScopedLogcatArgs(streamArgs: string[], pid: string): string[] {
+  if (streamArgs[0] !== "logcat") return streamArgs;
+  return ["logcat", `--pid=${pid}`, ...streamArgs.slice(1)];
+}
+
+function firstPid(raw: string): string | null {
+  return raw.split(/\s+/).find((part) => /^\d+$/.test(part)) ?? null;
 }
 
 function streamProcess(command: string, args: string[]): Response {

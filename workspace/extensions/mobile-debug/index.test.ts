@@ -3,9 +3,25 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import type { ExtensionContext } from "@natstack/extension";
-import { activate } from "./index.js";
+import { activate, pidScopedLogcatArgs } from "./index.js";
 
 describe("@workspace-extensions/mobile-debug", () => {
+  it("adds an adb logcat pid filter after resolving a package pid", () => {
+    expect(pidScopedLogcatArgs(["logcat", "-v", "time"], "1234")).toEqual([
+      "logcat",
+      "--pid=1234",
+      "-v",
+      "time",
+    ]);
+    expect(pidScopedLogcatArgs(["logcat", "-v", "time", "NatStack:D"], "1234")).toEqual([
+      "logcat",
+      "--pid=1234",
+      "-v",
+      "time",
+      "NatStack:D",
+    ]);
+  });
+
   it("activates without a repo root and reports missing repo-dependent capabilities", async () => {
     const root = await mkdtemp(join(tmpdir(), "natstack-mobile-debug-test-"));
     const previousRepoRoot = process.env["NATSTACK_REPO_ROOT"];
