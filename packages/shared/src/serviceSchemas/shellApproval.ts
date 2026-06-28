@@ -73,8 +73,12 @@ export const shellApprovalMethods = defineServiceMethods({
     examples: [{ args: ["approval-123", { token: "secret-value" }] }],
   },
   submitSecretInput: {
+    description:
+      "Submit the user-entered secret field values for a pending secret-input approval, fulfilling its feedback-form request.",
     args: z.tuple([z.string(), shellApprovalValuesSchema]),
     returns: z.void(),
+    access: RESOLVE_ACCESS,
+    examples: [{ args: ["approval-123", { value: "secret-value" }] }],
   },
   listPending: {
     description:

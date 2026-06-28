@@ -254,7 +254,8 @@
       "resolveBootstrap": null,
       "resolveUserland": null,
       "submitClientConfig": null,
-      "submitCredentialInput": null
+      "submitCredentialInput": null,
+      "submitSecretInput": null
     }
   },
   "shellPresence": {
@@ -278,6 +279,9 @@
     "methods": {
       "list": null,
       "request": null,
+      "requestAs": ["extension"],
+      "requestSecretInput": null,
+      "requestSecretInputAs": ["extension"],
       "revoke": null
     }
   },
