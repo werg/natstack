@@ -324,6 +324,7 @@ extensions:
   - source: extensions/test-runner
   - source: extensions/browser-data
   - source: extensions/shell
+  - source: extensions/mobile-debug
   - source: extensions/react-native
 apps:
   - source: apps/shell

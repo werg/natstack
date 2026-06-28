@@ -20,6 +20,7 @@ import {
 import { createServerClient, type ServerClient, type TlsPinningOptions } from "../serverClient.js";
 import { createPinnedHttpsAgent } from "../tlsPinning.js";
 import { discoverNatstackServers } from "@natstack/shared/tailscaleDiscovery";
+import { type Remote, reachKindForHost, normalizeRemoteId } from "@natstack/shared/remotes";
 import {
   isTrustedCleartextHost,
   PAIRING_CODE_PATTERN,
@@ -499,6 +500,41 @@ export async function exchangePairingCodeForDeviceCredential(
   return { ok: true };
 }
 
+// Single-remote → roster adapter for userland (the mobile-debug extension).
+// The host tracks one remote credential; present it as a one-element Remote
+// roster so roster-shaped pairing (remotes.list / *ForRemote) works unchanged.
+function currentRemoteAsRoster(): Remote[] {
+  const creds = loadRemoteCredentials();
+  if (!creds?.url) return [];
+  let host: string;
+  let gatewayPort: number | undefined;
+  try {
+    const parsed = new URL(creds.url);
+    host = parsed.hostname;
+    const port = parseInt(parsed.port, 10);
+    if (port) gatewayPort = port;
+  } catch {
+    return [];
+  }
+  return [
+    {
+      id: normalizeRemoteId(creds.workspaceName || host || "current"),
+      ...(creds.workspaceName ? { label: creds.workspaceName } : {}),
+      reach: [{ kind: reachKindForHost(host), value: host }],
+      trust: creds.fingerprint ? { tlsFingerprint: creds.fingerprint } : {},
+      source: "paired",
+      createdAt: Date.now(),
+      server: {
+        url: creds.url,
+        ...(creds.hubUrl ? { hubUrl: creds.hubUrl } : {}),
+        publicUrl: creds.url,
+        ...(gatewayPort ? { gatewayPort } : {}),
+        ...(creds.workspaceName ? { unitName: creds.workspaceName } : {}),
+      },
+    },
+  ];
+}
+
 export function createRemoteCredService(deps: {
   startupMode: StartupMode;
   getServerClient?: () => ServerClient | null;
@@ -634,6 +670,25 @@ export function createRemoteCredService(deps: {
           );
         }
         case "listDevices": {
+          if (deps.startupMode.kind !== "remote") return [];
+          const client = deps.getServerClient?.();
+          if (!client) return [];
+          const response = await authClientFor(client).listDevices();
+          return response.devices;
+        }
+        case "remotes.list":
+          return currentRemoteAsRoster();
+        case "createPairingInviteForRemote": {
+          if (deps.startupMode.kind !== "remote")
+            throw new Error(
+              "Pairing invites are only available while connected to a remote server"
+            );
+          const client = deps.getServerClient?.();
+          if (!client) throw new Error("Not connected to a server");
+          const payload = (args[0] ?? {}) as { remoteId?: string; ttlMs?: number };
+          return await authClientFor(client).createPairingInvite({ ttlMs: payload.ttlMs });
+        }
+        case "listDevicesForRemote": {
           if (deps.startupMode.kind !== "remote") return [];
           const client = deps.getServerClient?.();
           if (!client) return [];

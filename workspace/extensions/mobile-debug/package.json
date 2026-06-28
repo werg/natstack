@@ -1,0 +1,16 @@
+{
+  "name": "@workspace-extensions/mobile-debug",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "natstack": {
+    "displayName": "Mobile Debug",
+    "entry": "index.ts",
+    "sourcemap": true,
+    "extension": {
+      "activationEvents": ["*"],
+      "streamingMethods": ["logcat", "shell"]
+    }
+  },
+  "dependencies": {}
+}

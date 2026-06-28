@@ -7,6 +7,7 @@ import { CreatePairingInviteArgsSchema } from "./auth.js";
 import type { MethodAccessDescriptor } from "../servicePolicy.js";
 import { defineServiceMethods } from "../typedServiceClient.js";
 import type { DiscoveredServer } from "../tailscaleDiscovery.js";
+import { RemoteSchema } from "../remotes.js";
 
 // Access descriptors shared across the remoteCred method groups. These manage
 // the Electron-side remote-server credential store, so reads are 'read' and the
@@ -164,6 +165,39 @@ export const remoteCredMethods = defineServiceMethods({
     args: z.tuple([]),
     returns: z.array(RemoteCredDeviceRecordSchema),
     access: REMOTE_CRED_READ_ACCESS,
+  },
+  // Roster-shaped pairing surface for userland (e.g. the mobile-debug
+  // extension). The host currently tracks a single remote, so these present
+  // the connected remote as a one-element roster and ignore the informational
+  // remoteId. Exposed to `extension` callers (the base service stays chrome-only).
+  "remotes.list": {
+    description:
+      "List the remote-server roster. In the single-remote host model this returns the connected remote as a one-element roster (empty when none is configured).",
+    args: z.tuple([]),
+    returns: z.array(RemoteSchema),
+    access: REMOTE_CRED_READ_ACCESS,
+    policy: { allowed: ["shell", "app", "extension"] },
+  },
+  createPairingInviteForRemote: {
+    description:
+      "Create a device-pairing invite for the given remote (remoteId is informational in the single-remote model; the invite is created on the connected remote server).",
+    args: z.tuple([
+      z.object({
+        remoteId: z.string(),
+        ttlMs: z.number().int().positive().optional(),
+      }),
+    ]),
+    returns: RemoteCredPairingInviteSchema,
+    access: REMOTE_CRED_INVITE_ACCESS,
+    policy: { allowed: ["shell", "app", "extension"] },
+  },
+  listDevicesForRemote: {
+    description:
+      "List devices paired with the given remote (remoteId is informational in the single-remote model; devices come from the connected remote server).",
+    args: z.tuple([z.object({ remoteId: z.string() })]),
+    returns: z.array(RemoteCredDeviceRecordSchema),
+    access: REMOTE_CRED_READ_ACCESS,
+    policy: { allowed: ["shell", "app", "extension"] },
   },
   revokeDevice: {
     description:

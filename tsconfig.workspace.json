@@ -139,6 +139,9 @@
       "@workspace-extensions/browser-data": [
         "workspace/extensions/browser-data/index.ts"
       ],
+      "@workspace-extensions/mobile-debug": [
+        "workspace/extensions/mobile-debug/index.ts"
+      ],
       "@workspace-extensions/typecheck-service": [
         "workspace/extensions/typecheck-service/index.ts"
       ],
