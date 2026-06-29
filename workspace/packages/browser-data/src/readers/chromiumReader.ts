@@ -8,6 +8,7 @@ import type {
   CryptoProvider,
   ImportedBookmark,
   ImportedHistoryEntry,
+  ImportedHistoryVisit,
   ImportedCookie,
   ImportedPassword,
   ImportedAutofillEntry,
@@ -53,6 +54,14 @@ function readJsonFile(filePath: string): unknown {
   if (!fs.existsSync(filePath)) return null;
   const content = fs.readFileSync(filePath, "utf-8");
   return JSON.parse(content);
+}
+
+function firstExistingProfileFile(profilePath: string, relativePaths: string[]): string | null {
+  for (const relativePath of relativePaths) {
+    const filePath = path.join(profilePath, relativePath);
+    if (fs.existsSync(filePath)) return filePath;
+  }
+  return null;
 }
 
 function tableExists(db: Database, tableName: string): boolean {
@@ -137,6 +146,7 @@ export class ChromiumReader implements BrowserDataReader {
 
       const dateAdded = node["date_added"] as string | undefined;
       const dateModified = node["date_modified"] as string | undefined;
+      const sourceId = node["id"] as string | undefined;
 
       results.push({
         title: name,
@@ -144,6 +154,7 @@ export class ChromiumReader implements BrowserDataReader {
         dateAdded: dateAdded ? chromeTimestampToMs(BigInt(dateAdded)) : 0,
         dateModified: dateModified ? chromeTimestampToMs(BigInt(dateModified)) : undefined,
         folder: folderPath,
+        sourceId,
       });
     } else if (type === "folder") {
       const children = node["children"] as Record<string, unknown>[] | undefined;
@@ -181,12 +192,13 @@ export class ChromiumReader implements BrowserDataReader {
         transition: number | null;
       }>;
 
-      // Group by URL, keeping earliest and latest visit times
+      // Group by URL while preserving individual visit events for unified history storage.
       const byUrl = new Map<string, ImportedHistoryEntry>();
       for (const row of rows) {
         const existing = byUrl.get(row.url);
         const visitTime = row.visit_time ? chromeTimestampToMs(row.visit_time) : 0;
         const lastVisit = chromeTimestampToMs(row.last_visit_time);
+        const transition = row.transition != null ? chromeTransitionType(row.transition) : undefined;
 
         if (!existing) {
           byUrl.set(row.url, {
@@ -196,13 +208,38 @@ export class ChromiumReader implements BrowserDataReader {
             lastVisitTime: lastVisit,
             firstVisitTime: visitTime || undefined,
             typedCount: row.typed_count || undefined,
-            transition: row.transition != null ? chromeTransitionType(row.transition) : undefined,
+            transition,
+            visits: visitTime
+              ? [{
+                visitTime,
+                transition,
+                typed: transition === "typed",
+              } satisfies ImportedHistoryVisit]
+              : [],
           });
         } else {
-          // Track earliest visit time
           if (visitTime && (!existing.firstVisitTime || visitTime < existing.firstVisitTime)) {
             existing.firstVisitTime = visitTime;
           }
+          if (visitTime) {
+            existing.visits ??= [];
+            existing.visits.push({
+              visitTime,
+              transition,
+              typed: transition === "typed",
+            });
+          }
+        }
+      }
+
+      for (const entry of byUrl.values()) {
+        if (!entry.firstVisitTime) entry.firstVisitTime = entry.lastVisitTime;
+        if (!entry.visits?.length && entry.lastVisitTime) {
+          entry.visits = [{
+            visitTime: entry.lastVisitTime,
+            transition: entry.transition,
+            typed: entry.transition === "typed",
+          }];
         }
       }
 
@@ -211,8 +248,11 @@ export class ChromiumReader implements BrowserDataReader {
   }
 
   async readCookies(profilePath: string): Promise<ImportedCookie[]> {
-    const dbPath = path.join(profilePath, "Cookies");
-    if (!fs.existsSync(dbPath)) return [];
+    const dbPath = firstExistingProfileFile(profilePath, [
+      path.join("Network", "Cookies"),
+      "Cookies",
+    ]);
+    if (!dbPath) return [];
 
     // Collect rows synchronously from the database
     const rawRows = await withDatabase(dbPath, (db) => {
@@ -384,10 +424,11 @@ export class ChromiumReader implements BrowserDataReader {
 
       const rows = db
         .prepare(
-          `SELECT short_name, keyword, url, suggestions_url, favicon_url, is_active
+          `SELECT id, short_name, keyword, url, suggestions_url, favicon_url, is_active
            FROM keywords`,
         )
         .all() as Array<{
+        id: number;
         short_name: string;
         keyword: string;
         url: string;
@@ -403,6 +444,7 @@ export class ChromiumReader implements BrowserDataReader {
         suggestUrl: row.suggestions_url ? normalizeSearchUrl(row.suggestions_url) : undefined,
         faviconUrl: row.favicon_url || undefined,
         isDefault: row.is_active === 1,
+        sourceId: String(row.id),
       }));
     });
   }

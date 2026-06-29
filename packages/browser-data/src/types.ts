@@ -64,6 +64,9 @@ export const HISTORY_TRANSITIONS = [
 
 export type HistoryTransition = (typeof HISTORY_TRANSITIONS)[number];
 
+export const HISTORY_VISIT_SOURCES = ["natstack", "import"] as const;
+export type HistoryVisitSource = (typeof HISTORY_VISIT_SOURCES)[number];
+
 // ---- Normalized Data Types ----
 
 export interface ImportedBookmark {
@@ -75,6 +78,7 @@ export interface ImportedBookmark {
   favicon?: Buffer;
   tags?: string[];
   keyword?: string;
+  sourceId?: string;
 }
 
 export interface ImportedHistoryEntry {
@@ -85,7 +89,21 @@ export interface ImportedHistoryEntry {
   firstVisitTime?: number;
   typedCount?: number;
   transition?: HistoryTransition;
+  visits?: ImportedHistoryVisit[];
 }
+
+export interface ImportedHistoryVisit {
+  visitTime: number;
+  transition?: HistoryTransition;
+  typed?: boolean;
+}
+
+export interface ImportHistoryBatchMeta {
+  browser?: BrowserName;
+  profilePath?: string;
+}
+
+export type ImportBatchMeta = ImportHistoryBatchMeta;
 
 export interface RecordHistoryVisitRequest {
   url: string;
@@ -93,6 +111,8 @@ export interface RecordHistoryVisitRequest {
   transition?: HistoryTransition;
   visitTime?: number;
   typed?: boolean;
+  source?: HistoryVisitSource;
+  panelId?: string;
 }
 
 export interface UpdateHistoryTitleRequest {
@@ -153,6 +173,7 @@ export interface ImportedSearchEngine {
   suggestUrl?: string;
   faviconUrl?: string;
   isDefault: boolean;
+  sourceId?: string;
 }
 
 export interface ImportedExtension {
@@ -181,6 +202,55 @@ export interface ImportedFavicon {
   url: string;
   data: Buffer;
   mimeType: string;
+}
+
+export interface ImportedOpenTab {
+  url: string;
+  title?: string;
+  browser: BrowserName;
+  profilePath: string;
+  windowIndex: number;
+  tabIndex: number;
+  active: boolean;
+  pinned?: boolean;
+  lastAccessed?: number;
+}
+
+export interface BrowserOpenTabsRequest {
+  browser: BrowserName;
+  /** Pass a DetectedProfile object or a profile path string. */
+  profile?: DetectedProfile | string;
+  /**
+   * Optional subset of tabs to open (used by `openTabsAsPanels`). Each entry
+   * identifies a tab by its window/tab index from `getOpenTabs`. When omitted,
+   * every http(s) tab is opened.
+   */
+  selection?: Array<{ windowIndex: number; tabIndex: number }>;
+}
+
+export const BrowserOpenTabsRequestSchema = z.object({
+  browser: BrowserNameSchema,
+  profile: z.union([DetectedProfileSchema, z.string()]).optional(),
+  selection: z
+    .array(z.object({ windowIndex: z.number(), tabIndex: z.number() }))
+    .optional(),
+}).refine(
+  (r) => r.profile != null,
+  { message: "'profile' (DetectedProfile or path string) is required" },
+);
+
+export interface OpenTabsAsPanelsResult {
+  tabsFound: number;
+  panelsOpened: number;
+  panels: Array<{
+    id: string;
+    title: string;
+    url: string;
+  }>;
+  skipped: Array<{
+    url: string;
+    reason: string;
+  }>;
 }
 
 // ---- Import Pipeline ----
@@ -307,6 +377,8 @@ export const RecordHistoryVisitSchema = z.object({
   transition: z.enum(HISTORY_TRANSITIONS).optional(),
   visitTime: z.number().optional(),
   typed: z.boolean().optional(),
+  source: z.enum(HISTORY_VISIT_SOURCES).optional(),
+  panelId: z.string().optional(),
 });
 
 export const UpdateHistoryTitleSchema = z.object({

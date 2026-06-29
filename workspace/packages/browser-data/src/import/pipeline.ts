@@ -6,6 +6,8 @@ import type {
   BrowserName,
   BrowserFamily,
   CryptoProvider,
+  ImportBatchMeta,
+  ImportHistoryBatchMeta,
 } from "../types.js";
 import { resolveProfilePath } from "../types.js";
 import { BrowserDataError } from "../errors.js";
@@ -15,12 +17,12 @@ import { createCryptoProvider } from "../crypto/index.js";
 import { ProgressEmitter, type ProgressCallback } from "./progressEmitter.js";
 
 interface BrowserDataStore {
-  bookmarks: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readBookmarks"]>>): number | Promise<number> };
-  history: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readHistory"]>>): number | Promise<number> };
+  bookmarks: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readBookmarks"]>>, meta?: ImportBatchMeta): number | Promise<number> };
+  history: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readHistory"]>>, meta?: ImportHistoryBatchMeta): number | Promise<number> };
   cookies: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readCookies"]>>): number | Promise<number> };
   passwords: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readPasswords"]>>): number | Promise<number> };
-  autofill: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readAutofill"]>>): number | Promise<number> };
-  searchEngines: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readSearchEngines"]>>): number | Promise<number> };
+  autofill: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readAutofill"]>>, meta?: ImportBatchMeta): number | Promise<number> };
+  searchEngines: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readSearchEngines"]>>, meta?: ImportBatchMeta): number | Promise<number> };
   permissions: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readPermissions"]>>): number | Promise<number> };
   favicons: { addBatch(items: Awaited<ReturnType<Awaited<ReturnType<typeof getReader>>["readFavicons"]>>): number | Promise<number> };
 }
@@ -45,6 +47,10 @@ export async function runImportPipeline(
   // Resolve profile to a concrete path, then normalize request for readers.
   const profilePath = resolveProfilePath(request);
   const resolved = { ...request, profilePath };
+  const importMeta: ImportBatchMeta = {
+    browser: resolved.browser,
+    profilePath,
+  };
 
   const requestId = crypto.randomUUID();
   const progress = new ProgressEmitter(requestId, onProgress || (() => {}));
@@ -76,6 +82,7 @@ export async function runImportPipeline(
         store,
         progress,
         cryptoProvider,
+        importMeta,
       );
       results.push(result);
     } catch (err) {
@@ -103,6 +110,7 @@ async function importDataType(
   store: BrowserDataStore,
   progress: ProgressEmitter,
   cryptoProvider?: CryptoProvider,
+  importMeta?: ImportBatchMeta,
 ): Promise<ImportResult> {
   const warnings: string[] = [];
 
@@ -114,7 +122,7 @@ async function importDataType(
       const bookmarks = await reader.readBookmarks(request.profilePath);
       progress.reading(dataType, bookmarks.length, bookmarks.length);
       progress.storing(dataType, 0, bookmarks.length);
-      await store.bookmarks.addBatch(bookmarks);
+      await store.bookmarks.addBatch(bookmarks, importMeta);
       progress.done(dataType, bookmarks.length);
       return {
         dataType,
@@ -130,7 +138,10 @@ async function importDataType(
       const history = await reader.readHistory(request.profilePath);
       progress.reading(dataType, history.length, history.length);
       progress.storing(dataType, 0, history.length);
-      await store.history.addBatch(history);
+      await store.history.addBatch(history, {
+        browser: request.browser,
+        profilePath: request.profilePath,
+      });
       progress.done(dataType, history.length);
       return {
         dataType,
@@ -247,7 +258,7 @@ async function importDataType(
       const entries = await reader.readAutofill(request.profilePath);
       progress.reading(dataType, entries.length, entries.length);
       progress.storing(dataType, 0, entries.length);
-      await store.autofill.addBatch(entries);
+      await store.autofill.addBatch(entries, importMeta);
       progress.done(dataType, entries.length);
       return {
         dataType,
@@ -263,7 +274,7 @@ async function importDataType(
       const engines = await reader.readSearchEngines(request.profilePath);
       progress.reading(dataType, engines.length, engines.length);
       progress.storing(dataType, 0, engines.length);
-      await store.searchEngines.addBatch(engines);
+      await store.searchEngines.addBatch(engines, importMeta);
       progress.done(dataType, engines.length);
       return {
         dataType,
@@ -347,5 +358,145 @@ async function importDataType(
         "BROWSER_NOT_FOUND",
         `Unknown data type: ${dataType}`,
       );
+  }
+}
+
+export interface PreviewTypeCounts {
+  scanned: number;
+  added: number;
+  changed: number;
+  unchanged: number;
+  skipped: number;
+  samples: Array<{ status: string; label: string; detail?: string }>;
+}
+
+export interface PreviewResult extends PreviewTypeCounts {
+  dataType: ImportDataType;
+  warnings: string[];
+  error?: string;
+}
+
+/** Classifier callback: compares the candidate items against the store, read-only. */
+export type PreviewClassifier = (
+  dataType: ImportDataType,
+  items: unknown[],
+  meta: ImportBatchMeta,
+) => Promise<PreviewTypeCounts>;
+
+/**
+ * Dry-run counterpart to {@link runImportPipeline}: reads (and decrypts) each
+ * requested data type exactly as an import would, but instead of storing the
+ * items it hands them to `classify` to be diffed against the store. No writes.
+ */
+export async function previewImportPipeline(
+  request: ImportRequest,
+  classify: PreviewClassifier,
+): Promise<PreviewResult[]> {
+  const profilePath = resolveProfilePath(request);
+  const resolved = { ...request, profilePath };
+  const meta: ImportBatchMeta = { browser: resolved.browser, profilePath };
+  const family = getBrowserFamily(resolved.browser);
+
+  let cryptoProvider: CryptoProvider | undefined;
+  try {
+    cryptoProvider = await createCryptoProvider();
+  } catch {
+    // Crypto unavailable — encrypted values surface as undecryptable/skipped.
+  }
+  const reader = await getReader(family, { cryptoProvider, browser: resolved.browser });
+
+  const results: PreviewResult[] = [];
+  for (const dataType of resolved.dataTypes) {
+    try {
+      const { items, warnings } = await readItemsForPreview(
+        dataType,
+        resolved,
+        reader,
+        family,
+        cryptoProvider,
+      );
+      const counts = await classify(dataType, items, meta);
+      results.push({ dataType, ...counts, warnings });
+    } catch (err) {
+      results.push({
+        dataType,
+        scanned: 0,
+        added: 0,
+        changed: 0,
+        unchanged: 0,
+        skipped: 0,
+        samples: [],
+        warnings: [],
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return results;
+}
+
+async function readItemsForPreview(
+  dataType: ImportDataType,
+  request: ImportRequest & { profilePath: string },
+  reader: Awaited<ReturnType<typeof getReader>>,
+  family: BrowserFamily,
+  cryptoProvider?: CryptoProvider,
+): Promise<{ items: unknown[]; warnings: string[] }> {
+  const warnings: string[] = [];
+  switch (dataType) {
+    case "bookmarks":
+      return { items: await reader.readBookmarks(request.profilePath), warnings };
+    case "history":
+      return { items: await reader.readHistory(request.profilePath), warnings };
+    case "cookies":
+      return { items: await reader.readCookies(request.profilePath), warnings };
+    case "autofill":
+      return { items: await reader.readAutofill(request.profilePath), warnings };
+    case "searchEngines":
+      return { items: await reader.readSearchEngines(request.profilePath), warnings };
+    case "permissions":
+      return { items: await reader.readPermissions(request.profilePath), warnings };
+    case "favicons":
+      return { items: await reader.readFavicons(request.profilePath), warnings };
+    case "extensions":
+      return { items: await reader.readExtensions(request.profilePath), warnings };
+    case "settings":
+      return { items: [], warnings };
+    case "passwords": {
+      let passwords = await reader.readPasswords(request.profilePath);
+      if (family === "safari" && request.csvPasswordFile) {
+        const { SafariReader } = await import("../readers/safariReader.js");
+        const safariReader = new SafariReader();
+        passwords = [
+          ...passwords,
+          ...(await safariReader.readPasswordsFromCsv(request.csvPasswordFile)),
+        ];
+      }
+      if (family === "firefox" && cryptoProvider) {
+        const decrypted = [];
+        for (const pw of passwords) {
+          try {
+            const username = await cryptoProvider.decryptFirefoxLogin(
+              pw.username,
+              request.profilePath + "/key4.db",
+              request.masterPassword,
+            );
+            const password = await cryptoProvider.decryptFirefoxLogin(
+              pw.password,
+              request.profilePath + "/key4.db",
+              request.masterPassword,
+            );
+            decrypted.push({ ...pw, username, password });
+          } catch (err) {
+            if (err instanceof BrowserDataError && err.code === "WRONG_MASTER_PASSWORD") throw err;
+            // Leave the password value empty so the classifier counts it skipped.
+            decrypted.push({ ...pw, password: "" });
+          }
+        }
+        passwords = decrypted;
+      }
+      return { items: passwords, warnings };
+    }
+    default:
+      return { items: [], warnings };
   }
 }

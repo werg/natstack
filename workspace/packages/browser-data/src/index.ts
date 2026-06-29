@@ -5,6 +5,9 @@ export type {
   DetectedProfile,
   ImportedBookmark,
   ImportedHistoryEntry,
+  ImportedHistoryVisit,
+  ImportHistoryBatchMeta,
+  ImportBatchMeta,
   ImportedCookie,
   ImportedPassword,
   ImportedAutofillEntry,
@@ -13,6 +16,9 @@ export type {
   ImportedPermission,
   ImportedSettings,
   ImportedFavicon,
+  ImportedOpenTab,
+  BrowserOpenTabsRequest,
+  OpenTabsAsPanelsResult,
   ImportDataType,
   ImportRequest,
   ImportProgress,
@@ -22,6 +28,7 @@ export type {
   BookmarkExportFormat,
   PasswordExportFormat,
   CookieExportFormat,
+  HistoryVisitSource,
   ImportPhase,
 } from "@natstack/browser-data";
 
@@ -33,12 +40,14 @@ export type { BrowserDataErrorCode } from "@natstack/browser-data";
 
 export { detectBrowsers } from "./detection/index.js";
 export { getReader } from "./readers/index.js";
+export { readOpenTabs } from "./readers/openTabs.js";
 export { createCryptoProvider } from "./crypto/index.js";
 
 export { copyDatabaseToTemp, copyFileToTemp, cleanupTempCopy } from "./import/fileCopier.js";
 export { ProgressEmitter } from "./import/progressEmitter.js";
 export type { ProgressCallback } from "./import/progressEmitter.js";
-export { runImportPipeline } from "./import/pipeline.js";
+export { runImportPipeline, previewImportPipeline } from "./import/pipeline.js";
+export type { PreviewResult, PreviewTypeCounts, PreviewClassifier } from "./import/pipeline.js";
 
 export {
   exportNetscapeBookmarks,
