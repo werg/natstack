@@ -3,5 +3,5 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Browser data import workflows — cookies, passwords, bookmarks, history"
+  "description": "Incremental browser data import workflows — cookies, passwords, bookmarks, unified history, and open tabs"
 }

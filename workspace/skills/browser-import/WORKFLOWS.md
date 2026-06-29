@@ -79,6 +79,105 @@ inline_ui({
 })
 ```
 
+## Workflow: Migrate Browser Life
+
+Use this when the user wants NatStack to become their primary browser surface.
+This pulls persistent browser data first, then recreates the source browser's
+current open HTTP(S) tabs as NatStack child panels.
+
+### Step 1: Discover and choose profile
+
+Use `detectBrowsers()` or the discovery UI from [DISCOVERY.md](DISCOVERY.md).
+Prefer passing the full `DetectedProfile` object returned by detection.
+
+### Step 2: Import persistent data
+
+```typescript
+eval({ code: `
+  import { browserData } from "@workspace/panel-browser";
+
+  const results = await browserData.startImport({
+    browser: "${selection.browser}",
+    profile: ${JSON.stringify(selection.profile)},
+    dataTypes: [
+      "cookies",
+      "passwords",
+      "bookmarks",
+      "history",
+      "autofill",
+      "searchEngines",
+      "permissions",
+      "favicons",
+    ],
+  });
+
+  return results;
+` })
+```
+
+`startImport` is incremental for the same browser/profile. It is safe to run
+again later; changed source rows update in place and new browser data is added.
+
+### Step 3: Open current tabs as panels
+
+```typescript
+eval({ code: `
+  import { browserData } from "@workspace/panel-browser";
+
+  const result = await browserData.openTabsAsPanels({
+    browser: "${selection.browser}",
+    profile: ${JSON.stringify(selection.profile)},
+  });
+
+  console.log("Opened " + result.panelsOpened + " of " + result.tabsFound + " tabs");
+  if (result.skipped.length) {
+    console.log("Skipped:\\n" + result.skipped.map(s => s.url + " - " + s.reason).join("\\n"));
+  }
+  return result;
+` })
+```
+
+`openTabsAsPanels()` is an action, not a data import. Running it again opens
+another set of panels.
+
+### Step 4: Use unified address suggestions
+
+No extra wiring is required. The address bar suggests from:
+
+- currently open browser panels
+- imported browser history
+- NatStack-local browser-panel history
+- bookmarks
+- search engines
+
+Imported history and NatStack-local panel visits share the same `BrowserDataDO`
+history system.
+
+## Workflow: Repeat Import Later
+
+Use this when the user says "sync again", "pull in new data", or "rerun import".
+
+```typescript
+eval({ code: `
+  import { browserData } from "@workspace/panel-browser";
+
+  const results = await browserData.startImport({
+    browser: "${selection.browser}",
+    profile: ${JSON.stringify(selection.profile)},
+    dataTypes: ${JSON.stringify(selection.dataTypes)},
+  });
+
+  const summary = results.map(r =>
+    r.dataType + ": " + r.itemCount + " scanned, " + r.skippedCount + " skipped"
+  ).join("\\n");
+  console.log(summary);
+  return results;
+` })
+```
+
+Do not clear stored browser data before a repeat import unless the user
+explicitly asks. Repeat import is source-keyed and updates in place.
+
 ## Workflow: Import for a Specific Site
 
 User asks "import my GitHub cookies" — targeted flow.
@@ -204,9 +303,10 @@ export default function ComparisonTable({ props }) {
 
 Dump all imported data for backup or migration.
 
-`browserData` is shell-only (it goes through the browser-data extension), so this
-runs from panel code or a component, not server-side eval. `fs` there is the
-injected eval/runtime filesystem — do not import it.
+`exportAll()` reveals plaintext credentials, so it is **approval-gated**: the
+first call from a panel/worker/eval prompts the user (and is remembered per the
+scope they pick). It is no longer shell-only — any userland caller may invoke it
+once approved. `fs` here is the injected eval/runtime filesystem — do not import it.
 
 ```
 eval({ code: `
@@ -231,6 +331,8 @@ The agent should compose these building blocks based on what the user actually a
 - **"What browsers do I have?"** → discovery only, show rich browser cards
 - **"Show me my saved passwords"** → import passwords if not already imported → show password vault
 - **"Import everything from Firefox"** → detect Firefox → import all types → show summary → leave managers for each type
+- **"Move my browser life to NatStack"** → full persistent import → open current tabs as panels → explain unified address-bar suggestions
+- **"Sync again" / "pull latest browser data"** → repeat `startImport` for the same profile; do not clear first
 - **"Compare my browsers"** → cross-browser comparison workflow → show table
 - **"Export my bookmarks as HTML"** → targeted export, return the file
 

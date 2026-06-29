@@ -2,6 +2,13 @@
 
 Browse, search, and manage imported passwords.
 
+## Re-Import Behavior
+
+Password imports are incremental for a browser/profile. Passwords upsert by
+origin, username, action URL, and realm. If the imported plaintext password is
+unchanged, NatStack does not rewrite the encrypted secret; metadata can still
+update when the source browser changes it.
+
 ## Password Vault (Inline UI)
 
 Persistent widget with masked passwords, reveal-on-click, and copy.

@@ -246,7 +246,7 @@ Do not use this for credentials, external browser opens, git writes, or project
 imports; those built-in APIs have their own trust scopes. See
 [RUNTIME_API.md](RUNTIME_API.md#userland-approval-prompts) for the full contract.
 
-## Browser data (cookies/passwords/bookmarks)
+## Browser data (cookies/passwords/bookmarks/history/tabs)
 
 `browserData` from `@workspace/panel-browser` is a **panel/component runtime**
 capability: it goes through the `@workspace-extensions/browser-data` extension,
@@ -264,14 +264,27 @@ if (chrome) {
   const result = await browserData.startImport({
     browser: "chrome",
     profile: defaultProfile,
-    dataTypes: ["cookies"],
+    dataTypes: ["cookies", "bookmarks", "history"],
   });
   console.log("Import result:", result);
+
+  // Optional: recreate current source-browser HTTP(S) tabs as NatStack panels.
+  const opened = await browserData.openTabsAsPanels({
+    browser: "chrome",
+    profile: defaultProfile,
+  });
+  console.log("Opened tabs:", opened);
 }
 
 // Export everything:
 const dump = await browserData.exportAll();
 ```
+
+`startImport` is incremental for the same browser/profile: reruns update changed
+source records and add newly discovered records without duplicating bookmarks,
+history visits, cookies, passwords, autofill values, search engines,
+permissions, or favicons. `openTabsAsPanels()` is intentionally not idempotent;
+it creates panels each time it is called.
 
 ## Interactive Cookie Manager (Inline UI)
 
@@ -403,5 +416,6 @@ if (chrome) {
     dataTypes: ["cookies"],
   });
   // Electron syncs imported cookies to browser panels automatically.
+  // Repeat imports are safe; unchanged cookies are not duplicated.
 }
 ```

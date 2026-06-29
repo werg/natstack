@@ -223,6 +223,18 @@ export default function ImportWizard({ onSubmit, onCancel, chat }) {
 })
 ```
 
+## Open Tabs Are Separate
+
+Current open tabs are not part of `startImport({ dataTypes })`. After selecting
+a browser/profile, use:
+
+- `browserData.getOpenTabs({ browser, profile })` to preview current tabs.
+- `browserData.openTabsAsPanels({ browser, profile })` to open HTTP(S) tabs as
+  child NatStack browser panels.
+
+See [HISTORY.md](HISTORY.md) for the open-tabs result shape and the full
+browser-life migration workflow.
+
 After the user submits, the agent receives `{ browser, profile, dataTypes }` and runs the import via eval.
 
 ## Types

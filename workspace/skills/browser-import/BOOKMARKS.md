@@ -2,6 +2,13 @@
 
 Browse, search, and organize imported bookmarks.
 
+## Re-Import Behavior
+
+Bookmark imports are incremental for a browser/profile. Re-running
+`startImport({ dataTypes: ["bookmarks"] })` updates existing source bookmarks
+and adds new ones instead of appending duplicates. Chrome/Firefox source ids are
+used when available; otherwise NatStack falls back to URL + folder.
+
 ## Bookmark Browser (Inline UI)
 
 Folder tree with search and one-click open in browser panel.
