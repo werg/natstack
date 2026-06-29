@@ -15,6 +15,7 @@ import { randomBytes } from "node:crypto";
 process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 
 import { isDev } from "./utils.js";
+import { maybeNotifyNpmUpdate } from "./updateCheck.js";
 import { createDevLogger } from "@natstack/dev-log";
 import {
   enqueueFirstArgvLink,
@@ -1828,6 +1829,10 @@ app.on("ready", async () => {
       console.log("[AutoUpdater] Not available (this is normal in development)");
     }
   }
+
+  // npm-channel update notice — no-ops unless launched from a global npm install
+  // (the launcher sets NATSTACK_NPM_CHANNEL); notification-first, never self-updates.
+  void maybeNotifyNpmUpdate();
 
   if (startupMode.kind === "pending") {
     if (IS_HEADLESS_HOST) {

@@ -1,0 +1,104 @@
+name: Release
+
+# Tag a release with `v*` (e.g. v0.2.0). publish-npm always runs and publishes
+# @natstack/server + @natstack/app at the tag version. The native-installer jobs
+# are opt-in via repo variables so a release is green before icons/signing exist:
+#   - vars.RELEASE_LINUX = 'true'  → build + attach AppImage/deb (needs build-resources icons)
+#   - vars.RELEASE_MAC   = 'true'  → build + attach a signed/notarized DMG (needs the Apple secrets)
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write # create the GitHub Release and upload installer assets
+
+jobs:
+  publish-npm:
+    name: Publish npm packages
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+      - run: pnpm install --frozen-lockfile
+      - name: Set version from tag
+        run: node scripts/set-version-from-tag.mjs "${GITHUB_REF_NAME}"
+      - run: pnpm build
+      - run: node scripts/build-npm-packages.mjs
+      - name: Publish @natstack/server
+        run: npm publish ./dist-packages/server --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: Publish @natstack/app
+        run: npm publish ./dist-packages/app --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      - name: GitHub Release
+        # Pinned to a commit SHA (v2.6.2) — refresh via Dependabot. Matches build-mobile.yml.
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          generate_release_notes: true
+          body: |
+            ### Install
+
+            ```sh
+            npm install -g @natstack/app      # desktop app + the `natstack` CLI
+            npm install -g @natstack/server   # headless server (CLI + daemon)
+            ```
+
+            Requires Node.js 20+. Native installers (DMG/AppImage/deb) are attached when available.
+
+  linux-installers:
+    name: Linux installers (AppImage/deb)
+    needs: publish-npm
+    if: ${{ vars.RELEASE_LINUX == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Set version from tag
+        run: node scripts/set-version-from-tag.mjs "${GITHUB_REF_NAME}"
+      - run: pnpm dist:linux # = pnpm build && electron-builder --linux
+      - name: Attach installers to the release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          files: |
+            release/*.AppImage
+            release/*.deb
+
+  mac-dmg:
+    name: macOS signed DMG
+    needs: publish-npm
+    if: ${{ vars.RELEASE_MAC == 'true' }}
+    runs-on: macos-latest
+    env:
+      # Developer ID signing + notarization (electron-builder reads these).
+      CSC_LINK: ${{ secrets.APPLE_CSC_LINK }}
+      CSC_KEY_PASSWORD: ${{ secrets.APPLE_CSC_KEY_PASSWORD }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Set version from tag
+        run: node scripts/set-version-from-tag.mjs "${GITHUB_REF_NAME}"
+      - run: pnpm dist:mac # = pnpm build && electron-builder --mac (signed + notarized)
+      - name: Attach DMG to the release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          files: release/*.dmg

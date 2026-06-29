@@ -8,9 +8,13 @@ dist
 out
 **/.natstack
 packages/*/dist
+packages/*/dist-publish
 workspace/packages/*/dist
 *.tsbuildinfo
 packages/*/**/*.map
+
+# npm publish staging (synthesized by scripts/build-npm-packages.mjs)
+/dist-packages
 
 # Environment
 .env

@@ -35,23 +35,24 @@ Remote panel mode does still require a trustworthy browser origin. In practice:
 ### 1. Start the server in standalone mode
 
 ```bash
+npm install -g @natstack/server
+natstack-server \
+  --host my-server.example.com \
+  --gateway-port 3030
+```
+
+In a source checkout, use the package scripts while developing the server:
+
+```bash
 pnpm server \
   --host my-server.example.com \
   --gateway-port 3030
 ```
 
-In a source checkout, use the live TypeScript entrypoint while developing the
-server:
-
-```bash
-pnpm server:dev \
-  --host my-server.example.com \
-  --gateway-port 3030
-```
-
-`pnpm server:dev` sets `NODE_ENV=development` before launching `dist/server.mjs`.
-For source-live standalone server work, use `pnpm server:live` or
-`pnpm cli remote serve ...`; those run `src/server/index.ts` through `tsx`.
+`pnpm server` runs the built `dist/server.mjs`; `pnpm server:dev` adds
+`NODE_ENV=development`. For source-live standalone server work, use
+`pnpm server:live` or `pnpm cli remote serve ...`; those run `src/server/index.ts`
+through `tsx`.
 
 Common development entrypoints:
 
