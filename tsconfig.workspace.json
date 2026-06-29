@@ -94,6 +94,9 @@
       "@workspace-about/about": [
         "workspace/about/about/index.tsx"
       ],
+      "@workspace-about/browser-import-inspector": [
+        "workspace/about/browser-import-inspector/index.tsx"
+      ],
       "@workspace-about/adblock": [
         "workspace/about/adblock/index.tsx"
       ],

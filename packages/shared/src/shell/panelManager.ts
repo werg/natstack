@@ -1268,7 +1268,9 @@ export class PanelManager {
       const manifest = loadPanelManifest(absolutePath);
       return {
         ...manifest,
-        privileged: manifest.shell === true,
+        // Privileged is gated purely by location: any unit under about/. (No `shell`
+        // flag — an about page is a normal panel that lives in about/.)
+        privileged: relativePath.startsWith("about/"),
       };
     } catch (error) {
       if (allowMissing) {
@@ -1289,7 +1291,8 @@ export class PanelManager {
       const manifest = loadPanelManifest(absolutePath);
       return {
         ...manifest,
-        privileged: manifest.shell === true,
+        // Privileged is gated purely by location: any unit under about/.
+        privileged: source.startsWith("about/"),
       };
     } catch {
       return null;

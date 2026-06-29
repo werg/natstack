@@ -7,7 +7,7 @@
 import { Flex, Text, Kbd, Separator } from "@radix-ui/themes";
 import { Fragment } from "react";
 import { KeyboardIcon } from "@radix-ui/react-icons";
-import { mountAboutPanel, AboutPage, Section } from "@workspace/about-shared/ui";
+import { AboutThemeRoot, AboutPage, Section } from "@workspace/about-shared/ui";
 
 const IS_MAC =
   typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform ?? "");
@@ -141,4 +141,10 @@ function KeyboardShortcutsPage() {
   );
 }
 
-mountAboutPanel(KeyboardShortcutsPage);
+export default function AboutPanelRoot() {
+  return (
+    <AboutThemeRoot>
+      <KeyboardShortcutsPage />
+    </AboutThemeRoot>
+  );
+}

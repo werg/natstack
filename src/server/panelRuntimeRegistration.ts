@@ -565,8 +565,7 @@ export async function createServerPanelTreeBridge(
             null,
           contextId: getPanelContextId(panel),
           ref: snapshot.options.ref,
-          privileged:
-            snapshot.privileged === true || (snapshot as { shell?: boolean }).shell === true,
+          privileged: snapshot.privileged === true,
         };
       }
       case "create": {
