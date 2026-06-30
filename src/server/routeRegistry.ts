@@ -15,9 +15,9 @@
  *   by server-side service factories that return `{ definition, routes? }`.
  *
  * Registration lifecycles:
- *   - DO routes: registered when a DO class becomes known to workerd
- *     (`workerdManager.registerAllDOClasses`, `onSourceRebuilt`), unregistered
- *     when the DO class is dropped.
+ *   - DO routes: registered from manifest-declared DO classes. Userland DOs
+ *     route through the static universal-do host, so route registration does
+ *     not require prebuilding the worker bundle.
  *   - Worker routes: registered at the end of `startWorker` iff the
  *     instance's name equals the canonical name (= source's last segment),
  *     unregistered in `stopWorker` for the canonical instance.
@@ -196,6 +196,7 @@ export class RouteRegistry {
     singletonRegistry: SingletonRegistry
   ): void {
     for (const r of routes) {
+      if (r.source !== source) continue;
       if (!r.durableObject) continue;
       if (r.durableObject.className !== className) continue;
       const objectKey = singletonRegistry.requireKey(
@@ -227,6 +228,7 @@ export class RouteRegistry {
     routes: ManifestRouteDecl[]
   ): void {
     for (const r of routes) {
+      if (r.source !== source) continue;
       if (r.durableObject) continue;
       if (!r.worker) continue;
       this.addWorkerEntry(source, {
@@ -294,6 +296,7 @@ export class RouteRegistry {
     if (newRoutes.length === 0) return;
 
     for (const r of newRoutes) {
+      if (r.source !== source) continue;
       if (r.durableObject) {
         if (!liveDoClasses.has(r.durableObject.className)) continue;
         const objectKey = singletonRegistry.requireKey(

@@ -2245,27 +2245,18 @@ async function main() {
             });
         });
 
-        // Pre-register DO classes before startup continues. Internal classes
-        // are part of the bootstrap substrate; userland classes do not require a
-        // workerd restart, but they must be registered before readiness so
-        // declared DO-backed HTTP routes exist as soon as the gateway accepts
-        // traffic.
+        // Start static internal DO services before readiness, then publish
+        // manifest-declared userland DO route metadata. Userland DO code is
+        // still built lazily on first resolve/request by the gateway's
+        // ensureDORoute hook, so declared routes exist at readiness without
+        // turning background build prewarm into startup latency.
         {
           const { INTERNAL_DO_CLASSES, INTERNAL_DO_SOURCE } =
             await import("./internalDOs/internalDoLoader.js");
-          const graph = buildSystemForWorkerd.getGraph();
-          const internalDoClasses: Array<{ source: string; className: string }> = [];
-          const userlandDoClasses: Array<{ source: string; className: string }> = [];
-          for (const className of INTERNAL_DO_CLASSES) {
-            internalDoClasses.push({ source: INTERNAL_DO_SOURCE, className });
-          }
-          for (const node of graph.allNodes()) {
-            if (node.kind !== "worker") continue;
-            if (!node.manifest.durable) continue;
-            for (const cls of node.manifest.durable.classes) {
-              userlandDoClasses.push({ source: node.relativePath, className: cls.className });
-            }
-          }
+          const internalDoClasses = INTERNAL_DO_CLASSES.map((className) => ({
+            source: INTERNAL_DO_SOURCE,
+            className,
+          }));
           if (internalDoClasses.length > 0) {
             console.log(
               `[WorkerdManager] Pre-registering internal DO classes:`,
@@ -2273,14 +2264,31 @@ async function main() {
             );
             await workerdManagerInstance.registerAllDOClasses(internalDoClasses);
           }
-          if (userlandDoClasses.length > 0) {
-            console.log(
-              `[WorkerdManager] Registering ${userlandDoClasses.length} userland DO class(es)...`
-            );
-            await workerdManagerInstance.registerAllDOClasses(userlandDoClasses);
-            console.log(
-              `[WorkerdManager] Userland DO class registration complete (${userlandDoClasses.length})`
-            );
+
+          if (workspaceDecls.routes.some((route) => route.durableObject)) {
+            const graph = buildSystemForWorkerd.getGraph();
+            for (const node of graph.allNodes()) {
+              if (node.kind !== "worker") continue;
+              if (!node.manifest.durable) continue;
+              for (const cls of node.manifest.durable.classes) {
+                try {
+                  const sourceRoutes = workspaceDecls.routes.filter(
+                    (route) => route.source === node.relativePath
+                  );
+                  routeRegistry.registerDoRoutes(
+                    node.relativePath,
+                    cls.className,
+                    sourceRoutes,
+                    workspaceDecls.singletons
+                  );
+                } catch (err) {
+                  console.warn(
+                    `[WorkerdManager] Failed to register DO routes for ${node.relativePath}:${cls.className}:`,
+                    err instanceof Error ? err.message : err
+                  );
+                }
+              }
+            }
           }
         }
 
@@ -3094,6 +3102,14 @@ async function main() {
     getAppArtifactHandler: () => appHostForGateway,
     getWorkerdPort: () => workerdManagerForGateway?.getPort() ?? null,
     getWorkerHost: () => workerdManagerForGateway,
+    ensureDORoute: (source, className, objectKey) => {
+      const workerdManager = assertPresent(workerdManagerForGateway);
+      const targetId = canonicalEntityId({ kind: "do", source, className, key: objectKey });
+      const record = entityCache.resolveActive(targetId);
+      return workerdManager.ensureDO(source, className, objectKey, {
+        contextId: record?.contextId,
+      });
+    },
     externalHost: hostConfig.externalHost,
     bindHost: hostConfig.bindHost,
     adminToken,

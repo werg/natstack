@@ -10,7 +10,9 @@ import {
 } from "./workerdManager.js";
 import { spawn } from "child_process";
 import { findServicePort } from "@natstack/port-utils";
+import { SingletonRegistry } from "@natstack/shared/workspace/singletonRegistry";
 import type { BuildResult } from "./buildV2/buildStore.js";
+import { RouteRegistry } from "./routeRegistry.js";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -732,6 +734,39 @@ describe("WorkerdManager", () => {
 
       expect(revokeSpy).toHaveBeenCalledWith("do-service:workers/agent:A");
       expect(revokeSpy).toHaveBeenCalledWith("do-service:workers/agent:B");
+    });
+
+    it("keeps DO routes for lazily registered userland classes", async () => {
+      const routeRegistry = new RouteRegistry();
+      const singletonRegistry = new SingletonRegistry([
+        { source: "workers/agent", className: "AgentDO", key: "agent" },
+      ]);
+      const deps = createMockDeps({
+        routeRegistry,
+        singletonRegistry,
+        getManifestRoutes: (source) =>
+          source === "workers/agent"
+            ? [
+                {
+                  source: "workers/agent",
+                  path: "/agent",
+                  methods: ["POST"],
+                  durableObject: { className: "AgentDO" },
+                },
+              ]
+            : [],
+      });
+      const mgr = new WorkerdManager(deps);
+
+      await mgr.onSourceRebuilt("workers/agent", [{ className: "AgentDO" }]);
+
+      expect(vi.mocked(deps.bindRuntimeImage)).not.toHaveBeenCalled();
+      expect(routeRegistry.lookup("/_r/w/workers/agent/agent", "POST", false)).toMatchObject({
+        kind: "worker-do",
+        source: "workers/agent",
+        className: "AgentDO",
+        objectKey: "agent",
+      });
     });
 
     it("does NOT probe-and-restart a live workerd on ensureDO (A1: no false-positive restarts)", async () => {

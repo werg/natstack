@@ -2250,11 +2250,10 @@ export default { fetch() { return new Response("universal-do host"); } };
   }
 
   /**
-   * Pre-register all DO classes discovered from the build graph.
-   * Builds each source, registers the service, and does a single workerd restart
-   * only when internal static DO services were added. Userland classes load
-   * through the UniversalDO host, but startup still registers them before
-   * readiness so declared DO-backed HTTP routes are available immediately.
+   * Register a batch of DO classes. Internal DO classes are static workerd
+   * services and trigger a single restart when new. Userland DO classes load
+   * through universal-do; startup should prefer route metadata + lazy
+   * ensureDORoute unless an explicit prewarm is required.
    */
   async registerAllDOClasses(
     doClasses: Array<{ source: string; className: string }>
@@ -2684,6 +2683,11 @@ export default { fetch() { return new Response("universal-do host"); } };
       const liveDoClasses = new Set<string>();
       for (const svc of this.doServices.values()) {
         if (svc.source === source) liveDoClasses.add(svc.className);
+      }
+      if (doClasses && head === "main") {
+        for (const { className } of doClasses) {
+          liveDoClasses.add(className);
+        }
       }
       const canonical = canonicalInstanceNameForSource(source);
       const hasCanonicalInstance =

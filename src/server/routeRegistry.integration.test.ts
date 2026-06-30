@@ -6,7 +6,7 @@
  * ephemeral port) and asserts the gateway rewrites and proxies correctly.
  */
 
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi, type Mock } from "vitest";
 import {
   createServer,
   type Server as HttpServer,
@@ -27,6 +27,8 @@ interface Harness {
   /** Record of paths workerd received (for rewrite-assertion). */
   workerdPaths: string[];
   workerdDispatchSecrets: Array<string | undefined>;
+  ensureDORoute: Mock<(source: string, className: string, objectKey: string) => Promise<void>>;
+  events: string[];
 }
 
 async function startHarness(): Promise<Harness> {
@@ -36,8 +38,15 @@ async function startHarness(): Promise<Harness> {
   // Fake workerd — records the path it was called with and echoes it back.
   const workerdPaths: string[] = [];
   const workerdDispatchSecrets: Array<string | undefined> = [];
+  const events: string[] = [];
+  const ensureDORoute = vi.fn<
+    (source: string, className: string, objectKey: string) => Promise<void>
+  >(async (source, className, objectKey) => {
+    events.push(`ensure:${source}:${className}:${objectKey}`);
+  });
   const workerdServer = createServer((req: IncomingMessage, res: ServerResponse) => {
     workerdPaths.push(req.url ?? "(unknown)");
+    events.push(`proxy:${req.url ?? "(unknown)"}`);
     const dispatchSecret = req.headers["x-natstack-dispatch-secret"];
     workerdDispatchSecrets.push(Array.isArray(dispatchSecret) ? dispatchSecret[0] : dispatchSecret);
     res.writeHead(200, { "Content-Type": "text/plain" });
@@ -55,6 +64,7 @@ async function startHarness(): Promise<Harness> {
     bindHost: "127.0.0.1",
     workerdPort,
     getWorkerdDispatchSecret: () => "workerd-dispatch-secret",
+    ensureDORoute,
     routeRegistry: registry,
     adminToken: "secret-token",
     tokenManager,
@@ -70,6 +80,8 @@ async function startHarness(): Promise<Harness> {
     workerdServer,
     workerdPaths,
     workerdDispatchSecrets,
+    ensureDORoute,
+    events,
   };
 }
 
@@ -151,6 +163,68 @@ describe("RouteRegistry × Gateway integration", () => {
       "workerd-dispatch-secret"
     );
     expect(body).toContain(`/_u/${packed}/callback`);
+  });
+
+  it("ensures a DO-backed route before proxying the first request", async () => {
+    const { SingletonRegistry } = await import("@natstack/shared/workspace/singletonRegistry");
+    const singletons = new SingletonRegistry([
+      { source: "workers/lazy-route", className: "LazyDO", key: "lazy-singleton" },
+    ]);
+    h.registry.registerDoRoutes(
+      "workers/lazy-route",
+      "LazyDO",
+      [
+        {
+          source: "workers/lazy-route",
+          path: "/first",
+          durableObject: { className: "LazyDO" },
+        },
+      ],
+      singletons
+    );
+    h.ensureDORoute.mockClear();
+    h.events.length = 0;
+
+    const { status } = await fetchText(
+      `http://127.0.0.1:${h.gatewayPort}/_r/w/workers/lazy-route/first`
+    );
+
+    expect(status).toBe(200);
+    expect(h.ensureDORoute).toHaveBeenCalledWith("workers/lazy-route", "LazyDO", "lazy-singleton");
+    expect(h.events[0]).toBe("ensure:workers/lazy-route:LazyDO:lazy-singleton");
+    expect(h.events[1]).toMatch(/^proxy:\/_u\//);
+  });
+
+  it("does not proxy a DO-backed route when lazy ensure fails", async () => {
+    const { SingletonRegistry } = await import("@natstack/shared/workspace/singletonRegistry");
+    const singletons = new SingletonRegistry([
+      { source: "workers/failing-route", className: "FailingDO", key: "failing-singleton" },
+    ]);
+    h.registry.registerDoRoutes(
+      "workers/failing-route",
+      "FailingDO",
+      [
+        {
+          source: "workers/failing-route",
+          path: "/first",
+          durableObject: { className: "FailingDO" },
+        },
+      ],
+      singletons
+    );
+    h.ensureDORoute.mockRejectedValueOnce(
+      Object.assign(new Error("still building"), { code: "RUNTIME_IMAGE_WARMING" })
+    );
+    const before = h.workerdPaths.length;
+
+    const response = await fetch(
+      `http://127.0.0.1:${h.gatewayPort}/_r/w/workers/failing-route/first`
+    );
+
+    expect(response.status).toBe(503);
+    expect(response.headers.get("Retry-After")).toBe("1");
+    expect(await response.text()).toBe("DO route warming");
+    expect(h.workerdPaths.length).toBe(before);
   });
 
   it("rewrites regular-worker routes to /<instance>/<path>", async () => {

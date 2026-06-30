@@ -175,6 +175,9 @@ export interface GatewayDeps {
   /** Route registry for `/_r/` dispatch (worker and service routes). Optional
    *  — when absent, `/_r/` paths fall through to 404. */
   routeRegistry?: RouteRegistry;
+  /** Lazily ensure a DO class/object before proxying a DO-backed `/_r/w/...`
+   *  route. This keeps route registration independent from startup prebuilds. */
+  ensureDORoute?: (source: string, className: string, objectKey: string) => Promise<void> | void;
 }
 
 export class Gateway {
@@ -441,19 +444,25 @@ export class Gateway {
 
       // /_r/ → route registry dispatch (worker + service HTTP routes)
       if (url.startsWith("/_r/") && routeRegistry) {
-        const handled = handleRouteRequest(
+        void handleRouteRequest(
           req,
           res,
           url,
           routeRegistry,
-          workerdPort,
+          () => this.deps.getWorkerdPort?.() ?? this.deps.workerdPort,
           adminToken,
           tokenManager,
           workerdToken,
-          this.deps.getWorkerdDispatchSecret?.()
-        );
-        if (handled) return;
-        // Fall through to 404 below — no panel fallback for `/_r/` misses.
+          this.deps.getWorkerdDispatchSecret?.(),
+          this.deps.ensureDORoute
+        ).catch((err: unknown) => {
+          log.warn(`Route dispatch error:`, err);
+          if (!res.headersSent && !res.writableEnded) {
+            res.writeHead(500, { "Content-Type": "text/plain" });
+            res.end("Route dispatch error");
+          }
+        });
+        return;
       }
 
       // /_a/<build-key>/... → approved workspace app artifacts.
@@ -570,20 +579,26 @@ export class Gateway {
 
       // /_r/ → route registry dispatch (worker + service WS routes)
       if (url.startsWith("/_r/") && routeRegistry) {
-        const handled = handleRouteUpgrade(
+        void handleRouteUpgrade(
           req,
           socket,
           head,
           url,
           routeRegistry,
-          workerdPort,
+          () => this.deps.getWorkerdPort?.() ?? this.deps.workerdPort,
           adminToken,
           tokenManager,
           workerdToken,
-          this.deps.getWorkerdDispatchSecret?.()
-        );
-        if (handled) return;
-        // Miss → fall through to destroy below.
+          this.deps.getWorkerdDispatchSecret?.(),
+          this.deps.ensureDORoute
+        ).catch((err: unknown) => {
+          log.warn(`Route WS dispatch error:`, err);
+          if (!socket.destroyed) {
+            socket.write("HTTP/1.1 500 Internal Server Error\r\nConnection: close\r\n\r\n");
+            socket.destroy();
+          }
+        });
+        return;
       }
 
       // Default: panel HTTP handler (CDP bridge, etc.)
@@ -885,6 +900,58 @@ function enforceAuth(
   }
 }
 
+function doRouteEnsureError(err: unknown): {
+  status: number;
+  statusText: string;
+  body: string;
+  headers?: Record<string, string>;
+} {
+  const code = (err as { code?: unknown })?.code;
+  const message = err instanceof Error ? err.message : String(err);
+  if (code === "RUNTIME_IMAGE_WARMING") {
+    return {
+      status: 503,
+      statusText: "Service Unavailable",
+      body: "DO route warming",
+      headers: { "Retry-After": "1" },
+    };
+  }
+  if (code === "RUNTIME_IMAGE_UNAVAILABLE") {
+    return {
+      status: 410,
+      statusText: "Gone",
+      body: `DO route unavailable: ${message}`,
+    };
+  }
+  return {
+    status: 503,
+    statusText: "Service Unavailable",
+    body: `DO route unavailable: ${message}`,
+  };
+}
+
+function writeDoRouteEnsureHttpError(res: ServerResponse, err: unknown): void {
+  const details = doRouteEnsureError(err);
+  res.writeHead(details.status, {
+    "Content-Type": "text/plain",
+    ...(details.headers ?? {}),
+  });
+  res.end(details.body);
+}
+
+function writeDoRouteEnsureUpgradeError(socket: Duplex, err: unknown): void {
+  const details = doRouteEnsureError(err);
+  const headers = Object.entries(details.headers ?? {})
+    .map(([key, value]) => `${key}: ${value}`)
+    .join("\r\n");
+  socket.write(
+    `HTTP/1.1 ${details.status} ${details.statusText}\r\n${
+      headers ? `${headers}\r\n` : ""
+    }Connection: close\r\n\r\n`
+  );
+  socket.destroy();
+}
+
 /**
  * Build the rewritten target path for a worker-route lookup.
  *
@@ -920,17 +987,18 @@ function buildWorkerTargetPath(
  * the request was handled (response started or dispatched); `false` if the
  * caller should continue with fallbacks.
  */
-function handleRouteRequest(
+async function handleRouteRequest(
   req: IncomingMessage,
   res: ServerResponse,
   url: string,
   routeRegistry: RouteRegistry,
-  workerdPort: number | null | undefined,
+  getWorkerdPort: () => number | null | undefined,
   adminToken: string | undefined,
   tokenManager: TokenManager,
   workerdToken: string,
-  workerdDispatchSecret?: string | null
-): boolean {
+  workerdDispatchSecret?: string | null,
+  ensureDORoute?: (source: string, className: string, objectKey: string) => Promise<void> | void
+): Promise<boolean> {
   const qIdx = url.indexOf("?");
   const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);
   const method = req.method ?? "GET";
@@ -970,17 +1038,26 @@ function handleRouteRequest(
   }
 
   // worker-do / worker-regular → reverse proxy to workerd with rewritten path.
+  if (result.kind === "worker-do" && !workerdDispatchSecret) {
+    res.writeHead(503, { "Content-Type": "text/plain" });
+    res.end("DO dispatch unavailable");
+    return true;
+  }
+  if (result.kind === "worker-do" && ensureDORoute) {
+    try {
+      await ensureDORoute(result.source, result.className, result.objectKey);
+    } catch (err) {
+      writeDoRouteEnsureHttpError(res, err);
+      return true;
+    }
+  }
+  const workerdPort = getWorkerdPort();
   if (!workerdPort) {
     res.writeHead(503, { "Content-Type": "text/plain" });
     res.end("workerd not running");
     return true;
   }
   const targetPath = buildWorkerTargetPath(result, url);
-  if (result.kind === "worker-do" && !workerdDispatchSecret) {
-    res.writeHead(503, { "Content-Type": "text/plain" });
-    res.end("DO dispatch unavailable");
-    return true;
-  }
   const extraHeaders =
     result.kind === "worker-do" && workerdDispatchSecret
       ? { "X-NatStack-Dispatch-Secret": workerdDispatchSecret }
@@ -992,18 +1069,19 @@ function handleRouteRequest(
 /**
  * Handle a WebSocket upgrade that matched `/_r/`. Returns `true` if handled.
  */
-function handleRouteUpgrade(
+async function handleRouteUpgrade(
   req: IncomingMessage,
   socket: Duplex,
   head: Buffer,
   url: string,
   routeRegistry: RouteRegistry,
-  workerdPort: number | null | undefined,
+  getWorkerdPort: () => number | null | undefined,
   adminToken: string | undefined,
   tokenManager: TokenManager,
   workerdToken: string,
-  workerdDispatchSecret?: string | null
-): boolean {
+  workerdDispatchSecret?: string | null,
+  ensureDORoute?: (source: string, className: string, objectKey: string) => Promise<void> | void
+): Promise<boolean> {
   const qIdx = url.indexOf("?");
   const pathOnly = qIdx === -1 ? url : url.slice(0, qIdx);
   const method = req.method ?? "GET";
@@ -1033,17 +1111,26 @@ function handleRouteUpgrade(
     return true;
   }
 
+  if (result.kind === "worker-do" && !workerdDispatchSecret) {
+    socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
+    socket.destroy();
+    return true;
+  }
+  if (result.kind === "worker-do" && ensureDORoute) {
+    try {
+      await ensureDORoute(result.source, result.className, result.objectKey);
+    } catch (err) {
+      writeDoRouteEnsureUpgradeError(socket, err);
+      return true;
+    }
+  }
+  const workerdPort = getWorkerdPort();
   if (!workerdPort) {
     socket.destroy();
     return true;
   }
   // Rewrite req.url so the upstream (workerd) sees the rewritten path.
   req.url = buildWorkerTargetPath(result, url);
-  if (result.kind === "worker-do" && !workerdDispatchSecret) {
-    socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n");
-    socket.destroy();
-    return true;
-  }
   const extraHeaders =
     result.kind === "worker-do" && workerdDispatchSecret
       ? { "X-NatStack-Dispatch-Secret": workerdDispatchSecret }

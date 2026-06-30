@@ -78,6 +78,39 @@ describe("RouteRegistry", () => {
       expect(reg.lookup("/_r/w/workers/foo/b", "GET", false)).toBeNull();
     });
 
+    it("filters by source — same class names from other workers are ignored", () => {
+      const reg = new RouteRegistry();
+      const singletons = makeSingletons([
+        { source: "workers/foo", className: "AgentDO", key: "foo-key" },
+        { source: "workers/bar", className: "AgentDO", key: "bar-key" },
+      ]);
+      reg.registerDoRoutes(
+        "workers/foo",
+        "AgentDO",
+        [
+          makeDecl({
+            path: "/foo",
+            worker: undefined,
+            durableObject: { className: "AgentDO" },
+          }),
+          makeDecl({
+            source: "workers/bar",
+            path: "/bar",
+            worker: undefined,
+            durableObject: { className: "AgentDO" },
+          }),
+        ],
+        singletons
+      );
+
+      expect(reg.lookup("/_r/w/workers/foo/foo", "GET", false)).toMatchObject({
+        kind: "worker-do",
+        objectKey: "foo-key",
+      });
+      expect(reg.lookup("/_r/w/workers/foo/bar", "GET", false)).toBeNull();
+      expect(reg.lookup("/_r/w/workers/bar/bar", "GET", false)).toBeNull();
+    });
+
     it("throws when no singleton row exists for (source, className)", () => {
       const reg = new RouteRegistry();
       const singletons = makeSingletons([]);
@@ -112,6 +145,17 @@ describe("RouteRegistry", () => {
       ]);
       expect(reg.lookup("/_r/w/workers/foo/x", "GET", false)).not.toBeNull();
       expect(reg.lookup("/_r/w/workers/foo/y", "GET", false)).toBeNull();
+    });
+
+    it("skips regular-worker routes from other sources", () => {
+      const reg = new RouteRegistry();
+      reg.registerWorkerRoutes("workers/foo", "foo", [
+        makeDecl({ path: "/foo" }),
+        makeDecl({ source: "workers/bar", path: "/bar" }),
+      ]);
+
+      expect(reg.lookup("/_r/w/workers/foo/foo", "GET", false)).not.toBeNull();
+      expect(reg.lookup("/_r/w/workers/foo/bar", "GET", false)).toBeNull();
     });
 
     it("unregisters on canonical instance teardown", () => {
@@ -311,6 +355,21 @@ describe("RouteRegistry", () => {
         singletons
       );
       expect(reg.lookup("/_r/w/workers/foo/x", "GET", false)).toBeNull();
+    });
+
+    it("skips routes from other sources during reconcile", () => {
+      const reg = new RouteRegistry();
+      const singletons = makeSingletons([]);
+      reg.reconcileWorkerRoutes(
+        "workers/foo",
+        [makeDecl({ path: "/foo" }), makeDecl({ source: "workers/bar", path: "/bar" })],
+        new Set(),
+        "foo",
+        singletons
+      );
+
+      expect(reg.lookup("/_r/w/workers/foo/foo", "GET", false)).not.toBeNull();
+      expect(reg.lookup("/_r/w/workers/foo/bar", "GET", false)).toBeNull();
     });
   });
 
