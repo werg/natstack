@@ -90,7 +90,7 @@ During development, run the CLI live from TypeScript:
 
 ```bash
 pnpm cli --help
-pnpm cli remote serve --host tailscale --port 3030
+pnpm cli remote serve --port 3030
 pnpm server:live --help
 ```
 

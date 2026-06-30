@@ -9,7 +9,7 @@ For ongoing source checkout work, use the live TypeScript entrypoint:
 ```sh
 pnpm install
 pnpm cli --help
-pnpm cli remote serve --host tailscale --port 3030
+pnpm cli remote serve --port 3030
 pnpm cli mobile install --launch
 ```
 
@@ -49,9 +49,9 @@ node dist/cli/client.mjs --help
 Start a phone/laptop pairing server:
 
 ```sh
-natstack remote serve --host tailscale --port 3030
+natstack remote serve --port 3030
 # or, during source development:
-pnpm cli remote serve --host tailscale --port 3030
+pnpm cli remote serve --port 3030
 ```
 
 Pair this terminal, choose a workspace, start the terminal app, and mint new invites:
@@ -113,7 +113,7 @@ natstack mobile smoke --avd Pixel_8
 Useful flags:
 
 - `--device <adb-serial>` targets a specific Android device.
-- `--host tailscale|lan|<host>` chooses the phone-reachable route.
+- `--port <port>` chooses the local pairing server port.
 - `--dev` on `natstack mobile pair` offers a disposable template workspace named
   `dev` after pairing.
 

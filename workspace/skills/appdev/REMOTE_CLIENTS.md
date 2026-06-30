@@ -102,9 +102,10 @@ new client bootstrap material.
 
 ## URL And Transport Rules
 
-- Cleartext HTTP is allowed only for trusted local/private/Tailscale-style
-  hosts.
-- Prefer HTTPS public URLs for mobile OAuth and app-link/universal-link flows.
+- Remote clients pair through WebRTC using a signaling room plus DTLS
+  fingerprint pinning. Do not add public-ingress, VPN, or cleartext-host
+  exceptions for RPC reachability.
+- Prefer verified app-link/universal-link routes for mobile OAuth callbacks.
 - `natstack://connect` is for pairing bootstrap, not OAuth callbacks.
 - Mobile OAuth callbacks should use verified app-link/universal-link routes
   where configured.
@@ -115,11 +116,11 @@ Remote-client UX should handle:
 
 - revoked device credential
 - stale server boot id
-- server URL change
-- TLS fingerprint or CA mismatch
+- expired or unreachable signaling room
+- DTLS fingerprint mismatch
 - no active mobile app bootstrap
 - terminal app build available but process not started
-- terminal app process exited or failed WebSocket auth
+- terminal app process exited or failed session auth
 
 The recovery surface should remain usable even when the workspace app cannot be
 loaded.

@@ -43,5 +43,6 @@ pnpm -C apps/mobile type-check
 pnpm -C apps/mobile lint
 ```
 
-For Android device pairing over VPN or LAN, see
-[docs/mobile-vpn.md](../../docs/mobile-vpn.md).
+For Android WebRTC pairing and local relay testing, see
+[docs/webrtc-local-e2e.md](../../docs/webrtc-local-e2e.md) and
+[docs/webrtc-deployment.md](../../docs/webrtc-deployment.md).
