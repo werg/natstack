@@ -39,6 +39,8 @@ const WORKSPACE_CONFIG_FILE = "meta/natstack.yml";
 const CENTRAL_CONFIG_FILE = "config.yml";
 const SECRETS_FILE = ".secrets.yml";
 const ENV_FILE = ".env";
+const WORKSPACE_DELETE_MAX_RETRIES = 10;
+const WORKSPACE_DELETE_RETRY_DELAY_MS = 100;
 
 // =============================================================================
 // Central Config
@@ -439,7 +441,12 @@ export { WORKSPACE_SOURCE_DIRS, WORKSPACE_STATE_DIRS };
 export function deleteWorkspaceDir(name: string): void {
   const wsDir = getWorkspaceDir(name);
   if (fs.existsSync(wsDir)) {
-    fs.rmSync(wsDir, { recursive: true, force: true });
+    fs.rmSync(wsDir, {
+      recursive: true,
+      force: true,
+      maxRetries: WORKSPACE_DELETE_MAX_RETRIES,
+      retryDelay: WORKSPACE_DELETE_RETRY_DELAY_MS,
+    });
     log.info(`[Workspace] Deleted workspace directory "${name}"`);
   }
 }
