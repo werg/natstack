@@ -18,6 +18,7 @@ import type { CentralDataManager } from "@natstack/shared/centralData";
 const log = createDevLogger("StartupMode");
 export const CHOOSE_CONNECTION_ARG = "--choose-connection";
 export const WORKSPACE_CREATE_IF_MISSING_ARG = "--workspace-create-if-missing";
+export const DEV_WEBRTC_REMOTE_ARG = "--dev-webrtc-remote";
 /**
  * Marks a local launch as a disposable dev workspace: the workspace dir is deleted on exit
  * (see the will-quit cleanup). Paired with `--workspace <name>` so the same workspace is kept
@@ -133,7 +134,9 @@ export function stripStartupSelectionArgs(rawArgs: readonly string[]): string[] 
     if (arg?.startsWith("--workspace=")) continue;
     if (arg === CHOOSE_CONNECTION_ARG) continue;
     if (arg === WORKSPACE_CREATE_IF_MISSING_ARG) continue;
+    if (arg === DEV_WEBRTC_REMOTE_ARG) continue;
     if (arg === EPHEMERAL_WORKSPACE_ARG) continue;
+    if (arg?.startsWith("natstack://connect")) continue;
     if (arg !== undefined) filteredArgs.push(arg);
   }
   return filteredArgs;

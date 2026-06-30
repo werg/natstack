@@ -87,6 +87,7 @@ import { loadCentralEnv, deleteWorkspaceDir } from "@natstack/shared/workspace/l
 import { resolveLocalWorkspaceStartup } from "@natstack/shared/workspace/startup";
 import { CentralDataManager } from "@natstack/shared/centralData";
 import {
+  DEV_WEBRTC_REMOTE_ARG,
   resolveStartupMode,
   shouldRequestSingleInstanceLock,
   getPendingUserDataDir,
@@ -258,6 +259,10 @@ const chooserChoice = new Promise<ChooserChoice>((resolve) => {
     resolve(choice);
   };
 });
+
+function shouldAutoPairPendingDevWebRtcLink(): boolean {
+  return isDev() && process.argv.includes(DEV_WEBRTC_REMOTE_ARG);
+}
 
 let appliedElectronHostTargetKey: string | null = null;
 let electronHostLaunchLastStatusKey: string | null = null;
@@ -1723,7 +1728,16 @@ app.on("ready", async () => {
   let pendingRemotePairing: ConnectPairing | null = null;
 
   if (startupMode.kind === "pending" && !remotePairedAtLaunch) {
-    if (IS_HEADLESS_HOST) {
+    const devAutoPairing = shouldAutoPairPendingDevWebRtcLink() ? getPendingConnectLink() : null;
+    if (devAutoPairing) {
+      chooserChoiceMade = true;
+      pendingRemotePairing = devAutoPairing;
+      log.info("[bootstrap] Dev WebRTC remote mode: auto-pairing launch deep link");
+    } else if (shouldAutoPairPendingDevWebRtcLink()) {
+      log.warn(
+        "[bootstrap] Dev WebRTC remote mode requested but no pending pairing link was found"
+      );
+    } else if (IS_HEADLESS_HOST) {
       // No chooser UI on a headless host and nothing paired to connect to —
       // stay alive (a supervisor can pair a remote or select a workspace and
       // restart) rather than opening a window nothing can drive.

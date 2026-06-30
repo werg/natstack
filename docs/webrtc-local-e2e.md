@@ -76,6 +76,22 @@ Optional env: `NATSTACK_WEBRTC_CERT` / `NATSTACK_WEBRTC_KEY` (cert paths, defaul
 `<appRoot>/.natstack/webrtc/server.{pem,key}`), `NATSTACK_WEBRTC_ICE=relay` (force
 TURN). The server presents the persistent cert; its SHA-256 is the published `fp`.
 
+## Running the desktop app through local WebRTC
+
+For interactive desktop development, use the wrapper instead of wiring the three
+processes by hand:
+
+```bash
+pnpm rebuild node-datachannel   # one-time, if needed
+pnpm dev:webrtc
+```
+
+The wrapper builds like `pnpm dev`, starts `wrangler dev apps/signaling`, starts a
+local workspace server as the WebRTC answerer, then launches Electron with the
+fresh `natstack://connect` link. It passes `--skip-remote-pairing` so saved remote
+credentials cannot steal the launch, and disables persistence for the fresh dev
+pairing so the next normal `pnpm dev` remains local.
+
 ## Connecting the CLI over WebRTC
 
 `src/cli/webrtcClient.ts` exposes `WebRtcRpcClient` with the same

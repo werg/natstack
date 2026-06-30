@@ -60,6 +60,7 @@ describe("remoteCredService", () => {
 
   afterEach(() => {
     vi.resetModules();
+    vi.unstubAllEnvs();
   });
 
   it("reports no configured remote when nothing is stored", async () => {
@@ -106,6 +107,19 @@ describe("remoteCredService", () => {
     const { saveStoredRemote } = await import("./remoteCredService.js");
     expect(mocks.store.value).toBeNull();
     saveStoredRemote(sampleStored);
+    expect(mocks.store.value).toEqual(sampleStored);
+  });
+
+  it("can disable remote credential persistence for the dev WebRTC harness", async () => {
+    vi.stubEnv("NATSTACK_DISABLE_REMOTE_CRED_PERSISTENCE", "1");
+    const { persistRotatedRemoteCredential, saveStoredRemote } =
+      await import("./remoteCredService.js");
+
+    saveStoredRemote(sampleStored);
+    expect(mocks.store.value).toBeNull();
+
+    mocks.store.value = sampleStored;
+    persistRotatedRemoteCredential({ deviceId: "dev_next", refreshToken: "next-refresh" });
     expect(mocks.store.value).toEqual(sampleStored);
   });
 

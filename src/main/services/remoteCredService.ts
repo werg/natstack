@@ -52,6 +52,11 @@ function getStore(): RemoteCredStore {
   return storeSingleton;
 }
 
+function remoteCredentialPersistenceDisabled(): boolean {
+  const value = process.env["NATSTACK_DISABLE_REMOTE_CRED_PERSISTENCE"];
+  return value === "1" || value === "true";
+}
+
 /** Read the persisted WebRTC remote pairing, if any (consumed by serverSession). */
 export function loadStoredRemotePairing(): StoredRemote | null {
   return getStore().load();
@@ -93,6 +98,7 @@ export function persistRotatedRemoteCredential(cred: {
   deviceId: string;
   refreshToken: string;
 }): void {
+  if (remoteCredentialPersistenceDisabled()) return;
   const existing = getStore().load();
   if (!existing) return;
   persistOrWarn("could not persist rotated credential", () =>
@@ -112,6 +118,7 @@ export function persistRotatedRemoteCredential(cred: {
  * the NEXT launch reconnects with the refresh token instead of re-pairing.
  */
 export function saveStoredRemote(value: StoredRemote): void {
+  if (remoteCredentialPersistenceDisabled()) return;
   persistOrWarn("could not persist remote pairing", () => getStore().save(value));
 }
 

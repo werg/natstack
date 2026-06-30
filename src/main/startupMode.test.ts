@@ -162,6 +162,16 @@ describe("resolveStartupMode interactive desktop policy", () => {
     ).toEqual(["--foo", mod.CHOOSE_CONNECTION_ARG]);
   });
 
+  it("strips one-shot WebRTC dev pairing args from relaunch selectors", () => {
+    expect(
+      mod.workspaceRelaunchArgs("default", [
+        "--foo",
+        mod.DEV_WEBRTC_REMOTE_ARG,
+        "natstack://connect?room=room-1111&fp=bad&code=bad&sig=ws%3A%2F%2F127.0.0.1%3A8787",
+      ])
+    ).toEqual(["--foo", "--workspace", "default", mod.WORKSPACE_CREATE_IF_MISSING_ARG]);
+  });
+
   it("builds ephemeral-workspace relaunch args that pin the name and tag it disposable", () => {
     expect(
       mod.ephemeralWorkspaceRelaunchArgs("dev-abc123", [

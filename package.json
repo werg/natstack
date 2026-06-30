@@ -13,6 +13,7 @@
   "scripts": {
     "build": "NODE_ENV=production node build.mjs",
     "dev": "export NODE_ENV=development && node build.mjs && (pnpm type-check &) && node scripts/run-electron.mjs",
+    "dev:webrtc": "NODE_ENV=development node scripts/dev-webrtc-remote.mjs",
     "cli": "NATSTACK_SERVER_ENTRY=live tsx src/cli/client.ts",
     "start": "node scripts/run-electron.mjs",
     "headless-host": "NATSTACK_HEADLESS_HOST=1 node scripts/run-electron.mjs --headless-host",

@@ -117,6 +117,7 @@ endpoint is only used to rendezvous, not to carry workspace data. See
 ```bash
 pnpm install
 pnpm dev             # build + start Electron with DevTools
+pnpm dev:webrtc      # build + start local server, then connect to it over WebRTC
 pnpm cli --help      # run the CLI live from TypeScript
 pnpm server:live --help
 ```
@@ -127,6 +128,7 @@ See [docs/cli.md](docs/cli.md). (The published npm packages above replace the ol
 ## Scripts
 
 - `pnpm dev` - Build and start in development mode with DevTools
+- `pnpm dev:webrtc` - Build, start a local workspace server as a WebRTC answerer, and launch Electron through the remote transport
 - `pnpm dev -- --auto-approve` - Start dev mode and automatically approve decision-style approval prompts
 - `pnpm build` - Production build
 - `pnpm start` - Start the app (requires prior build)
@@ -153,6 +155,18 @@ pnpm dev
 ```
 
 The app will open with DevTools enabled for debugging.
+
+To exercise the remote WebRTC transport without a second machine:
+
+```bash
+pnpm rebuild node-datachannel   # one-time, if the native module is not built
+pnpm dev:webrtc
+```
+
+`pnpm dev:webrtc` starts local signaling, starts a local workspace server as a
+WebRTC answerer, and launches Electron with a fresh `natstack://connect` link.
+Use `pnpm dev:webrtc -- --ephemeral` for a disposable workspace, or
+`pnpm dev:webrtc -- --workspace <name>` to force a specific workspace.
 
 ### Memory Diagnostics (optional)
 
