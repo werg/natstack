@@ -17,6 +17,11 @@ process.env["ELECTRON_DISABLE_SECURITY_WARNINGS"] = "true";
 import { isDev } from "./utils.js";
 import { createDevLogger } from "@natstack/dev-log";
 import {
+  createConnectDeepLink,
+  parseConnectLink,
+  type ConnectPairing,
+} from "@natstack/shared/connect";
+import {
   enqueueFirstArgvLink,
   getPendingConnectLink,
   installEarlyOpenUrlBuffer,
@@ -77,21 +82,18 @@ import {
 } from "./menu.js";
 import { getAppRoot, getResourcesPath } from "./paths.js";
 import { loadCentralEnv, deleteWorkspaceDir } from "@natstack/shared/workspace/loader";
+import { resolveLocalWorkspaceStartup } from "@natstack/shared/workspace/startup";
 import { CentralDataManager } from "@natstack/shared/centralData";
 import {
   resolveStartupMode,
   shouldRequestSingleInstanceLock,
-  getRemoteUserDataDir,
   getPendingUserDataDir,
-  workspaceRelaunchArgs,
-  connectSelectedRemoteRelaunchArgs,
-  ephemeralWorkspaceRelaunchArgs,
-  stripStartupSelectionArgs,
   type StartupMode,
   type ConnectedStartupMode,
 } from "./startupMode.js";
 import { establishServerSession, type SessionConnection } from "./serverSession.js";
-import { clearRemoteCredentials, loadRemoteCredentials } from "./remoteCredentialStore.js";
+import { loadStoredRemotePairing, clearStoredRemotePairing } from "./services/remoteCredService.js";
+import { relaunchApp } from "./relaunchApp.js";
 import type { ServerClient } from "./serverClient.js";
 import { CdpHostProvider } from "./cdpHostProvider.js";
 import { EventService } from "@natstack/shared/eventsService";
@@ -104,7 +106,6 @@ import { createApprovalAttention, type ApprovalAttention } from "./approvalAtten
 import type { PendingApproval } from "@natstack/shared/approvals";
 import { filterBootstrapApprovalsForTarget } from "@natstack/shared/bootstrapApprovals";
 import { RuntimeDiagnosticsStore } from "../server/runtimeDiagnosticsStore.js";
-import { installPinnedTlsForAllPartitions } from "./tlsPinning.js";
 import { BROWSER_SESSION_PARTITION } from "@natstack/shared/panelInterfaces";
 
 const eventService = new EventService();
@@ -193,31 +194,8 @@ if (startupMode.kind === "local") {
     "userData",
     path.join(startupMode.wsDir, IS_HEADLESS_HOST ? "state-headless-host" : "state")
   );
-} else if (startupMode.kind === "remote") {
-  app.setPath(
-    "userData",
-    IS_HEADLESS_HOST ? path.join(getRemoteUserDataDir(), "headless-host") : getRemoteUserDataDir()
-  );
 } else {
   app.setPath("userData", getPendingUserDataDir());
-}
-
-installRemoteTlsPinning(startupMode);
-
-function shouldReturnToBootstrapForRemoteCredential(error: unknown): boolean {
-  if (startupMode.kind !== "remote" || startupMode.bootstrap !== "device") {
-    return false;
-  }
-  const message = error instanceof Error ? error.message : String(error);
-  return /Device credential expired or revoked|re-pair from the server/i.test(message);
-}
-
-function returnToBootstrapAfterRemoteCredentialFailure(error: unknown): never {
-  const message = error instanceof Error ? error.message : String(error);
-  log.warn(`[Workspace] Remote credential invalid; returning to server chooser: ${message}`);
-  clearRemoteCredentials();
-  relaunchWithArgs(stripStartupSelectionArgs(process.argv.slice(1)));
-  throw error instanceof Error ? error : new Error(message);
 }
 
 let cdpHostProvider: CdpHostProvider | null = null;
@@ -230,6 +208,55 @@ let electronHostLaunchTimer: ReturnType<typeof setTimeout> | null = null;
 let electronHostLaunchBlockedByApproval = false;
 let electronHostLaunchInFlight = false;
 let bootstrapWorkspaceRpcReady = false;
+// True when this launch found a persisted WebRTC remote pairing — the chooser is
+// skipped and `establishServerSession` connects to the remote over the pipe.
+let remotePairedAtLaunch = false;
+
+/**
+ * A returning device's credential was terminally rejected (revoked / reset on the
+ * server, or the DTLS cert regenerated so the pinned fingerprint no longer
+ * matches) — re-pairing is required. A transient outage reads differently (the
+ * transport retries internally; a connect timeout has its own shape), so those do
+ * NOT match and the stored pairing is kept for a later retry.
+ */
+function isTerminalRemoteCredentialFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /credential (expired|revoked|invalid)|re-pair|fingerprint mismatch|invalid token|session (is )?closed|session auth failed|SESSION_AUTH_FAILED/i.test(
+    message
+  );
+}
+
+/**
+ * Relaunch into the server chooser instead of exiting, so a failed remote connect
+ * can NEVER permanently brick startup (the prior code `app.exit(1)`-ed and the
+ * next launch re-dialed the same dead pairing forever). The one-shot
+ * `--skip-remote-pairing` flag suppresses auto-dialing the stored pairing for the
+ * relaunched process only; the pairing itself is kept unless the caller cleared it.
+ */
+function relaunchToServerChooser(): never {
+  const args = process.argv.slice(1).filter((a) => a !== "--skip-remote-pairing");
+  args.push("--skip-remote-pairing");
+  relaunchApp({ args });
+  throw new Error("relaunching to server chooser"); // unreachable; relaunchApp exits
+}
+
+// The bootstrap chooser resolves IN-PROCESS (no relaunch): when the user picks a
+// local workspace or pairs a server, the chooser IPC handler resolves
+// `chooserChoice`, the pending startup path awaits it, and we fall through to the
+// connected setup in the SAME process. A `local` choice reassigns `startupMode`;
+// a `remote` choice sets `pendingRemotePairing` (the fresh pairing IS the session).
+type ChooserChoice =
+  | { kind: "local"; name: string; ephemeral: boolean }
+  | { kind: "remote"; pairing: ConnectPairing };
+let chooserChoiceMade = false;
+let resolveChooserChoice!: (choice: ChooserChoice) => void;
+const chooserChoice = new Promise<ChooserChoice>((resolve) => {
+  resolveChooserChoice = (choice) => {
+    chooserChoiceMade = true;
+    resolve(choice);
+  };
+});
+
 let appliedElectronHostTargetKey: string | null = null;
 let electronHostLaunchLastStatusKey: string | null = null;
 let panelTreeInitializationStarted = false;
@@ -860,26 +887,6 @@ async function handleCredentialSessionCaptureRequest(
   }
 }
 
-/**
- * Install TLS fingerprint pinning across the default session AND every
- * `persist:browser` / `persist:panel:*` partition when the user configured an
- * explicit leaf certificate fingerprint. A CA path is trust material, not a
- * leaf pin, so it is handled by Node/Electron certificate validation instead.
- */
-function installRemoteTlsPinning(mode: StartupMode): void {
-  if (mode.kind !== "remote" || mode.remoteUrl.protocol !== "https:") {
-    return;
-  }
-
-  const expectedFingerprint = mode.tls?.fingerprint;
-
-  if (!expectedFingerprint) {
-    return;
-  }
-
-  installPinnedTlsForAllPartitions(mode.remoteUrl.hostname, expectedFingerprint);
-}
-
 function readyElectronLaunchEvent(result: unknown): AppAvailableEvent | null {
   const launch =
     typeof result === "object" && result !== null
@@ -1218,21 +1225,17 @@ function retryElectronHostTargetLaunchAfterAppEvent(change: ServerHostTargetChan
 }
 
 type BootstrapWorkspaceEntry = { name: string; lastOpened: number };
-type BootstrapSavedRemote = {
-  url: string;
-  hubUrl?: string;
-  workspaceName?: string;
-  bootstrap: "device" | "admin-token" | "hybrid";
-  deviceId?: string;
-  tokenPreview?: string;
-};
 
 type BootstrapConnectionState = {
   mode: "choose-connection" | "starting" | "connected";
   localWorkspaces: BootstrapWorkspaceEntry[];
   lastLocalWorkspaceName: string | null;
-  savedRemote: BootstrapSavedRemote | null;
   isDev: boolean;
+  /**
+   * The `natstack://connect` link the app was opened with (deep link / argv), if
+   * any — so the chooser can auto-pair instead of waiting for a paste+click.
+   */
+  pendingPairLink: string | null;
 };
 
 const WORKSPACE_NAME_RE = /^[a-zA-Z0-9_-]{1,64}$/;
@@ -1245,38 +1248,32 @@ function requireBootstrapShellSender(event: Electron.IpcMainInvokeEvent, channel
   }
 }
 
-function summarizeStoredRemote(): BootstrapSavedRemote | null {
-  const creds = loadRemoteCredentials();
-  if (!creds) return null;
-  const adminToken =
-    creds.kind === "admin-token" || creds.kind === "hybrid" ? creds.adminToken : undefined;
-  return {
-    url: creds.url,
-    hubUrl: creds.hubUrl,
-    workspaceName: creds.workspaceName,
-    bootstrap: creds.kind,
-    deviceId: creds.kind === "device" || creds.kind === "hybrid" ? creds.deviceId : undefined,
-    tokenPreview: adminToken ? `${adminToken.slice(0, 4)}...${adminToken.slice(-4)}` : undefined,
-  };
-}
-
 function getBootstrapConnectionState(): BootstrapConnectionState {
+  // The chooser is shown only while startup is still `pending`, nothing was
+  // paired at launch, AND the user has not yet made an in-process choice. A
+  // paired WebRTC remote (remotePairedAtLaunch) or a resolved chooser choice
+  // (chooserChoiceMade) flips the launch gate forward to connect rather than
+  // offering a choice.
   const mode =
-    startupMode.kind === "pending"
+    startupMode.kind === "pending" && !remotePairedAtLaunch && !chooserChoiceMade
       ? "choose-connection"
       : bootstrapWorkspaceRpcReady
         ? "connected"
         : "starting";
-  // Only the chooser reads localWorkspaces/savedRemote. The renderer polls getState every 500ms
-  // while "starting", so computing the workspace scan + credential decrypt on every tick is pure
-  // waste — the poll only watches for the mode flip. Compute the heavy fields only when shown.
+  // The deep link the app was opened with (room/fp/code/sig) — rebuilt so the
+  // chooser can auto-pair. Peeked (non-draining) so a getState poll is idempotent.
+  const pending = getPendingConnectLink();
+  const pendingPairLink = pending ? createConnectDeepLink(pending) : null;
+  // Only the chooser reads localWorkspaces. The renderer polls getState every 500ms
+  // while "starting", so computing the workspace scan on every tick is pure waste —
+  // the poll only watches for the mode flip. Compute the heavy fields only when shown.
   if (mode !== "choose-connection") {
     return {
       mode,
       localWorkspaces: [],
       lastLocalWorkspaceName: null,
-      savedRemote: null,
       isDev: isDev(),
+      pendingPairLink,
     };
   }
   const localWorkspaces = centralData.listWorkspaces().map((entry) => ({
@@ -1287,78 +1284,20 @@ function getBootstrapConnectionState(): BootstrapConnectionState {
     mode,
     localWorkspaces,
     lastLocalWorkspaceName: centralData.getLastOpenedWorkspace()?.name ?? null,
-    savedRemote: summarizeStoredRemote(),
     isDev: isDev(),
+    pendingPairLink,
   };
 }
 
 function normalizeBootstrapWorkspaceName(rawName: unknown): string {
-  const name =
-    typeof rawName === "string" && rawName.trim().length > 0
-      ? rawName.trim()
-      : (centralData.getLastOpenedWorkspace()?.name ?? "default");
+  if (typeof rawName !== "string" || rawName.trim().length === 0) {
+    throw new Error("Workspace name is required");
+  }
+  const name = rawName.trim();
   if (!WORKSPACE_NAME_RE.test(name)) {
     throw new Error("Workspace name must contain only letters, numbers, hyphens, and underscores");
   }
   return name;
-}
-
-function relaunchWithArgs(args: string[]): void {
-  if (
-    isDev() &&
-    process.env["NATSTACK_DEV_RUNNER_IPC"] === "1" &&
-    typeof (process as typeof process & { send?: (message: unknown) => boolean }).send ===
-      "function"
-  ) {
-    const sent = (process as typeof process & { send: (message: unknown) => boolean }).send({
-      type: "natstack:dev-relaunch",
-      args,
-    });
-    if (!sent) {
-      app.relaunch({ args });
-    }
-    const exitTimer = setTimeout(() => app.exit(0), 1_000);
-    exitTimer.unref?.();
-    return;
-  }
-  app.relaunch({ args });
-  app.exit(0);
-}
-
-/**
- * Recover a headless host that is paired with a remote hub but has not selected a workspace yet.
- * A headless host has no chooser UI, so: auto-select when exactly one workspace exists, otherwise
- * log an actionable error and stay alive (never hard-quit a recoverable state — a supervisor can
- * create/select a workspace or set NATSTACK_REMOTE_URL and restart).
- */
-async function recoverHeadlessPendingWorkspace(): Promise<void> {
-  try {
-    const { listRemoteWorkspaces, selectRemoteWorkspace } =
-      await import("./services/remoteCredService.js");
-    const workspaces = await listRemoteWorkspaces();
-    if (workspaces.length === 1) {
-      const only = workspaces[0];
-      if (!only) return;
-      log.info(`[headless] Auto-selecting the only remote workspace "${only.name}"`);
-      await selectRemoteWorkspace(only.name);
-      relaunchWithArgs(connectSelectedRemoteRelaunchArgs());
-      return;
-    }
-    log.error(
-      workspaces.length === 0
-        ? "[headless] Paired with remote server but it has no workspaces. Create a workspace on the " +
-            "server, then restart the headless host."
-        : `[headless] Paired with remote server but no workspace is selected and ${workspaces.length} ` +
-            "are available. Set NATSTACK_REMOTE_URL to a /_workspace/<name> URL (or select a " +
-            "workspace) and restart the headless host."
-    );
-  } catch (error) {
-    log.error(
-      `[headless] Failed to resolve remote workspace selection: ${
-        error instanceof Error ? error.message : String(error)
-      }`
-    );
-  }
 }
 
 function installBootstrapConnectionHandlers(): void {
@@ -1367,11 +1306,15 @@ function installBootstrapConnectionHandlers(): void {
     return getBootstrapConnectionState();
   });
 
+  // The chooser handlers resolve the in-process choice instead of relaunching.
+  // The pending startup path (app.on("ready")) awaits `chooserChoice` and falls
+  // through to the connected setup in the SAME process — no app.relaunch, no
+  // throwaway exchange, no orphan windows.
   ipcMain.handle("natstack:bootstrap:launch-local-workspace", (event, workspaceName?: string) => {
     requireBootstrapShellSender(event, "natstack:bootstrap:launch-local-workspace");
     const name = normalizeBootstrapWorkspaceName(workspaceName);
     log.info(`[bootstrap] Launching local workspace "${name}" by user request`);
-    relaunchWithArgs(workspaceRelaunchArgs(name));
+    resolveChooserChoice({ kind: "local", name, ephemeral: false });
     return { ok: true };
   });
 
@@ -1382,63 +1325,25 @@ function installBootstrapConnectionHandlers(): void {
     }
     const name = `dev-${randomBytes(4).toString("hex")}`;
     log.info(`[bootstrap] Launching ephemeral dev workspace "${name}" by user request`);
-    relaunchWithArgs(ephemeralWorkspaceRelaunchArgs(name));
+    resolveChooserChoice({ kind: "local", name, ephemeral: true });
     return { ok: true };
   });
 
-  ipcMain.handle("natstack:bootstrap:connect-selected-remote-workspace", (event) => {
-    requireBootstrapShellSender(event, "natstack:bootstrap:connect-selected-remote-workspace");
-    const creds = loadRemoteCredentials();
-    if (!creds) {
-      throw new Error("No saved remote server credentials are available");
-    }
-    if (!creds.workspaceName) {
-      throw new Error("Choose a remote workspace before connecting");
-    }
-    log.info(`[bootstrap] Connecting to selected remote workspace "${creds.workspaceName}"`);
-    relaunchWithArgs(connectSelectedRemoteRelaunchArgs());
-    return { ok: true };
-  });
-
-  ipcMain.handle("natstack:bootstrap:pair-remote", async (event, payload: unknown) => {
+  ipcMain.handle("natstack:bootstrap:pair-remote", (event, payload: unknown) => {
     requireBootstrapShellSender(event, "natstack:bootstrap:pair-remote");
-    const { exchangePairingCodeForDeviceCredential } =
-      await import("./services/remoteCredService.js");
-    const result = await exchangePairingCodeForDeviceCredential(
-      payload as {
-        url: string;
-        code: string;
-        caPath?: string;
-        fingerprint?: string;
-        label?: string;
-      }
-    );
-    if (result.ok) {
-      log.info("[bootstrap] Paired remote server by user request");
+    const p = (payload ?? {}) as { link?: unknown };
+    const link = typeof p.link === "string" ? p.link : "";
+    const parsed = parseConnectLink(link);
+    if (parsed.kind === "error") {
+      return { ok: false, error: "invalid-url", message: parsed.reason };
     }
-    return result;
+    // Hand the parsed pairing to the pending path; establishServerSession dials it
+    // over WebRTC and KEEPS the pipe as the session (the one-time code authenticates
+    // it; the issued device credential is persisted for the next launch).
+    log.info("[bootstrap] Pairing remote server by user request; connecting in-process");
+    resolveChooserChoice({ kind: "remote", pairing: parsed });
+    return { ok: true };
   });
-
-  ipcMain.handle("natstack:bootstrap:list-remote-workspaces", async (event) => {
-    requireBootstrapShellSender(event, "natstack:bootstrap:list-remote-workspaces");
-    const { listRemoteWorkspaces } = await import("./services/remoteCredService.js");
-    return { workspaces: await listRemoteWorkspaces() };
-  });
-
-  ipcMain.handle(
-    "natstack:bootstrap:connect-remote-workspace",
-    async (event, workspaceName: unknown) => {
-      requireBootstrapShellSender(event, "natstack:bootstrap:connect-remote-workspace");
-      if (typeof workspaceName !== "string" || workspaceName.trim().length === 0) {
-        throw new Error("Workspace name is required");
-      }
-      const { selectRemoteWorkspace } = await import("./services/remoteCredService.js");
-      const result = await selectRemoteWorkspace(workspaceName.trim());
-      log.info(`[bootstrap] Connecting to remote workspace "${result.workspaceName}"`);
-      relaunchWithArgs(connectSelectedRemoteRelaunchArgs());
-      return { ok: true };
-    }
-  );
 }
 
 // =============================================================================
@@ -1470,7 +1375,7 @@ function attachWorkspaceWindowServices(): void {
   });
   appOrchestrator = new AppOrchestrator({
     getPanelView: () => panelView,
-    statePath: startupMode.kind === "remote" ? getRemoteUserDataDir() : serverSession.statePath,
+    statePath: serverSession.statePath,
   });
   void drainPendingReadyElectronLaunch().catch((error: unknown) => {
     log.warn(
@@ -1799,19 +1704,71 @@ app.on("ready", async () => {
     }
   }
 
-  if (startupMode.kind === "pending") {
+  // A persisted WebRTC remote pairing skips the chooser: establishServerSession
+  // dials it over the pipe regardless of the (pending/local) startup mode.
+  // `--skip-remote-pairing` (set by relaunchToServerChooser) suppresses auto-dial
+  // for one launch so a failed remote connect lands on the chooser, not a re-dial loop.
+  const skipRemotePairingLaunch = process.argv.includes("--skip-remote-pairing");
+  const storedRemoteAtLaunch = loadStoredRemotePairing();
+  remotePairedAtLaunch = storedRemoteAtLaunch !== null && !skipRemotePairingLaunch;
+
+  // A FRESH pairing the chooser redeems THIS launch (set from a remote choice
+  // below). When present, establishServerSession keeps its WebRTC pipe as the
+  // session rather than spawning a local server or re-dialing a stored pairing.
+  let pendingRemotePairing: ConnectPairing | null = null;
+
+  if (startupMode.kind === "pending" && !remotePairedAtLaunch) {
     if (IS_HEADLESS_HOST) {
-      // No chooser UI on a headless host — recover by auto-selecting (or surface an actionable
-      // error) instead of opening a window that nothing can drive.
-      void recoverHeadlessPendingWorkspace();
+      // No chooser UI on a headless host and nothing paired to connect to —
+      // stay alive (a supervisor can pair a remote or select a workspace and
+      // restart) rather than opening a window nothing can drive.
+      log.error(
+        "[headless] No workspace selected and no remote server paired. Pair a server over " +
+          "WebRTC or select a workspace, then restart the headless host."
+      );
       return;
     }
+    // Show the chooser, then AWAIT the user's choice in-process. Instead of
+    // relaunching, we apply the choice and fall through to the connected setup
+    // below in the SAME process.
     performance.mark("startup:window-created");
     createWindow();
-    return;
+    const choice = await chooserChoice;
+    if (choice.kind === "local") {
+      // Resolve (creating if missing) the chosen local workspace in-process and
+      // promote `startupMode` to local so the connected setup spawns its server.
+      const startup = resolveLocalWorkspaceStartup({
+        appRoot: getAppRoot(),
+        centralData,
+        name: choice.name,
+        init: true,
+        isDev: isDev(),
+      });
+      const isEphemeral = choice.ephemeral;
+      startupMode = {
+        kind: "local",
+        wsDir: startup.resolved.wsDir,
+        workspaceName: startup.resolved.name,
+        workspaceId: startup.resolved.workspace.config.id,
+        // The chooser distinguishes the ephemeral button explicitly; the
+        // resolved name path never tags ephemeral, so carry the user's intent.
+        isEphemeral,
+        autoApproveStartupUnits:
+          startup.resolved.name === "default" && startup.resolved.created && !isEphemeral,
+      };
+      workspaceId = startupMode.workspaceId;
+      log.info(`[bootstrap] Local workspace chosen: ${workspaceId} (${startupMode.wsDir})`);
+    } else {
+      // Remote: leave startupMode pending; the fresh pairing becomes the session.
+      pendingRemotePairing = choice.pairing;
+      log.info("[bootstrap] Remote server chosen; pairing the session over WebRTC");
+    }
+    // Fall through to the connected setup.
   }
 
-  if (!IS_HEADLESS_HOST) {
+  // Idempotent: the chooser path already created the window; create it here for
+  // the returning-device / direct-local startups that skip the chooser.
+  if (!IS_HEADLESS_HOST && !mainWindow) {
     performance.mark("startup:window-created");
     createWindow();
   }
@@ -1873,17 +1830,27 @@ app.on("ready", async () => {
     // from empty → connected). This mirrors what ServerClient's own
     // onConnectionStatusChanged callback will emit a few moments later
     // once the WS lifecycle begins.
+    const remoteHost =
+      pendingRemotePairing?.srv ??
+      (!skipRemotePairingLaunch ? storedRemoteAtLaunch?.pairing.srv : undefined);
+    const isRemoteSession = pendingRemotePairing !== null || remotePairedAtLaunch;
+
     eventService.emit("server-connection-changed", {
       status: "connecting",
-      isRemote: startupMode.kind === "remote",
-      remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
+      isRemote: isRemoteSession,
+      remoteHost,
     });
 
     let previousStatus: import("./serverClient.js").ConnectionStatus | null = null;
-    const connectedStartupMode: ConnectedStartupMode = startupMode;
-    const establish = (mode: ConnectedStartupMode) =>
+    // null mode = no local spawn; establishServerSession connects either the
+    // fresh pairing (pendingRemotePairing) or a stored pairing over WebRTC.
+    const connectedStartupMode: ConnectedStartupMode | null =
+      startupMode.kind === "local" ? startupMode : null;
+    const establish = (mode: ConnectedStartupMode | null) =>
       establishServerSession({
         mode,
+        pendingPairing: pendingRemotePairing ?? undefined,
+        skipStoredRemote: skipRemotePairingLaunch,
         centralData,
         onServerEvent: handleServerEvent,
         onIpcRequest: async (type, msg) => {
@@ -1895,8 +1862,8 @@ app.on("ready", async () => {
         onConnectionStatusChanged: (status) => {
           eventService.emit("server-connection-changed", {
             status,
-            isRemote: startupMode.kind === "remote",
-            remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
+            isRemote: isRemoteSession,
+            remoteHost,
           });
           // On every transition into "connected" (including the very first one
           // and any subsequent reconnect), replay shell subscriptions. The
@@ -1915,12 +1882,20 @@ app.on("ready", async () => {
         },
       });
 
-    // Phase 1: Establish server session (spawn or connect)
+    // Phase 1: Establish server session (spawn the local child server)
     try {
       serverSession = await establish(connectedStartupMode);
     } catch (error) {
-      if (!shouldReturnToBootstrapForRemoteCredential(error)) throw error;
-      returnToBootstrapAfterRemoteCredentialFailure(error);
+      if (remotePairedAtLaunch) {
+        const message = error instanceof Error ? error.message : String(error);
+        log.warn(`[remote] establish failed during a paired launch: ${message}`);
+        // Drop the stored pairing only if it was terminally rejected (so a
+        // transient outage keeps it for a later retry); either way return to the
+        // chooser instead of exiting — startup must never be permanently bricked.
+        if (isTerminalRemoteCredentialFailure(error)) clearStoredRemotePairing();
+        relaunchToServerChooser();
+      }
+      throw error;
     }
     serverClientRef = serverSession.serverClient;
     serverEventSubscriptions.add("apps:available");
@@ -1948,19 +1923,9 @@ app.on("ready", async () => {
       mainWindow.setTitle(`NatStack — ${workspaceId}`);
     }
 
-    // Remote-mode only: poll /healthz from main-process every 60s and emit
-    // `server-health` samples to the renderer. Local mode manages the
-    // server process directly and doesn't need polled liveness info.
-    if (startupMode.kind === "remote") {
-      const { startRemoteHealthPoll } = await import("./remoteHealthPoll.js");
-      startRemoteHealthPoll({
-        baseUrl: startupMode.remoteUrl,
-        adminToken: startupMode.adminToken,
-        caPath: startupMode.tls?.caPath,
-        fingerprint: startupMode.tls?.fingerprint,
-        eventService,
-      });
-    }
+    // The shell always spawns its own loopback server (ServerProcessManager
+    // manages its lifecycle), so there is no out-of-process server to /healthz-
+    // poll. Remote topology is WebRTC, whose own liveness lives in the transport.
 
     // Create PanelRegistry (pure in-memory — server owns persistence)
     panelRegistry = new PanelRegistry({
@@ -1969,12 +1934,14 @@ app.on("ready", async () => {
 
     const { createElectronShellCore } = await import("./shellCore/createElectronShellCore.js");
     shellCore = createElectronShellCore({
-      statePath: startupMode.kind === "remote" ? getRemoteUserDataDir() : serverSession.statePath,
+      statePath: serverSession.statePath,
       workspaceId: serverSession.workspaceId,
       workspacePath: serverSession.workspacePath,
-      // In remote mode the workspace source tree lives on the server, so the
-      // Electron process cannot require local panel manifests during bootstrap.
-      allowMissingManifests: startupMode.kind === "remote",
+      // A LOCAL server owns the workspace tree on this host (manifests present, so
+      // fail loud on a genuinely-missing one). A REMOTE server owns the tree on the
+      // other host, so the local manifest resolve misses at bootstrap — tolerate
+      // that rather than hard-failing the whole startup.
+      allowMissingManifests: remotePairedAtLaunch || pendingRemotePairing !== null,
       registry: panelRegistry,
       serverClient: serverSession.serverClient,
       gatewayConfig: serverSession.gatewayConfig,
@@ -2016,6 +1983,7 @@ app.on("ready", async () => {
         };
       },
       getWebContentsForCaller: (callerId) => viewManager?.getWebContents(callerId) ?? null,
+      getPanelRuntimeConnection: (panelId) => panelOrchestrator?.getPanelRuntimeConnection(panelId),
       authorizeAppServerCall,
       onServerRpcResult: async ({ service, method, args, result }) => {
         if (service === "workspace" && method === "hostTargets.launch" && args[0] === "electron") {
@@ -2140,7 +2108,7 @@ app.on("ready", async () => {
       hostConnectionId: panelOrchestrator.getRuntimeClientSessionId(),
       getViewManager: () => viewManager,
       diagnosticsStore: new RuntimeDiagnosticsStore({
-        statePath: startupMode.kind === "remote" ? getRemoteUserDataDir() : serverSession.statePath,
+        statePath: serverSession.statePath,
       }),
       forwardDiagnostic: forwardPanelDiagnostic,
       onHostCommand: async (panelId, action, args) => {
@@ -2221,8 +2189,8 @@ app.on("ready", async () => {
         serverClient: sc,
         getViewManager,
         getAppOrchestrator: () => appOrchestrator,
-        connectionMode: startupMode.kind === "remote" ? "remote" : "local",
-        remoteHost: startupMode.kind === "remote" ? startupMode.remoteUrl.hostname : undefined,
+        connectionMode: "local",
+        remoteHost: undefined,
       })
     );
     electronContainer.registerRpc(
@@ -2617,11 +2585,11 @@ app.on("will-quit", (event) => {
   // Cleanup helper for ephemeral dev workspaces (called sync, after servers stop)
   const isEphemeral = startupMode.kind === "local" && startupMode.isEphemeral;
   const cleanupDevWorkspace = () => {
-    if (isEphemeral && workspaceId) {
+    if (isEphemeral && startupMode.kind === "local") {
       try {
-        deleteWorkspaceDir(workspaceId);
-        centralData.removeWorkspace(workspaceId);
-        console.log(`[App] Deleted ephemeral dev workspace "${workspaceId}"`);
+        deleteWorkspaceDir(startupMode.workspaceName);
+        centralData.removeWorkspace(startupMode.workspaceName);
+        console.log(`[App] Deleted ephemeral dev workspace "${startupMode.workspaceName}"`);
       } catch (e) {
         console.error("[App] Failed to delete dev workspace:", e);
       }

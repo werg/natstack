@@ -104,8 +104,9 @@ export const CONFIG_LOADER_JS = `(async () => {
   globalThis.__natstackEntityId = entityId;
   globalThis.__natstackSlotId = slotId;
   const gatewayConfig = cfg.gatewayConfig;
-  const gatewayRpcWsUrl = gatewayConfig.serverUrl.replace(/^https:/, "wss:").replace(/^http:/, "ws:").replace(/\\/$/, "") + "/rpc";
-  globalThis.__natstackGatewayRpcWsUrl = gatewayRpcWsUrl;
+  // Panel RPC rides the shell bridge (host → WebRTC control channel), not a
+  // direct /rpc WebSocket: no panel-side ws URL is built. The token still
+  // arrives out-of-band here and is consumed by the bridge's SessionNegotiation.
   globalThis.__natstackGatewayToken = gatewayConfig.token;
   globalThis.__natstackKind = "panel";
 

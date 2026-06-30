@@ -44,6 +44,17 @@ export type {
 
 export { isParentPortEnvelope, ELECTRON_LOCAL_SERVICE_NAMES } from "./types.js";
 export { createRpcClient, defineContract } from "./client.js";
+export { bytesToBase64, base64ToBytes } from "./base64.js";
+export {
+  TERMINAL_CLOSE_CODES,
+  isTerminalCloseCode,
+  CLOSE_TOKEN_REVOKED,
+  CLOSE_EXPECTED_AUTH,
+  CLOSE_INVALID_TOKEN,
+  CLOSE_LEASE_DENIED,
+  CLOSE_LEASE_REVOKED,
+  CLOSE_PANEL_RETIRED,
+} from "./protocol/closeCodes.js";
 export {
   createConnectionlessRpcClient,
   collectExposableMethods,

@@ -11,10 +11,6 @@ import { clearShellTokenCache } from "../rpcClient.js";
  * the command builds the right calls and shapes its output/exit codes.
  */
 
-vi.mock("@natstack/shared/tailscaleDiscovery", () => ({
-  discoverNatstackServers: vi.fn(async () => []),
-}));
-
 interface RpcRequest {
   method: string;
   args: unknown[];

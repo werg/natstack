@@ -10,6 +10,7 @@ import type { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 import type { AuditLog } from "@natstack/shared/credentials/audit";
 import type { PendingUnitBatchApproval } from "@natstack/shared/approvals";
 import type { AppCapability } from "@natstack/shared/unitManifest";
+import { isPanelSlotId } from "@natstack/shared/panel/ids";
 import {
   connectionInfoResponse,
   createPairingInviteResponse,
@@ -78,6 +79,60 @@ function sendJson(
   res.end(JSON.stringify(payload));
 }
 
+/**
+ * Redeem a device-pairing credential presented as a session token — the
+ * over-the-pipe equivalent of the loopback HTTP `/complete-pairing` +
+ * `/refresh-shell` endpoints (which a remote WebRTC client cannot reach):
+ *   - a QR pairing `code` (fresh device) → `completePairing` → a newly issued
+ *     device credential (returned so the auth-result hands it to the client to
+ *     persist), or
+ *   - `refresh:<deviceId>:<refreshToken>` (returning device) → `validateRefresh`.
+ * Both resolve to the device's `shell:<deviceId>` principal. Returns null when
+ * the token is neither (handleAuth then rejects it as an invalid token). Wired
+ * into `RpcServer`'s `redeemPairingCredential` dep so it runs ONLY after the
+ * grant/bearer checks miss.
+ */
+export function createPairingRedeemer(deps: {
+  deviceAuthStore: DeviceAuthStore;
+  tokenManager: TokenManager;
+}) {
+  const REFRESH_PREFIX = "refresh:";
+  return (token: string, ctx: { clientLabel?: string; clientPlatform?: string }) => {
+    if (token.startsWith(REFRESH_PREFIX)) {
+      const rest = token.slice(REFRESH_PREFIX.length);
+      const sep = rest.indexOf(":");
+      if (sep <= 0) return null;
+      const deviceId = rest.slice(0, sep);
+      const refreshToken = rest.slice(sep + 1);
+      if (!refreshToken) return null;
+      try {
+        deps.deviceAuthStore.validateRefresh(deviceId, refreshToken);
+      } catch {
+        return null;
+      }
+      deps.tokenManager.ensureToken(shellCallerId(deviceId), "shell");
+      return { callerId: shellCallerId(deviceId), callerKind: "shell" as const };
+    }
+    if (!deps.deviceAuthStore.hasPendingPairingCode(token)) return null;
+    let credential;
+    try {
+      credential = deps.deviceAuthStore.completePairing({
+        code: token,
+        label: ctx.clientLabel,
+        platform: ctx.clientPlatform,
+      });
+    } catch {
+      return null;
+    }
+    deps.tokenManager.ensureToken(shellCallerId(credential.deviceId), "shell");
+    return {
+      callerId: shellCallerId(credential.deviceId),
+      callerKind: "shell" as const,
+      deviceCredential: { deviceId: credential.deviceId, refreshToken: credential.refreshToken },
+    };
+  };
+}
+
 export function createAuthService(deps: {
   tokenManager: TokenManager;
   deviceAuthStore: DeviceAuthStore;
@@ -114,7 +169,19 @@ export function createAuthService(deps: {
       if (method === "grantConnection") {
         capabilityAuthorizer.require(ctx.caller, "panel-hosting");
         if (!deps.connectionGrants) throw new Error("Connection grants are not configured");
-        return deps.connectionGrants.grant(args[0] as string, ctx.caller.runtime.id);
+        const principalId = args[0] as string;
+        // Boundary defense at the RPC ingress: a slot id ("panel:tree/…") names a
+        // tree position, not a connectable principal. Reject it loudly here so a
+        // slot/entity mix-up by ANY caller fails at the grant rather than minting a
+        // grant that can never satisfy authorizePanelConnection (leases are keyed
+        // by the panel ENTITY id "panel:nav-…").
+        if (isPanelSlotId(principalId)) {
+          throw new Error(
+            `grantConnection: "${principalId}" is a panel SLOT id; connection grants require a ` +
+              `runtime principal (the panel ENTITY id "panel:nav-…"), not a tree slot.`
+          );
+        }
+        return deps.connectionGrants.grant(principalId, ctx.caller.runtime.id);
       }
       if (method === "getConnectionInfo") {
         return connectionInfoResponse(deps);

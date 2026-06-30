@@ -38,6 +38,7 @@ export class ServerUnitApprovalCoordinator implements UnitApprovalCoordinator<Un
     private readonly deps: {
       approvalQueue: UnitApprovalQueueLike;
       delayMs?: number;
+      autoApproveStartupUnits?: boolean;
     }
   ) {}
 
@@ -78,18 +79,21 @@ export class ServerUnitApprovalCoordinator implements UnitApprovalCoordinator<Un
     const requests = batch.requests;
     try {
       const units = requests.flatMap((request) => request.entries);
-      const decision = await this.deps.approvalQueue.request({
-        kind: "unit-batch",
-        callerId: "system:units",
-        callerKind: "system",
-        repoPath: "meta",
-        effectiveVersion: "",
-        trigger,
-        title: unitBatchTitle(units, trigger),
-        description: unitBatchDescription(units),
-        units,
-        configWrite: null,
-      });
+      const decision =
+        trigger === "startup" && this.deps.autoApproveStartupUnits
+          ? "once"
+          : await this.deps.approvalQueue.request({
+              kind: "unit-batch",
+              callerId: "system:units",
+              callerKind: "system",
+              repoPath: "meta",
+              effectiveVersion: "",
+              trigger,
+              title: unitBatchTitle(units, trigger),
+              description: unitBatchDescription(units),
+              units,
+              configWrite: null,
+            });
       if (decision === "deny") {
         for (const request of requests) request.applyDenied();
       } else {

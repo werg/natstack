@@ -189,6 +189,16 @@ Allowed callers: `panel`, `app`, `server`, `worker`, `do`, `extension`, `shell`
 | `fs.handleStat` | Return metadata (type flags, size, mtime/ctime, mode) for the file behind an open handle. |
 | `fs.mktemp` | Create the context's `.tmp/` directory if needed and return a fresh, unused root-relative scratch path under it (for direct fs write-to-temp-then-rename patterns); the file itself is not created, the prefix is sanitized, and the path is not a tracked edit/VCS destination. |
 
+## `gateway`
+
+Loopback panel-asset fetch bridge (remote shells)
+
+Allowed callers: `shell`, `app`, `panel`
+
+| Method | Description |
+|--------|-------------|
+| `gateway.fetch` | Loopback-fetch a panel asset from the server's own gateway and stream the Response back over the pipe's bulk channel (a streaming method). |
+
 ## `gitInterop`
 
 External Git interop: declared remotes and remote project imports

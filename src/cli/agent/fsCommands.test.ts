@@ -5,10 +5,6 @@ import * as path from "node:path";
 import { clearShellTokenCache } from "../rpcClient.js";
 import { renderGrepMatches } from "./fsCommands.js";
 
-vi.mock("@natstack/shared/tailscaleDiscovery", () => ({
-  discoverNatstackServers: vi.fn(async () => []),
-}));
-
 interface RpcRequest {
   method: string;
   args: unknown[];

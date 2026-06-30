@@ -1,33 +1,27 @@
 /**
- * Browser transport entry point — compiled to an IIFE by the build system.
+ * Browser transport entry point — compiled to an IIFE by the build system and
+ * served as `__transport.js` under each panel route.
  *
- * This reuses the same createWsTransport() from src/preload/wsTransport.ts,
- * eliminating duplication between the Electron preload and browser-served panels.
+ * Panels no longer open a direct `ws://…/rpc` WebSocket. Panel RPC rides the
+ * **shell bridge** (`__natstackShell` — Electron `contextBridge` on desktop, the
+ * React-Native `postMessage` bridge on mobile), which the host muxes onto its
+ * single WebRTC control channel as the panel's own logical session. The panel
+ * runtime's `createPanelTransport()` consumes that bridge directly, so this
+ * entry no longer constructs any transport global.
  *
- * Expects these globals to be set before this script runs (by configLoader):
- * - globalThis.__natstackEntityId (string) — runtime entity ID
- * - globalThis.__natstackGatewayRpcWsUrl (string) — fully resolved gateway RPC WS URL
- * - globalThis.__natstackGatewayToken (string) — auth token for ws:auth
+ * Its remaining job is to apply early `stateArgs:updated` events the host pushes
+ * over the bridge before the panel bundle's runtime is up.
  *
- * Timing: configLoader runs as a blocking <script> and sets all globals
- * synchronously before dynamically loading this script, so the globals are
- * always available when this code executes.
- *
- * Sets:
- * - globalThis.__natstackTransport — the TransportBridge instance (single server WS)
+ * Timing: configLoader runs as a blocking <script> and sets the panel globals
+ * (and `__natstackShell` is exposed by the host preload/injection) before
+ * dynamically loading this script.
  */
 
 import { applyStateArgsSnapshot } from "@natstack/shared/panel/applyStateArgsSnapshot";
-import { createWsTransport, type TransportBridge } from "../preload/wsTransport.js";
+import type { RpcEnvelope } from "@natstack/rpc";
 
-type BrowserTransportGlobals = typeof globalThis & {
-  __natstackEntityId: string;
-  __natstackGatewayToken: string;
-  __natstackGatewayRpcWsUrl: string;
-  __natstackConnectionId?: string;
-  __natstackClientLabel?: string;
-  __natstackTransport?: TransportBridge;
-  __natstackStateArgs?: unknown;
+type ShellEnvelopeBridge = {
+  onEnvelope?: (handler: (envelope: RpcEnvelope) => void) => () => void;
 };
 
 type RuntimeEventMessage = {
@@ -45,28 +39,23 @@ function isRuntimeEventMessage(message: unknown): message is RuntimeEventMessage
   );
 }
 
-const globals = globalThis as BrowserTransportGlobals;
-const viewId: string = globals.__natstackEntityId;
-const authToken: string = globals.__natstackGatewayToken;
-const wsUrl: string = globals.__natstackGatewayRpcWsUrl;
-
-globals.__natstackTransport = createWsTransport({
-  viewId,
-  wsPort: 0,
-  authToken,
-  callerKind: "panel",
-  wsUrl,
-  connectionId: globals.__natstackConnectionId,
-  clientLabel: globals.__natstackClientLabel,
-});
-
 // ---------------------------------------------------------------------------
 // stateArgs listener
 // ---------------------------------------------------------------------------
-// The server emits stateArgs:updated back to the panel over the server WS
-// after persisting. This listener works in both Electron and standalone.
+// The host pushes runtime events (incl. stateArgs:updated) over the shell bridge
+// back to the panel's logical session. This early listener applies them before
+// the panel bundle's runtime takes over; applyStateArgsSnapshot is idempotent.
 
-globals.__natstackTransport.onMessage((envelope) => {
+const shell = ((
+  globalThis as typeof globalThis & {
+    __natstackShell?: ShellEnvelopeBridge;
+    __natstackElectron?: ShellEnvelopeBridge;
+  }
+).__natstackShell ??
+  (globalThis as typeof globalThis & { __natstackElectron?: ShellEnvelopeBridge })
+    .__natstackElectron) as ShellEnvelopeBridge | undefined;
+
+shell?.onEnvelope?.((envelope) => {
   const message = envelope.message;
   if (isRuntimeEventMessage(message) && message.event === "stateArgs:updated") {
     const stateArgs =

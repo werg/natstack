@@ -3,7 +3,6 @@
  */
 
 import { WebSocket } from "ws";
-import * as fs from "fs";
 import {
   createRpcClient,
   type RpcClient,
@@ -17,7 +16,6 @@ import { authMethods } from "@natstack/shared/serviceSchemas/auth";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import { serverRpcWsUrl } from "@natstack/shared/connect";
-import { createPinnedTlsSocket } from "./tlsPinning.js";
 
 export type ConnectionStatus = RpcConnectionStatus;
 
@@ -28,11 +26,23 @@ export interface ScopedServerCaller {
 
 export type ServerMessageListener = (envelope: RpcEnvelope) => void;
 
-export interface TlsPinningOptions {
-  /** Path to a CA certificate (PEM) for self-signed servers */
-  caPath?: string;
-  /** Expected leaf cert SHA-256 fingerprint (uppercase, colon-separated) */
-  fingerprint?: string;
+/**
+ * A dedicated logical session for a single desktop panel principal. The host
+ * (ipcDispatcher) relays the panel webview's RAW envelopes over it, so it carries
+ * the panel's FULL RPC surface — requests, routed DO calls, event subscriptions,
+ * and streams — as that panel's own `callerKind:"panel"` connection (the desktop
+ * analogue of mobile's `openPanelSession`). The server attributes everything to
+ * the panel by the authenticated session, so the host needs no per-message-type
+ * handling.
+ */
+export interface PanelSession {
+  send(envelope: RpcEnvelope): Promise<void> | void;
+  onMessage(listener: ServerMessageListener): () => void;
+  /** Status of the underlying session — the relay re-creates a dead one. */
+  status?(): ConnectionStatus;
+  /** True once the session is terminally closed (WebRTC). */
+  isClosed?(): boolean;
+  close(): void;
 }
 
 export interface ServerClient {
@@ -53,6 +63,21 @@ export interface ServerClient {
   ): Promise<unknown>;
   /** Forward server-originated messages for an Electron-hosted runtime principal. */
   addMessageListener(caller: ScopedServerCaller, listener: ServerMessageListener): () => void;
+  /**
+   * Open a dedicated session for a desktop panel principal, redeeming its
+   * existing runtime lease (`connectionId`) with a one-shot grant for
+   * `runtimeEntityId`. The host relays the panel's raw envelopes over it; see
+   * {@link PanelSession}. Since the panel no longer opens its own `/rpc` socket
+   * (the shell-bridge migration), the host-opened session redeems the lease with
+   * no conflict.
+   */
+  openPanelSession(runtimeEntityId: string, connectionId: string): Promise<PanelSession>;
+  /**
+   * Stream a backend service method's `Response` over the pipe's bulk channel
+   * (chunked) — for large/streamed bodies (e.g. `gateway.fetch` panel assets)
+   * that exceed the control-channel message-size limit.
+   */
+  stream(service: string, method: string, args: unknown[]): Promise<Response>;
   /** Check if connected */
   isConnected(): boolean;
   /** Current connection status */
@@ -62,12 +87,13 @@ export interface ServerClient {
 }
 
 export interface ServerClientOptions {
-  /** Full WebSocket URL (e.g., "ws://127.0.0.1:3000" or "ws://remote.example.com:8080/rpc") */
-  wsUrl?: string;
-  /** Dynamic WebSocket URL provider, consulted before each connect/reconnect. */
+  /**
+   * Dynamic WebSocket URL provider, consulted before each connect/reconnect.
+   * Used by local mode to follow the child server's port across restarts; when
+   * omitted the client dials the fixed loopback gateway. There is no remote
+   * `wsUrl`/TLS option — remote topology is WebRTC (DTLS), never a direct wss.
+   */
   getWsUrl?: () => string;
-  /** TLS pinning options — only honored for wss:// URLs */
-  tls?: TlsPinningOptions;
   /** Called when the connection is permanently lost after explicit non-reconnect close. */
   onDisconnect?: () => void;
   /** Called when connection status changes (for UI indicators) */
@@ -76,36 +102,10 @@ export interface ServerClientOptions {
   onServerEvent?: (event: string, payload: unknown) => void;
   /** Called after auth when the transport needs subscriptions or state replayed. */
   onRecovery?: (kind: "resubscribe" | "cold-recover") => void | Promise<void>;
-  /** Enable automatic reconnection on disconnect (default: false for local, true if wsUrl is set) */
+  /** Enable automatic reconnection on disconnect (default: true if getWsUrl is set). */
   reconnect?: boolean;
   /** Refresh the caller token after an auth failure during reconnect. */
   refreshAuthToken?: () => Promise<string>;
-}
-
-function createWsOptions(
-  wsUrl: string,
-  tlsOpts: TlsPinningOptions | undefined
-): Record<string, unknown> {
-  const isTls = wsUrl.startsWith("wss://");
-  const wsOptions: Record<string, unknown> = {};
-  if (!isTls || !tlsOpts) return wsOptions;
-
-  if (tlsOpts.caPath) {
-    wsOptions["ca"] = fs.readFileSync(tlsOpts.caPath);
-  }
-
-  if (tlsOpts.fingerprint) {
-    const expectedFingerprint = tlsOpts.fingerprint;
-    wsOptions["rejectUnauthorized"] = false;
-    wsOptions["checkServerIdentity"] = () => undefined;
-    const url = new URL(wsUrl);
-    const host = url.hostname;
-    const port = parseInt(url.port, 10) || 443;
-    wsOptions["createConnection"] = () =>
-      createPinnedTlsSocket({ host, port, expectedFingerprint });
-  }
-
-  return wsOptions;
 }
 
 export async function createServerClient(
@@ -114,10 +114,8 @@ export async function createServerClient(
   options?: ServerClientOptions
 ): Promise<ServerClient> {
   let activeAuthToken = authToken;
-  const getWsUrl =
-    options?.getWsUrl ??
-    (() => options?.wsUrl ?? serverRpcWsUrl(`http://127.0.0.1:${serverRpcPort}`));
-  const shouldReconnect = options?.reconnect ?? !!(options?.wsUrl || options?.getWsUrl);
+  const getWsUrl = options?.getWsUrl ?? (() => serverRpcWsUrl(`http://127.0.0.1:${serverRpcPort}`));
+  const shouldReconnect = options?.reconnect ?? !!options?.getWsUrl;
   const refreshAuthToken = options?.refreshAuthToken;
 
   const transport = wsClientTransport({
@@ -136,7 +134,7 @@ export async function createServerClient(
             return activeAuthToken;
           }
         : undefined,
-      createSocket: (url) => new NodeWsLike(new WebSocket(url, createWsOptions(url, options?.tls))),
+      createSocket: (url) => new NodeWsLike(new WebSocket(url)),
     },
   });
   transport.onStatusChange?.((status) => {
@@ -191,8 +189,7 @@ export async function createServerClient(
       adapter: {
         now: () => Date.now(),
         getAuthToken: async () => grant.token,
-        createSocket: (url) =>
-          new NodeWsLike(new WebSocket(url, createWsOptions(url, options?.tls))),
+        createSocket: (url) => new NodeWsLike(new WebSocket(url)),
       },
     });
     const scopedRpc = createRpcClient({
@@ -242,6 +239,9 @@ export async function createServerClient(
     ): Promise<unknown> {
       return rpc.call("main", `${service}.${method}`, args, options);
     },
+    stream(service: string, method: string, args: unknown[]): Promise<Response> {
+      return rpc.stream("main", `${service}.${method}`, args);
+    },
     async callAs(
       caller: ScopedServerCaller,
       service: string,
@@ -267,6 +267,38 @@ export async function createServerClient(
       return () => {
         listeners?.delete(listener);
         if (listeners?.size === 0) scopedListeners.delete(key);
+      };
+    },
+    async openPanelSession(runtimeEntityId: string, connectionId: string): Promise<PanelSession> {
+      // A dedicated panel-principal socket on the panel's lease connectionId, so
+      // the server's lease gate (authorizePanelConnection) accepts it. The grant
+      // encodes the panel principal (the server derives callerKind:"panel"), and
+      // getAuthToken re-grants on every (re)connect because grants are one-shot.
+      // reconnect:false — the ipcDispatcher relay re-opens a dead session lazily.
+      const panelTransport = wsClientTransport({
+        selfId: runtimeEntityId,
+        getWsUrl,
+        connectionId,
+        reconnect: false,
+        logPrefix: `PanelSession:${runtimeEntityId}`,
+        translateEvent: (event, payload, deliver) => {
+          deliver({ type: "event", fromId: "main", event, payload });
+          return true;
+        },
+        adapter: {
+          now: () => Date.now(),
+          getAuthToken: async () => (await authClient.grantConnection(runtimeEntityId)).token,
+          createSocket: (url) => new NodeWsLike(new WebSocket(url)),
+        },
+      });
+      await panelTransport.connectAndWait();
+      return {
+        send: (envelope: RpcEnvelope) => panelTransport.send(envelope),
+        onMessage: (listener: ServerMessageListener) => panelTransport.onMessage(listener),
+        status: () => panelTransport.status?.() ?? "disconnected",
+        close: () => {
+          void panelTransport.close();
+        },
       };
     },
     isConnected(): boolean {

@@ -11,7 +11,6 @@ import * as http from "node:http";
 import { createDevLogger } from "@natstack/dev-log";
 import type { EventName, EventPayloads, EventService } from "@natstack/shared/eventsService";
 import type { ServiceRouteDecl } from "../routeRegistry.js";
-import { buildPublicUrl, isPublicUrlVerified } from "../publicUrl.js";
 import type { AuditLog } from "../../../packages/shared/src/credentials/audit.js";
 import {
   ClientConfigStore,
@@ -280,21 +279,50 @@ function validateOAuthCredentialRequest(request: InternalOAuthConnectionRequest)
 /**
  * Decide which redirect strategy to use when the caller doesn't specify one.
  *
- * Loopback (browser-on-server) is the safe default for a personal desktop
- * server. When the public URL is verified working — either supplied
- * explicitly by the operator or auto-detected and reachability-tested —
- * default to "public" so OAuth works for mobile and remote-desktop clients
- * without each callsite having to know.
- *
- * Critically, an auto-detected URL that *failed* its reachability check
- * stays loopback by default — desktop in-process panels keep working even
- * when Tailscale serve provisioning fell through.
+ * After the WebRTC cutover the server has no public origin, so every remote
+ * platform routes OAuth through the public callback relay (§7). The parity rule
+ * means desktop and mobile share that one relay path rather than special-casing
+ * desktop loopback, so the default is "public" — which now points the IdP at the
+ * relay host (see buildRelayOAuthCallbackUrl), not the server's own URL. Genuinely
+ * co-located callers may still request "loopback"/"client-loopback" explicitly.
  */
 function resolveDefaultRedirectStrategy(
   requested: OAuthRedirectStrategy | undefined
 ): OAuthRedirectStrategy {
   if (requested) return requested;
-  return isPublicUrlVerified() ? "public" : "loopback";
+  // The "public" default routes the IdP through the callback relay (parity: desktop
+  // + mobile share it). But the relay is optional — `pnpm dev` sets no
+  // NATSTACK_RELAY_OAUTH_BASE_URL — and "public" then throws redirect_unavailable on
+  // every connect that doesn't pass an explicit redirect. Fall back to loopback when
+  // no relay is configured so co-located dev OAuth works; production configures the
+  // relay and keeps the parity path. (Remote sessions still need the relay set — a
+  // server-loopback redirect is unreachable from a remote browser by design.)
+  const relay = process.env["NATSTACK_RELAY_OAUTH_BASE_URL"];
+  return relay && relay.trim() ? "public" : "loopback";
+}
+
+/**
+ * Build the OAuth `redirect_uri` that lands on the public callback RELAY (§7).
+ *
+ * The server has no public URL of its own; the IdP redirects to the relay, which
+ * does a `state`/`transactionId`-keyed handoff back to the live server — mobile
+ * via App-Links deep-link, desktop via the authenticated backhaul. PKCE keeps the
+ * relay harmless: the `codeVerifier` never leaves this server, so even where the
+ * relay sees the `code` it is useless. The callback-path constant is unchanged so
+ * the relay and server agree on the route; only the host moves to the relay.
+ *
+ * Fails loud when unconfigured rather than silently falling back to a server URL
+ * that no third party can reach.
+ */
+function buildRelayOAuthCallbackUrl(): string {
+  const base = process.env["NATSTACK_RELAY_OAUTH_BASE_URL"];
+  if (!base || !base.trim()) {
+    throw new OAuthConnectionError(
+      "redirect_unavailable",
+      "OAuth callback relay is not configured — set NATSTACK_RELAY_OAUTH_BASE_URL to the relay origin."
+    );
+  }
+  return `${base.trim().replace(/\/+$/, "")}${PUBLIC_OAUTH_CALLBACK_PATH}`;
 }
 
 function isLoopbackHost(hostname: string): boolean {
@@ -2211,10 +2239,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         redirectUri = callback.redirectUri;
       } else if (redirectStrategy === "public") {
         transactionId = randomUUID();
-        redirectUri = buildPublicUrl(PUBLIC_OAUTH_CALLBACK_PATH);
+        redirectUri = buildRelayOAuthCallbackUrl();
       } else if (redirectStrategy === "client-forwarded") {
         transactionId = randomUUID();
-        redirectUri = redirect.callbackUri ?? buildPublicUrl(PUBLIC_OAUTH_CALLBACK_PATH);
+        redirectUri = redirect.callbackUri ?? buildRelayOAuthCallbackUrl();
       } else {
         throw new OAuthConnectionError("redirect_unavailable");
       }
@@ -2359,10 +2387,10 @@ export function createCredentialService(deps: CredentialServiceDeps = {}): Servi
         redirectUri = callback.redirectUri;
       } else if (redirectStrategy === "public") {
         transactionId = randomUUID();
-        redirectUri = buildPublicUrl(PUBLIC_OAUTH_CALLBACK_PATH);
+        redirectUri = buildRelayOAuthCallbackUrl();
       } else if (redirectStrategy === "client-forwarded") {
         transactionId = randomUUID();
-        redirectUri = redirect.callbackUri ?? buildPublicUrl(PUBLIC_OAUTH_CALLBACK_PATH);
+        redirectUri = redirect.callbackUri ?? buildRelayOAuthCallbackUrl();
       } else if (redirectStrategy === "client-loopback") {
         transactionId = randomUUID();
         redirectUri = buildClientLoopbackRedirectUri(redirect);

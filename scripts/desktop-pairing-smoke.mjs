@@ -1,27 +1,41 @@
 #!/usr/bin/env node
-// End-to-end desktop pairing smoke. Starts a disposable server, redeems the
-// pairing code as a desktop device, launches Electron against the paired remote
-// server, approves the Electron host-target launch gate, and verifies that the
-// hosted desktop shell loads over the selected network path.
+// End-to-end desktop pairing smoke over WebRTC. Spawns the signaling worker
+// (`wrangler dev apps/signaling`), starts a disposable server as a WebRTC
+// answerer, parses the `natstack://connect` pairing link it logs, then launches
+// Electron with that deep link so the desktop shell connects to the server over
+// the encrypted WebRTC pipe (no Tailscale, no remote HTTP origin). It then
+// approves the Electron host-target launch gate and verifies the hosted desktop
+// shell loads and a panel works.
+//
+// The app pairs and connects IN-PROCESS — the chooser no longer relaunches — so
+// the entire flow is observed through a SINGLE Electron launch handle. Cleanup is
+// crash-proof: it never assumes app.process()/app.close() succeed and always
+// SIGKILLs the Electron pid + child server/wrangler so no orphan process survives
+// a pass or a failure.
+//
+// The server answerer loads the native node-datachannel module lazily; run
+// `pnpm rebuild node-datachannel` once before this smoke.
 
 import fsp from "node:fs/promises";
 import fs from "node:fs";
 import net from "node:net";
-import tls from "node:tls";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { _electron as electron } from "@playwright/test";
 import { createServerInvocation, serverEntryArg } from "./cli/lib/server-entry.mjs";
-import { createConnectDeepLink, pickMobileHost } from "./cli/lib/connect-utils.mjs";
+import { createConnectDeepLink, parseConnectLink } from "./cli/lib/connect-utils.mjs";
 import { resolveElectronExecutableForNatStack } from "./branded-electron.mjs";
 
 const electronBinary = resolveElectronExecutableForNatStack();
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const mainPath = path.join(repoRoot, "dist", "main.cjs");
+const wranglerBin = path.join(repoRoot, "node_modules", ".bin", "wrangler");
+const signalingDir = path.join(repoRoot, "apps", "signaling");
 const defaultReadyFile = path.join(os.tmpdir(), `natstack-desktop-smoke-ready-${process.pid}.json`);
 const screenshotDir = path.join(repoRoot, "test-results", "desktop-pairing-smoke");
 
@@ -31,7 +45,6 @@ function sleep(ms) {
 
 function parseArgs(argv) {
   const options = {
-    network: "tailscale",
     timeoutMs: 420_000,
     launchTimeoutMs: 180_000,
     readyFile: defaultReadyFile,
@@ -42,10 +55,6 @@ function parseArgs(argv) {
     const arg = argv[i];
     if (arg === "--") {
       throw new Error("Forwarding raw server flags is no longer supported");
-    } else if (arg === "--network") {
-      options.network = parseNetwork(argv[++i]);
-    } else if (arg === "--tailscale") {
-      options.network = "tailscale";
     } else if (arg === "--timeout-ms") {
       options.timeoutMs = parsePositiveInt(argv[++i], "--timeout-ms");
     } else if (arg === "--launch-timeout-ms") {
@@ -60,11 +69,6 @@ function parseArgs(argv) {
   }
 
   return options;
-}
-
-function parseNetwork(value) {
-  if (value === "local" || value === "tailscale") return value;
-  throw new Error("--network must be local or tailscale");
 }
 
 function parsePositiveInt(value, label) {
@@ -82,18 +86,20 @@ Usage:
   node scripts/desktop-pairing-smoke.mjs [options]
 
 Runner options:
-  --network <mode>          Pair and launch through local HTTP or Tailscale HTTPS.
-                            Values: local, tailscale. Defaults to tailscale.
-  --tailscale               Alias for --network tailscale.
   --timeout-ms <ms>         Time to wait for server readiness. Defaults to 420000.
   --launch-timeout-ms <ms>  Time to wait for Electron launch and shell load.
                             Defaults to 180000.
   --ready-file <path>       Server ready-file path. Defaults to an OS temp path.
   --help                    Show this help message.
 
-The smoke starts a disposable server, redeems its pairing code as a desktop
-device, launches Electron with NATSTACK_REMOTE_URL/DEVICE_ID/REFRESH_TOKEN, then
-clicks the bootstrap launch approval and asserts the hosted shell loads.
+The smoke spawns the signaling worker (wrangler dev apps/signaling), starts a
+disposable server as a WebRTC answerer, parses the natstack://connect pairing
+link it logs, and launches Electron with that deep link so the desktop shell
+connects over the encrypted WebRTC pipe. It then clicks the bootstrap launch
+approval and asserts the hosted shell loads.
+
+Requires the native node-datachannel module: run \`pnpm rebuild node-datachannel\`
+once before this smoke.
 `);
 }
 
@@ -176,8 +182,10 @@ async function waitForServerReady(readyFile, serverChild, timeoutMs) {
   throw new Error(`Timed out waiting for server ready file: ${readyFile}`);
 }
 
-function createServerArgs(options, readyFilePath) {
-  const args = [
+function createServerArgs(readyFilePath) {
+  // Loopback-only: the gateway binds 127.0.0.1; remote reach is the WebRTC pipe
+  // attached to the same RpcServer when NATSTACK_WEBRTC_SIGNAL_URL is set.
+  return [
     serverEntryArg(),
     "--app-root",
     repoRoot,
@@ -186,143 +194,77 @@ function createServerArgs(options, readyFilePath) {
     "--ephemeral",
     "--serve-panels",
     "--print-credentials",
+    "--host",
+    "127.0.0.1",
+    "--bind-host",
+    "127.0.0.1",
   ];
-
-  if (options.network === "tailscale") {
-    const selectedHost = pickMobileHost("tailscale", { includeTunnel: true });
-    console.log(
-      `[desktop-smoke] Tailscale host: ${selectedHost.address}` +
-        (selectedHost.interfaceName ? ` (${selectedHost.interfaceName})` : "")
-    );
-    args.push("--host", selectedHost.address, "--gateway-port", "3030", "--require-public-url");
-  } else {
-    args.push("--host", "127.0.0.1", "--bind-host", "127.0.0.1", "--no-vpn-detect");
-  }
-
-  return args;
 }
 
-function assertTailscaleReady(ready) {
-  const connectUrl = ready.connectUrl || "";
-  if (!connectUrl.startsWith("https://")) {
-    throw new Error(
-      `Tailscale smoke requires an HTTPS connectUrl, but server advertised: ` +
-        `${connectUrl || "(none)"}`
-    );
-  }
-}
-
-async function waitForTcpReachable(rawUrl, timeoutMs = 45_000) {
-  const endpoint = tcpEndpointForUrl(rawUrl);
-  const deadlineMs = Date.now() + timeoutMs;
-  let lastError = "not attempted";
-  while (Date.now() < deadlineMs) {
-    try {
-      await openTcp(endpoint);
-      console.log(
-        `[desktop-smoke] Desktop can open ${endpoint.host}:${endpoint.port} over ${endpoint.protocol}`
-      );
-      return;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-      await sleep(1_000);
-    }
-  }
-  throw new Error(
-    `Desktop could not open ${endpoint.host}:${endpoint.port} for ${rawUrl}. ` +
-      `Check Tailscale Serve, DNS, Tailnet ACLs, and host firewall rules. ` +
-      `Last TCP error: ${lastError}`
-  );
-}
-
-function tcpEndpointForUrl(rawUrl) {
-  const parsed = new URL(rawUrl);
-  const protocol = parsed.protocol.replace(/:$/, "");
-  const port = parsed.port
-    ? Number(parsed.port)
-    : parsed.protocol === "https:"
-      ? 443
-      : parsed.protocol === "http:"
-        ? 80
-        : null;
-  if (!parsed.hostname || !port) {
-    throw new Error(`Cannot derive TCP endpoint from URL: ${rawUrl}`);
-  }
-  return { protocol, host: parsed.hostname, port };
-}
-
-function openTcp(endpoint) {
+function findFreePort() {
   return new Promise((resolve, reject) => {
-    const socket =
-      endpoint.protocol === "https"
-        ? tls.connect({
-            host: endpoint.host,
-            port: endpoint.port,
-            servername: endpoint.host,
-            rejectUnauthorized: false,
-          })
-        : net.connect({ host: endpoint.host, port: endpoint.port });
+    const srv = net.createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
+}
+
+// Cloudflare's local runtime (Miniflare) hosting the real SignalingRoom DO, the
+// WebRTC rendezvous — exactly as tests/webrtc-system.e2e.test.ts drives it.
+async function startSignaling(port) {
+  const child = spawnManaged(
+    wranglerBin,
+    ["dev", "--port", String(port), "--local", "--var", "ENVIRONMENT:test"],
+    { cwd: signalingDir, label: "signaling" }
+  );
+  for (let i = 0; i < 90; i++) {
+    if (child.exitCode != null) {
+      throw new Error(`wrangler dev (signaling) exited before healthy (code ${child.exitCode})`);
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+      if (res.ok) return child;
+    } catch {
+      // Not up yet.
+    }
+    await sleep(1_000);
+  }
+  throw new Error("wrangler dev (signaling) did not become healthy");
+}
+
+// Watch the answerer's stdout for the `[webrtc-answerer] pairing link:
+// natstack://connect?...` line it logs once it has joined the signaling room and
+// computed its DTLS fingerprint. Attach this BEFORE the link can be printed so no
+// chunk is missed.
+function waitForPairingLink(serverChild, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const onData = (chunk) => {
+      buffer += chunk.toString();
+      const match = buffer.match(/natstack:\/\/connect\?\S+/);
+      if (match) {
+        cleanup();
+        resolve(match[0]);
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      serverChild.stdout?.off("data", onData);
+    };
     const timer = setTimeout(() => {
-      socket.destroy(new Error("TCP connect timed out"));
-    }, 5_000);
-    socket.once(endpoint.protocol === "https" ? "secureConnect" : "connect", () => {
-      clearTimeout(timer);
-      socket.end();
-      resolve();
-    });
-    socket.once("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
+      cleanup();
+      reject(
+        new Error(
+          "Timed out waiting for the server's [webrtc-answerer] pairing link. " +
+            "Is node-datachannel built? Run `pnpm rebuild node-datachannel`."
+        )
+      );
+    }, timeoutMs);
+    serverChild.stdout?.on("data", onData);
   });
-}
-
-async function postJson(url, pathName, body, token) {
-  const res = await fetch(`${url}${pathName}`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body),
-  });
-  const json = await res.json();
-  if (!res.ok) throw new Error(`${pathName} failed ${res.status}: ${JSON.stringify(json)}`);
-  return json;
-}
-
-async function pairDesktopDevice(ready) {
-  const url = ready.connectUrl || ready.gatewayUrl;
-  const code = ready.pairingCode || ready.pairingCodes?.desktop;
-  if (!url) throw new Error("Server ready file did not include a pairing URL");
-  if (!code) throw new Error("Server ready file did not include a desktop pairing code");
-  const deepLink = createConnectDeepLink(url, code);
-  console.log(`[desktop-smoke] Pair URL: ${deepLink}`);
-  const issued = await postJson(url, "/_r/s/auth/complete-pairing", {
-    code,
-    label: `Desktop smoke on ${os.hostname()}`,
-    platform: "desktop",
-  });
-  if (typeof issued.deviceId !== "string" || typeof issued.refreshToken !== "string") {
-    throw new Error("Pairing response did not include a device refresh credential");
-  }
-  console.log(`[desktop-smoke] Paired desktop device ${issued.deviceId}`);
-  const selected = await postJson(url, "/_r/s/workspaces/select", {
-    deviceId: issued.deviceId,
-    refreshToken: issued.refreshToken,
-    name: "dev",
-  });
-  if (typeof selected.serverUrl !== "string") {
-    throw new Error("Workspace selection response did not include a server URL");
-  }
-  console.log(`[desktop-smoke] Selected workspace ${selected.workspaceName ?? "dev"}`);
-  return {
-    url: selected.serverUrl,
-    hubUrl: url,
-    workspaceName: selected.workspaceName ?? "dev",
-    deviceId: issued.deviceId,
-    refreshToken: issued.refreshToken,
-  };
 }
 
 function hasElectronDisplay() {
@@ -330,7 +272,7 @@ function hasElectronDisplay() {
   return Boolean(process.env.DISPLAY || process.env.WAYLAND_DISPLAY);
 }
 
-async function launchDesktopApp(creds, tempRoot, launchTimeoutMs) {
+async function launchDesktopApp(deepLink, tempRoot, launchTimeoutMs) {
   if (!fs.existsSync(mainPath)) {
     throw new Error(`Electron main entry not found at ${mainPath}. Run pnpm build first.`);
   }
@@ -344,26 +286,25 @@ async function launchDesktopApp(creds, tempRoot, launchTimeoutMs) {
     ...process.env,
     NODE_ENV: "development",
     NATSTACK_TEST_MODE: "1",
-    NATSTACK_REMOTE_URL: creds.url,
-    NATSTACK_REMOTE_DEVICE_ID: creds.deviceId,
-    NATSTACK_REMOTE_REFRESH_TOKEN: creds.refreshToken,
     ELECTRON_DISABLE_GPU: "1",
     ELECTRON_DISABLE_SANDBOX: "1",
     HOME: path.join(tempRoot, "home"),
     XDG_CONFIG_HOME: path.join(tempRoot, "xdg"),
   };
-  delete env.NATSTACK_REMOTE_TOKEN;
-  delete env.NATSTACK_REMOTE_CA;
-  delete env.NATSTACK_REMOTE_FINGERPRINT;
 
   await fsp.mkdir(env.HOME, { recursive: true });
   await fsp.mkdir(env.XDG_CONFIG_HOME, { recursive: true });
 
   const userDataDir = path.join(tempRoot, "electron-user-data");
-  console.log(`[desktop-smoke] Launching Electron against ${creds.url}`);
+  console.log(`[desktop-smoke] Launching Electron with WebRTC pairing deep link`);
+  // The desktop shell ingests the pairing material via the natstack://connect
+  // deep link passed as an argv: protocolHandler.enqueueFirstArgvLink(process.argv)
+  // (src/main/index.ts) scans argv on first launch, the bootstrap chooser drains
+  // it (natstack:drain-pair-link), and the shell dials the server over the WebRTC
+  // pipe (serverSession.connectRemoteViaWebRtc with {room,fp,code,sig}).
   const app = await electron.launch({
     executablePath: electronBinary,
-    args: ["--no-sandbox", `--user-data-dir=${userDataDir}`, mainPath],
+    args: ["--no-sandbox", `--user-data-dir=${userDataDir}`, mainPath, deepLink],
     env,
     timeout: launchTimeoutMs,
   });
@@ -543,15 +484,27 @@ function summarizeText(text) {
 
 async function closeElectron(app) {
   if (!app) return;
-  const child = app.process();
+  // Capture the pid up front: app.process() can THROW if Playwright's underlying
+  // _object was already torn down (the failure mode that left orphan windows).
+  let pid;
+  try {
+    pid = app.process()?.pid;
+  } catch {
+    pid = undefined;
+  }
   try {
     await Promise.race([
       app.close(),
       new Promise((_, reject) => setTimeout(() => reject(new Error("close timed out")), 5_000)),
     ]);
   } catch {
+    // app.close() threw or timed out — fall through to the pid kill below.
+  }
+  // Final safety net: SIGKILL the Electron process by pid so no orphan window
+  // survives a pass OR a failure. ESRCH (already exited) is fine.
+  if (typeof pid === "number") {
     try {
-      child.kill("SIGKILL");
+      process.kill(pid, "SIGKILL");
     } catch {
       // Already exited.
     }
@@ -575,11 +528,29 @@ async function main() {
   const cleanup = async () => {
     if (cleanedUp) return;
     cleanedUp = true;
-    await closeElectron(electronApp);
+    // closeElectron is crash-proof, but wrap anyway so a throw can never strand
+    // the child server/wrangler killed below.
+    try {
+      await closeElectron(electronApp);
+    } catch {
+      // ignore — children are still killed below.
+    }
     for (const child of children.reverse()) {
-      if (child.exitCode == null && !child.killed) child.kill("SIGTERM");
+      try {
+        if (child.exitCode == null && !child.killed) child.kill("SIGTERM");
+      } catch {
+        // Already gone.
+      }
     }
     await Promise.all(children.map((child) => waitForChildExit(child)));
+    // Escalate any survivor (server / wrangler) to SIGKILL so nothing lingers.
+    for (const child of children) {
+      try {
+        if (child.exitCode == null) child.kill("SIGKILL");
+      } catch {
+        // Already gone.
+      }
+    }
     try {
       await fsp.unlink(options.readyFile);
     } catch {}
@@ -609,18 +580,43 @@ async function main() {
     } catch {}
     tempRoot = await fsp.mkdtemp(path.join(os.tmpdir(), "natstack-desktop-smoke-"));
 
-    const serverArgs = createServerArgs(options, options.readyFile);
+    // 1. Local signaling (Cloudflare local runtime) — the WebRTC rendezvous.
+    const signalPort = await findFreePort();
+    const signalingChild = await startSignaling(signalPort);
+    children.push(signalingChild);
+    const signalUrl = `ws://127.0.0.1:${signalPort}`;
+
+    // 2. The disposable server, as a WebRTC answerer. We pick the room + pairing
+    //    code; the server presents its persistent DTLS cert and logs the
+    //    natstack://connect link whose `fp` pins that cert.
+    const room = randomUUID();
+    const pairingCode = randomBytes(18).toString("base64url");
+    const serverArgs = createServerArgs(options.readyFile);
     const serverInvocation = createServerInvocation(serverArgs);
     const serverChild = spawnManaged(serverInvocation.command, serverInvocation.args, {
       cwd: repoRoot,
       env: {
         ...process.env,
         NODE_ENV: process.env.NODE_ENV ?? "development",
+        // Run a single ephemeral workspace server (not the public hub): the WebRTC
+        // answerer is the per-workspace pipe (hubServer.ts:820 "remote reach is the
+        // per-workspace WebRTC pipe"), so the thing a client pairs with is a
+        // workspace server. The hub→workspace remote-selection flow is separate.
+        NATSTACK_FORCE_WORKSPACE_SERVER: "1",
+        NATSTACK_WEBRTC_SIGNAL_URL: signalUrl,
+        NATSTACK_WEBRTC_ROOM: room,
+        NATSTACK_PAIRING_CODE: pairingCode,
       },
       label: "server",
     });
     await waitForSpawn(serverChild, serverInvocation.command, serverInvocation.args);
     children.push(serverChild);
+    // Start scanning stdout for the pairing link now, before readiness, so the
+    // line is never missed.
+    const pairingLinkPromise = waitForPairingLink(
+      serverChild,
+      Math.max(1_000, deadlineMs - Date.now())
+    );
 
     const ready = await waitForServerReady(
       options.readyFile,
@@ -628,26 +624,32 @@ async function main() {
       Math.max(1_000, deadlineMs - Date.now())
     );
     readyInfo = ready;
-    if (options.network === "tailscale") {
-      assertTailscaleReady(ready);
-      await waitForTcpReachable(ready.connectUrl);
-    }
 
-    const creds = await pairDesktopDevice(ready);
-    electronApp = await launchDesktopApp(creds, tempRoot, options.launchTimeoutMs);
+    // 3. Parse the answerer's pairing link and rebuild the deep link with the
+    //    canonical builder (the server contributed `fp`; we own room/code/sig).
+    const loggedLink = await pairingLinkPromise;
+    const parsed = parseConnectLink(loggedLink);
+    if (parsed.kind !== "ok") {
+      throw new Error(`Server logged an invalid pairing link: ${parsed.reason}`);
+    }
+    const deepLink = createConnectDeepLink({
+      room: parsed.room,
+      fp: parsed.fp,
+      code: parsed.code,
+      sig: parsed.sig,
+      ice: parsed.ice,
+    });
+    console.log(`[desktop-smoke] WebRTC pairing: room=${parsed.room} fp=${parsed.fp}`);
+    console.log(`[desktop-smoke] Deep link: ${deepLink}`);
+
+    electronApp = await launchDesktopApp(deepLink, tempRoot, options.launchTimeoutMs);
     const result = await waitForDesktopShell(electronApp, options.launchTimeoutMs);
     const hostView = result.hostView;
     const hostedShellUrl = String(hostView?.hostedShellUrl ?? "");
-    if (options.network === "tailscale" && !hostedShellUrl.startsWith(`${creds.url}/`)) {
-      throw new Error(
-        `Hosted desktop shell did not load from the paired Tailscale URL. ` +
-          `Expected prefix ${creds.url}/, got ${hostedShellUrl || "(none)"}`
-      );
-    }
     const panels = await getPanelTree(electronApp).catch(() => []);
     const screenshotPath = await saveScreenshot(electronApp).catch(() => null);
     console.log(
-      `[desktop-smoke] PASS paired desktop app over ${options.network}; ` +
+      `[desktop-smoke] PASS paired desktop app over WebRTC; ` +
         `approvals=${result.clickedApprovals}; hostedShell=${hostedShellUrl}; ` +
         `panels=${Array.isArray(panels) ? panels.length : "unknown"}` +
         (screenshotPath ? `; screenshot=${path.relative(repoRoot, screenshotPath)}` : "")

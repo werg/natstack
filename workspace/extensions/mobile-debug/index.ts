@@ -3,7 +3,6 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import type { ExtensionContext } from "@natstack/extension";
 import type { ApprovalDetailFormat } from "@natstack/shared/approvals";
-import type { Remote } from "@natstack/shared/remotes";
 
 export type Api = Awaited<ReturnType<typeof activate>>;
 declare module "@natstack/extension" {
@@ -14,7 +13,6 @@ declare module "@natstack/extension" {
 
 const defaultPackage = "com.natstack.mobile.internal";
 const defaultActivity = "com.natstack.mobile.MainActivity";
-const pairingInviteTtlMs = 5 * 60_000;
 
 class MobileDebugError extends Error {
   constructor(
@@ -161,54 +159,7 @@ export async function activate(ctx: ExtensionContext) {
       return { pngBase64: Buffer.from(result.stdout, "binary").toString("base64") };
     },
 
-    async connectToServer(raw: {
-      device?: string;
-      remoteId: string;
-      workspace?: string;
-      fire?: boolean;
-    }) {
-      await requireApproval(ctx, {
-        id: `mobile.connect.${raw.remoteId}.${raw.device ?? "default"}`,
-        title: "Pair Android device to server",
-        summary: "This grants the attached phone a durable credential for the selected server.",
-      });
-      const device = pickDevice(await listAdbDevices(), raw.device);
-      const remotes = await ctx.rpc.call<Remote[]>("main", "remoteCred.remotes.list");
-      const remote = remotes.find((entry) => entry.id === raw.remoteId);
-      if (!remote?.server)
-        throw new MobileDebugError("EPAIR", `Remote ${raw.remoteId} has no server`);
-      const resolution = await resolvePhoneReachableServerUrl(device.serial, remote);
-      const invite = await ctx.rpc.call<{
-        code: string;
-        deepLink: string | null;
-        connectUrl: string;
-        serverUrl: string;
-      }>("main", "remoteCred.createPairingInviteForRemote", {
-        remoteId: raw.remoteId,
-        ttlMs: pairingInviteTtlMs,
-      });
-      const deepLink = createConnectDeepLink(resolution.serverUrl, invite.code, raw.workspace);
-      if (raw.fire !== false) {
-        await adb(device.serial, [
-          "shell",
-          "am",
-          "start",
-          "-a",
-          "android.intent.action.VIEW",
-          "-d",
-          deepLink,
-        ]);
-      }
-      return {
-        paired: raw.fire !== false,
-        deviceId: device.serial,
-        serverUrl: resolution.serverUrl,
-        deepLink,
-        qr: deepLink,
-      };
-    },
-
-    async verify(raw?: { device?: string; remoteId?: string; packageName?: string }) {
+    async verify(raw?: { device?: string; packageName?: string }) {
       const devices = await listAdbDevices();
       const device = pickDevice(devices, raw?.device);
       const packageName = raw?.packageName ?? defaultPackage;
@@ -227,57 +178,13 @@ export async function activate(ctx: ExtensionContext) {
           );
         }
       }
-      let serverReachable: boolean | undefined;
-      let serverUrl: string | undefined;
-      let paired: boolean | undefined;
-      let deviceId: string | undefined;
-      if (raw?.remoteId) {
-        try {
-          const remotes = await ctx.rpc.call<Remote[]>("main", "remoteCred.remotes.list");
-          const remote = remotes.find((entry) => entry.id === raw.remoteId);
-          if (!remote?.server)
-            throw new MobileDebugError("EPAIR", `Remote ${raw.remoteId} has no server`);
-          const resolution = await resolvePhoneReachableServerUrl(device.serial, remote);
-          serverReachable = true;
-          serverUrl = resolution.serverUrl;
-          const identity = await readAndroidPublicIdentity(device.serial, packageName);
-          if (!identity.deviceId) {
-            paired = false;
-            issues.push(
-              identity.issue ??
-                "Mobile app has no stored public device id; reconnect it to the server."
-            );
-          } else {
-            deviceId = identity.deviceId;
-            const serverDevices = await ctx.rpc.call<Array<{ deviceId: string }>>(
-              "main",
-              "remoteCred.listDevicesForRemote",
-              { remoteId: raw.remoteId }
-            );
-            paired = serverDevices.some((record) => record.deviceId === identity.deviceId);
-            if (!paired) {
-              issues.push(
-                `Mobile device ${identity.deviceId} is not present in ${raw.remoteId}'s paired-device set.`
-              );
-            }
-          }
-        } catch (error) {
-          if (serverReachable !== true) serverReachable = false;
-          paired = false;
-          issues.push(error instanceof Error ? error.message : String(error));
-        }
-      }
       return {
         installed: packageInstalled,
-        paired,
-        deviceId,
         bundleActive: rendering,
         rendering,
         screenshotPng: screenshot
           ? Buffer.from(screenshot.stdout, "binary").toString("base64")
           : undefined,
-        serverReachable,
-        serverUrl,
         issues,
       };
     },
@@ -310,33 +217,6 @@ export async function activate(ctx: ExtensionContext) {
       });
       return streamProcess("adb", adbArgs(raw.device, ["shell", raw.command, ...(raw.args ?? [])]));
     },
-  };
-}
-
-async function readAndroidPublicIdentity(
-  device: string,
-  packageName: string
-): Promise<{ deviceId?: string; serverId?: string; serverUrl?: string; issue?: string }> {
-  const result = await runCapture(
-    "adb",
-    adbArgs(device, [
-      "shell",
-      "run-as",
-      packageName,
-      "cat",
-      "shared_prefs/natstack-mobile-host.xml",
-    ]),
-    { cwd: process.cwd(), reject: false }
-  );
-  if (result.exitCode !== 0) {
-    return {
-      issue: `Cannot read mobile app public identity with run-as ${packageName}: ${result.stderr || result.stdout || `exit ${result.exitCode}`}`,
-    };
-  }
-  return {
-    deviceId: sharedPrefString(result.stdout, "public.deviceId"),
-    serverId: sharedPrefString(result.stdout, "public.serverId"),
-    serverUrl: sharedPrefString(result.stdout, "public.serverUrl"),
   };
 }
 
@@ -406,183 +286,6 @@ async function listAdbDevices(): Promise<
     });
 }
 
-async function probeFromDevice(device: string | undefined, url: string): Promise<boolean> {
-  const probeUrl = `${url.replace(/\/+$/, "")}/healthz`;
-  return adbExitOk(device, [
-    "shell",
-    "sh",
-    "-c",
-    `toybox wget -q -O - ${quote(probeUrl)} >/dev/null 2>&1 || curl -fsS ${quote(probeUrl)} >/dev/null 2>&1`,
-  ]);
-}
-
-async function resolvePhoneReachableServerUrl(
-  device: string,
-  remote: Remote
-): Promise<{ serverUrl: string; method: "direct" | "adb-reverse"; source: string }> {
-  const candidates = phoneUrlCandidates(remote);
-  for (const candidate of candidates) {
-    if (isDesktopLocalOrigin(candidate.url)) continue;
-    if (await probeFromDevice(device, candidate.url)) {
-      return { serverUrl: candidate.url, method: "direct", source: candidate.source };
-    }
-  }
-
-  const reverse = adbReverseCandidate(remote);
-  if (reverse) {
-    await adb(device, ["reverse", `tcp:${reverse.devicePort}`, `tcp:${reverse.hostPort}`]);
-    if (await probeFromDevice(device, reverse.url)) {
-      return { serverUrl: reverse.url, method: "adb-reverse", source: reverse.source };
-    }
-  }
-
-  const attempted = candidates
-    .filter((candidate) => !isDesktopLocalOrigin(candidate.url))
-    .map((candidate) => candidate.url)
-    .concat(reverse ? [reverse.url] : []);
-  throw new MobileDebugError(
-    "EUNREACHABLE",
-    attempted.length
-      ? `Device cannot reach any server /healthz candidate: ${attempted.join(", ")}`
-      : "Remote has no phone-reachable server URL candidates"
-  );
-}
-
-function phoneUrlCandidates(remote: Remote): Array<{ url: string; source: string }> {
-  const candidates: Array<{ url: string; source: string }> = [];
-  const add = (raw: string | undefined, source: string) => {
-    const origin = normalizeHttpOrigin(raw);
-    if (!origin) return;
-    if (origin.startsWith("http://") && !isTrustedCleartextHost(new URL(origin).hostname)) return;
-    if (!candidates.some((candidate) => candidate.url === origin)) {
-      candidates.push({ url: origin, source });
-    }
-  };
-
-  add(remote.server?.publicUrl, "server.publicUrl");
-
-  const base = firstParsedHttpUrl([
-    remote.server?.publicUrl,
-    remote.server?.url,
-    remote.server?.hubUrl,
-  ]);
-  const basePort = remote.server?.gatewayPort ?? (base ? explicitPort(base) : undefined);
-  for (const reach of remote.reach ?? []) {
-    add(urlFromReach(reach.kind, reach.value, base?.protocol, basePort), `reach.${reach.kind}`);
-  }
-
-  add(remote.server?.url, "server.url");
-  add(remote.server?.hubUrl, "server.hubUrl");
-  return candidates;
-}
-
-function adbReverseCandidate(
-  remote: Remote
-): { url: string; hostPort: number; devicePort: number; source: string } | null {
-  for (const [raw, source] of [
-    [remote.server?.url, "server.url"],
-    [remote.server?.hubUrl, "server.hubUrl"],
-  ] as const) {
-    const parsed = parseHttpUrl(raw);
-    if (!parsed || !isDesktopLocalHost(parsed.hostname)) continue;
-    const hostPort = explicitPort(parsed) ?? (parsed.protocol === "https:" ? 443 : 80);
-    return {
-      url: originForHost("http:", "localhost", hostPort),
-      hostPort,
-      devicePort: hostPort,
-      source: `${source}.adbReverse`,
-    };
-  }
-  return null;
-}
-
-function urlFromReach(
-  kind: Remote["reach"][number]["kind"],
-  value: string,
-  baseProtocol: string | undefined,
-  basePort: number | undefined
-): string | undefined {
-  const parsed = parseHttpUrl(value);
-  if (parsed) return parsed.origin;
-
-  const hostPort = parseReachHostPort(value);
-  if (!hostPort) return undefined;
-  const protocol = protocolForReach(kind, hostPort.host, baseProtocol);
-  const port = hostPort.port ?? basePort;
-  return originForHost(protocol, hostPort.host, port);
-}
-
-function protocolForReach(
-  kind: Remote["reach"][number]["kind"],
-  host: string,
-  baseProtocol: string | undefined
-): "http:" | "https:" {
-  if (kind === "tailscale-magicdns") return "https:";
-  if (kind === "lan-hostname" || kind === "lan-ip" || kind === "tailscale-ip") return "http:";
-  if (baseProtocol === "http:" && isTrustedCleartextHost(host)) return "http:";
-  return "https:";
-}
-
-function parseReachHostPort(raw: string): { host: string; port?: number } | null {
-  try {
-    const parsed = new URL(`http://${raw}`);
-    if (!parsed.hostname || parsed.username || parsed.password || parsed.pathname !== "/")
-      return null;
-    const port = parsed.port ? Number(parsed.port) : undefined;
-    if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) return null;
-    return { host: parsed.hostname, ...(port ? { port } : {}) };
-  } catch {
-    return null;
-  }
-}
-
-function firstParsedHttpUrl(values: Array<string | undefined>): URL | null {
-  for (const value of values) {
-    const parsed = parseHttpUrl(value);
-    if (parsed) return parsed;
-  }
-  return null;
-}
-
-function normalizeHttpOrigin(raw: string | undefined): string | undefined {
-  const parsed = parseHttpUrl(raw);
-  return parsed?.origin;
-}
-
-function parseHttpUrl(raw: string | undefined): URL | null {
-  if (!raw) return null;
-  try {
-    const parsed = new URL(raw);
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
-    if (!parsed.hostname) return null;
-    return parsed;
-  } catch {
-    return null;
-  }
-}
-
-function originForHost(
-  protocol: "http:" | "https:",
-  host: string,
-  port: number | undefined
-): string {
-  const normalizedHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-  const defaultPort = protocol === "https:" ? 443 : 80;
-  const portPart = port && port !== defaultPort ? `:${port}` : "";
-  return `${protocol}//${normalizedHost}${portPart}`;
-}
-
-function explicitPort(url: URL): number | undefined {
-  if (!url.port) return undefined;
-  const parsed = Number(url.port);
-  return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
-}
-
-function isDesktopLocalOrigin(raw: string): boolean {
-  const parsed = parseHttpUrl(raw);
-  return !!parsed && isDesktopLocalHost(parsed.hostname);
-}
-
 function isDesktopLocalHost(host: string): boolean {
   const lower = host.toLowerCase();
   return (
@@ -594,52 +297,12 @@ function isDesktopLocalHost(host: string): boolean {
   );
 }
 
-function isTrustedCleartextHost(host: string): boolean {
+// Loopback only — private-LAN / Tailscale / .local cleartext trust is
+// decommissioned (the data plane is WebRTC; local is loopback). 10.0.2.2 is the
+// Android emulator's host loopback alias.
+function isLoopbackOrEmulatorHost(host: string): boolean {
   const lower = host.toLowerCase();
-  if (isDesktopLocalHost(lower) || lower === "10.0.2.2") return true;
-  if (/^10\./.test(lower) || /^192\.168\./.test(lower)) return true;
-  const m172 = lower.match(/^172\.(\d+)\./);
-  if (m172) {
-    const octet = Number(m172[1]);
-    if (octet >= 16 && octet <= 31) return true;
-  }
-  const m100 = lower.match(/^100\.(\d+)\./);
-  if (m100) {
-    const octet = Number(m100[1]);
-    if (octet >= 64 && octet <= 127) return true;
-  }
-  if (lower === "ts.net" || lower.endsWith(".ts.net")) return true;
-  if (/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(lower)) return true;
-  return lower.endsWith(".local");
-}
-
-function createConnectDeepLink(
-  serverUrl: string,
-  code: string,
-  workspace: string | undefined
-): string {
-  const params = new URLSearchParams({ url: serverUrl, code });
-  if (workspace) params.set("workspace", workspace);
-  return `natstack://connect?${params.toString()}`;
-}
-
-function sharedPrefString(xml: string, key: string): string | undefined {
-  const pattern = new RegExp(`<string\\s+name="${escapeRegExp(key)}">([\\s\\S]*?)</string>`);
-  const match = xml.match(pattern);
-  return match?.[1] ? decodeXml(match[1]) : undefined;
-}
-
-function decodeXml(value: string): string {
-  return value
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'")
-    .replace(/&lt;/g, "<")
-    .replace(/&gt;/g, ">")
-    .replace(/&amp;/g, "&");
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return isDesktopLocalHost(lower) || lower === "10.0.2.2";
 }
 
 function pickDevice(devices: Array<{ serial: string; state: string }>, requested?: string) {
@@ -862,8 +525,4 @@ function defaultApkPath(repoRoot: string): string {
     "internal",
     "app-internal.apk"
   );
-}
-
-function quote(value: string): string {
-  return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }

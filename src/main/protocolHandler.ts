@@ -1,11 +1,9 @@
 import { app } from "electron";
 import * as path from "path";
-import { parseConnectLink } from "@natstack/shared/connect";
+import { type ConnectPairing, parseConnectLink } from "@natstack/shared/connect";
 
-export interface PendingConnectLink {
-  url: string;
-  code: string;
-}
+/** The WebRTC pairing material carried by a `natstack://connect` deep link. */
+export type PendingConnectLink = ConnectPairing;
 
 let pending: PendingConnectLink | null = null;
 const listeners = new Set<(link: PendingConnectLink) => void>();
@@ -37,7 +35,7 @@ export function enqueueFirstArgvLink(argv: readonly string[]): void {
 export function enqueueConnectLink(raw: string): void {
   const parsed = parseConnectLink(raw);
   if (parsed.kind === "error") return;
-  const link = { url: parsed.url, code: parsed.code };
+  const { kind: _kind, ...link } = parsed;
   pending = link;
   for (const listener of listeners) listener(link);
 }

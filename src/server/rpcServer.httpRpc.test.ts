@@ -443,29 +443,8 @@ describe("RpcServer HTTP POST /rpc", () => {
       ).resolves.toBeUndefined();
     });
 
-    it("allows the configured public URL origin", async () => {
-      await gateway.stop();
-      gateway = new Gateway({
-        tokenManager: setup.tokenManager,
-        externalHost: "internal.example",
-        getPublicUrl: () => "https://public.example:8443/base",
-        getRpcHandler: () => setup.server,
-      });
-      port = await gateway.start(0);
-
-      await expect(
-        new Promise<void>((resolve, reject) => {
-          const ws = new WebSocket(`ws://127.0.0.1:${port}/rpc`, {
-            headers: { Origin: "https://public.example:8443" },
-          });
-          ws.once("open", () => {
-            ws.close();
-            resolve();
-          });
-          ws.once("error", reject);
-        })
-      ).resolves.toBeUndefined();
-    });
+    // (Removed) "allows the configured public URL origin" — public-URL ingress
+    // is decommissioned (§8); remote traffic is WebRTC, the gateway is loopback-only.
   });
 
   // ── Service dispatch ────────────────────────────────────────────────────────

@@ -197,17 +197,14 @@ need it.
 
 ## External URL construction
 
-Consumers (OAuth providers, webhook-URL advertisements, etc.) build absolute
-URLs via `getPublicUrl()` / `buildPublicUrl(pathname)` in
-`src/server/publicUrl.ts`. The base URL resolves in this order:
-
-1. `--public-url <url>` CLI flag
-2. `NATSTACK_PUBLIC_URL` env var
-3. Computed fallback: `${protocol}://${externalHost}:${gatewayPort}`
-
-Set `--public-url` (or the env var) to the URL that _users' browsers_ use
-to reach the server. It can differ from the server's bind address when a
-reverse proxy or DNS-facing hostname is in front.
+The server has no public endpoint of its own — remote clients reach it over
+WebRTC (paired by QR), and the gateway binds loopback only. Third-party inbound
+that genuinely needs a public HTTPS URL (OAuth provider redirects, webhook
+advertisements) goes through the **callback relay** (`apps/webhook-relay`, plan
+§7), which backhauls to this server. OAuth redirect URIs are built from
+`NATSTACK_RELAY_OAUTH_BASE_URL` (the relay origin). There is no `--public-url` /
+`NATSTACK_PUBLIC_URL` / `publicUrl.ts` — those were decommissioned with
+remote-mode public ingress.
 
 ## URL rewrite detail (for debugging)
 

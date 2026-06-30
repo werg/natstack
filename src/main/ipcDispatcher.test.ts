@@ -22,6 +22,7 @@ function makeWebContents(id: number) {
     id,
     isDestroyed: vi.fn(() => false),
     send: vi.fn(),
+    once: vi.fn(),
   };
 }
 
@@ -74,6 +75,10 @@ function makeDispatcher(opts: {
     args: readonly unknown[]
   ) => void;
   onServerRpcResult?: ReturnType<typeof vi.fn>;
+  openPanelSession?: ReturnType<typeof vi.fn>;
+  getPanelRuntimeConnection?: (
+    panelId: string
+  ) => { runtimeEntityId: string; connectionId: string } | undefined;
 }) {
   ipcHandlers.clear();
   const dispatcher = new ServiceDispatcher();
@@ -82,7 +87,17 @@ function makeDispatcher(opts: {
   const serverClient = {
     call: opts.call ?? vi.fn(async () => ({ ok: "shell" })),
     callAs: opts.callAs ?? vi.fn(async () => ({ ok: "app" })),
+    stream: vi.fn(async () => new Response()),
     addMessageListener: opts.addMessageListener ?? vi.fn(() => vi.fn()),
+    openPanelSession:
+      opts.openPanelSession ??
+      vi.fn(async () => ({
+        send: vi.fn(),
+        onMessage: vi.fn(() => vi.fn()),
+        status: () => "connected" as const,
+        isClosed: () => false,
+        close: vi.fn(),
+      })),
     isConnected: vi.fn(() => true),
     getConnectionStatus: vi.fn(() => "connected" as const),
     close: vi.fn(async () => {}),
@@ -95,6 +110,7 @@ function makeDispatcher(opts: {
     resolveCallerForWebContents: opts.resolve,
     getCodeIdentityForCaller: opts.getCodeIdentityForCaller,
     getWebContentsForCaller: (opts.getWebContentsForCaller ?? (() => null)) as never,
+    getPanelRuntimeConnection: opts.getPanelRuntimeConnection,
     authorizeAppServerCall: opts.authorizeAppServerCall,
     onServerRpcResult: opts.onServerRpcResult,
     eventService: eventService as never,
@@ -228,31 +244,73 @@ describe("IpcDispatcher", () => {
     expect(callAs).not.toHaveBeenCalled();
   });
 
-  it("rejects panel renderers on the generic shell/app RPC channel", async () => {
+  it("relays a panel renderer over its own panel-principal session, not the shell/app channel", async () => {
     const panelWc = makeWebContents(11);
     const callAs = vi.fn();
     const call = vi.fn();
+    const panelSend = vi.fn();
+    const openPanelSession = vi.fn(async () => ({
+      send: panelSend,
+      onMessage: vi.fn(() => vi.fn()),
+      status: () => "connected" as const,
+      isClosed: () => false,
+      close: vi.fn(),
+    }));
     makeDispatcher({
       resolve: () => ({ callerId: "panel-1", callerKind: "panel" }),
+      getWebContentsForCaller: () => panelWc,
+      getPanelRuntimeConnection: () => ({ runtimeEntityId: "entity-1", connectionId: "conn-1" }),
+      openPanelSession,
       call,
       callAs,
     });
 
+    const envelope = rpcEnvelope("panel-1", "panel", {
+      type: "request",
+      requestId: "req-1",
+      fromId: "panel-1",
+      method: "workspace.getInfo",
+      args: [],
+    } satisfies RpcMessage);
+    ipcHandlers.get("natstack:rpc:send")?.({ sender: panelWc } as never, envelope as never);
+
+    await vi.waitFor(() => {
+      expect(openPanelSession).toHaveBeenCalledWith("entity-1", "conn-1");
+      expect(panelSend).toHaveBeenCalledWith(envelope);
+    });
+    // The panel's full surface rides its own session — it never reaches the
+    // shell/app server path (call / callAs).
+    expect(call).not.toHaveBeenCalled();
+    expect(callAs).not.toHaveBeenCalled();
+  });
+
+  it("error-responds (not silently drops) a panel envelope with no runtime lease", async () => {
+    const panelWc = makeWebContents(12);
+    makeDispatcher({
+      resolve: () => ({ callerId: "panel-2", callerKind: "panel" }),
+      getWebContentsForCaller: () => panelWc,
+      getPanelRuntimeConnection: () => undefined,
+    });
+
     ipcHandlers.get("natstack:rpc:send")?.(
       { sender: panelWc } as never,
-      rpcEnvelope("panel-1", "panel", {
+      rpcEnvelope("panel-2", "panel", {
         type: "request",
-        requestId: "req-1",
-        fromId: "panel-1",
+        requestId: "req-2",
+        fromId: "panel-2",
         method: "workspace.getInfo",
         args: [],
       } satisfies RpcMessage) as never
     );
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(call).not.toHaveBeenCalled();
-    expect(callAs).not.toHaveBeenCalled();
-    expect(panelWc.send).not.toHaveBeenCalled();
+    await vi.waitFor(() => {
+      expect(panelWc.send).toHaveBeenCalledWith(
+        "natstack:rpc:message",
+        expect.objectContaining({
+          message: expect.objectContaining({ type: "response", requestId: "req-2" }),
+        })
+      );
+    });
   });
 
   it("denies app server fs RPC before forwarding when authorization fails", async () => {

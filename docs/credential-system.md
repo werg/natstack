@@ -173,7 +173,7 @@ authorize from a different device than the one running natstack. The server:
 Provider support is partial. Known good: Google, Microsoft / Azure AD,
 GitHub, GitLab, Slack, Twitch, Spotify, Dropbox, Atlassian, Discord. **Apple
 does not support device code** — for Apple Sign-In, see the redirect-URI
-options in `docs/remote-server.md`.
+options in `docs/webrtc-rpc-transport.md` (§7, callback relay).
 
 Use device-code as a fallback path in personal-server installs whose public
 URL can't be registered with a given provider, since it skips the redirect

@@ -6,6 +6,8 @@
  */
 
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from "electron";
+import type { RpcEnvelope } from "@natstack/rpc";
+import { createIpcTransport } from "./ipcTransport.js";
 
 // ID-based event listener pattern (contextBridge cannot serialize closures)
 let nextListenerId = 1;
@@ -14,7 +16,18 @@ const activeListeners = new Map<
   (event: IpcRendererEvent, eventName: string, payload: unknown) => void
 >();
 
+// Panel RPC over IPC (same `natstack:rpc:send`/`:message` channels as the shell
+// and app transports). Created once so this webview's inbound listener is wired.
+const rpcTransport = createIpcTransport();
+
 const natstackShell = {
+  // Panel RPC envelope bridge — `createPanelTransport` posts each envelope to the
+  // host (ipcDispatcher) as this panel's logical session and receives the demuxed
+  // inbound envelopes; the desktop analogue of the mobile PanelWebView postMessage
+  // bridge. Without these, getShellBridge() throws at panel startup (blank panel).
+  postEnvelope: (envelope: RpcEnvelope) => rpcTransport.send(envelope),
+  onEnvelope: (handler: (envelope: RpcEnvelope) => void) => rpcTransport.onMessage(handler),
+
   getPanelInit: () => ipcRenderer.invoke("natstack:getPanelInit"),
   getBootstrapConfig: () => ipcRenderer.invoke("natstack:getPanelInit"),
   getInfo: () => ipcRenderer.invoke("natstack:bridge.getInfo"),

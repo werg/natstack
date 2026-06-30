@@ -30,7 +30,7 @@
       "@natstack/types": ["../../packages/types/src/index.ts"]
     }
   },
-  "include": ["../../workspace/apps/mobile/**/*"],
+  "include": ["../../workspace/apps/mobile/**/*", "src/**/*"],
   "exclude": [
     "node_modules",
     "ios",

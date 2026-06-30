@@ -3,6 +3,7 @@
  */
 
 import type { RpcEnvelope, RpcMessage } from "@natstack/rpc";
+import { TERMINAL_CLOSE_CODES } from "@natstack/rpc";
 import { wsClientTransport } from "@natstack/rpc/transports/wsClient";
 import type { WsLike } from "@natstack/rpc/protocol/wsAdapter";
 import type { RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
@@ -175,7 +176,7 @@ export function createWsTransport(config: WsTransportConfig): TransportBridge {
     getWsUrl: () => config.wsUrl ?? `ws://127.0.0.1:${config.wsPort}`,
     connectionId: config.connectionId,
     routeTarget: normalizeEndpointId,
-    terminalCloseCodes: [4001, 4005, 4006, 4090, 4091],
+    terminalCloseCodes: [...TERMINAL_CLOSE_CODES],
     translateEvent,
     logPrefix: "WsTransport",
     getAuthMessageFields: () => ({

@@ -1,0 +1,22 @@
+{
+  "name": "@natstack/mobile-webrtc",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./reactNativeWebRtcPeer": "./src/reactNativeWebRtcPeer.ts",
+    "./polyfills": "./src/polyfills.ts"
+  },
+  "dependencies": {
+    "@natstack/rpc": "workspace:*",
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "react-native-keychain": "^9.2.2",
+    "react-native-webrtc": "^124.0.5",
+    "web-streams-polyfill": "^3.3.3"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
+}

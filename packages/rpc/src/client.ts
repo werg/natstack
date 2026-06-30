@@ -26,6 +26,7 @@ import type {
   TypedCallProxy,
 } from "./types.js";
 import { originOfEnvelope, responseEnvelopeFor } from "./envelope.js";
+import { bytesToBase64, base64ToBytes } from "./base64.js";
 
 const FRAME_HEAD = 0x01;
 const FRAME_DATA = 0x02;
@@ -35,19 +36,6 @@ const FRAME_ERROR = 0x04;
 function generateRequestId(): string {
   if (typeof globalThis.crypto?.randomUUID === "function") return globalThis.crypto.randomUUID();
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = "";
-  for (const byte of bytes) binary += String.fromCharCode(byte);
-  return btoa(binary);
-}
-
-function base64ToBytes(value: string): Uint8Array {
-  const binary = atob(value);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
 }
 
 function callerForSelf(
@@ -525,6 +513,34 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     return streamImpl(provenance, targetId, method, args, options);
   }
 
+  function streamReadableWithProvenance(
+    provenance: AuthenticatedCaller[],
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: RpcStreamOptions
+  ) {
+    // RN variant: returns the decoded head + raw ReadableStream body (no Response).
+    // Requires a duplex-streaming transport (the WebRTC session); there is no
+    // HTTP fallback because the only caller is the RN host on the pipe.
+    if (!config.transport.streamReadable) {
+      throw new Error("This transport does not support streamReadable()");
+    }
+    const envelope = makeEnvelope(
+      targetId,
+      {
+        type: "stream-request",
+        requestId: generateRequestId(),
+        fromId: config.selfId,
+        method,
+        args,
+      },
+      options,
+      provenance
+    );
+    return config.transport.streamReadable(envelope, options?.signal ?? null);
+  }
+
   function peer<
     TMethods extends MethodMap = MethodMap,
     TEvents extends EventMap = EventMap,
@@ -690,6 +706,9 @@ export function createRpcClient(config: RpcClientConfig): RpcClient {
     },
     async stream(targetId, method, args, options): Promise<Response> {
       return streamWithProvenance(baseProvenance, targetId, method, args, options);
+    },
+    streamReadable(targetId, method, args, options) {
+      return streamReadableWithProvenance(baseProvenance, targetId, method, args, options);
     },
     emit(targetId, event, payload, options): Promise<void> {
       return emitWithProvenance(baseProvenance, targetId, event, payload, options);

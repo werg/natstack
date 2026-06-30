@@ -1,0 +1,33 @@
+name = "natstack-signaling"
+main = "src/index.ts"
+compatibility_date = "2024-11-15"
+
+# Deploy as its own Worker.
+#
+#   cd apps/signaling
+#   wrangler deploy
+#
+# Optional secrets (Cloudflare Realtime TURN — per-session credential minting).
+# If unset, the room serves the free Cloudflare STUN server only (dev / no-TURN);
+# a deployment that must traverse symmetric NAT MUST set both:
+#   wrangler secret put TURN_KEY_ID
+#   wrangler secret put TURN_KEY_API_TOKEN
+# Optional (defaults to 86400 = 24h):
+#   wrangler secret put TURN_TTL_SECONDS
+#
+# account_id and route/zone bindings are environment-specific. Set them under
+# your own [env.<name>] block or via CLOUDFLARE_ACCOUNT_ID.
+
+[vars]
+ENVIRONMENT = "development"
+
+# The signaling room — one Durable Object instance per UUID room, persistent for
+# the connection's lifetime (WebSocket Hibernation API) so it can carry
+# ICE-restart, not just first connect.
+[[durable_objects.bindings]]
+name = "SIGNALING_ROOM"
+class_name = "SignalingRoom"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["SignalingRoom"]

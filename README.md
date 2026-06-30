@@ -200,38 +200,35 @@ natstack-server ready:
 | Flag                  | Description                                             |
 | --------------------- | ------------------------------------------------------- |
 | `--app-root=PATH`     | Application root (defaults to cwd)                      |
-| `--host=HOST`         | External hostname or address clients can reach          |
 | `--gateway-port=PORT` | Port for the hub HTTP/WS ingress (default: random)      |
-| `--public-url=URL`    | Verified public URL used for OAuth/webhook routes       |
 | `--log-level=LEVEL`   | Log level                                               |
+
+The gateway binds loopback only; remote clients reach it over WebRTC (paired by
+QR). There is no `--host` / `--public-url` / `--protocol` / TLS flag — those were
+decommissioned with remote-mode public ingress. OAuth/webhook routes resolve
+through the callback relay (`NATSTACK_RELAY_OAUTH_BASE_URL`).
 
 The public server is always a hub. Clients pair with the hub, choose a
 workspace, and then connect to `/_workspace/<name>`. Workspace flags are
 reserved for internal child runtimes and are rejected by the public server.
 
-### Android phone over VPN
+### Android phone pairing
 
-For trusted phone testing over a VPN/LAN, build the internal Android app and
-start a stable QR-pairing server. If you use the Tailscale HTTPS route, first
-configure Serve on the server machine once:
-
-```bash
-sudo tailscale serve --bg 3030
-```
-
-Then start pairing:
+For phone testing, build the internal Android app and start a QR-pairing server.
+Pairing is over WebRTC (signaling room + DTLS fingerprint) — no Tailscale/VPN or
+HTTPS serve setup:
 
 ```bash
 natstack mobile install --launch
 pnpm build
-natstack mobile pair --host tailscale --port 3030
+natstack mobile pair --port 3030
 ```
 
-See [docs/mobile-vpn.md](docs/mobile-vpn.md) for host selection, workspace
-selection, dev workspace mode, and reconnect behavior. Use the desktop app's
-bootstrap screen to pair a laptop without copying an admin token.
-After one desktop client is connected, use **Remote server** → **Paired
-devices** → **Pair another device** to create additional pairing links.
+Scan the printed `natstack://connect?room=…&fp=…&code=…&sig=…` QR. See
+[docs/webrtc-local-e2e.md](docs/webrtc-local-e2e.md) for the WebRTC pairing +
+local setup. Use the desktop app's bootstrap screen to pair a laptop without
+copying an admin token. After one desktop client is connected, use **Remote
+server** → **Paired devices** → **Pair another device** for additional links.
 
 Each panel gets:
 

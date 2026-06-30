@@ -47,8 +47,6 @@ export interface BuildPanelUrlOpts {
   contextId: string;
   ref?: string;
   gatewayPort: number;
-  externalHost: string;
-  protocol: "http" | "https";
   basePath?: string;
 }
 
@@ -58,8 +56,6 @@ export interface BuildPanelEnvOpts {
   gatewayAliases?: readonly string[];
   contextId: string;
   sourceRepo: string;
-  externalHost: string;
-  protocol: "http" | "https";
   gatewayPort: number;
   baseEnv?: Record<string, string> | null;
 }
@@ -117,16 +113,16 @@ export function buildPanelUrl(opts: BuildPanelUrlOpts): string {
   if (opts.ref) params.set("ref", opts.ref);
   const encodedPath = encodeURIComponent(opts.source).replace(/%2F/g, "/");
   const basePath = opts.basePath?.replace(/\/+$/, "") ?? "";
-  return `${opts.protocol}://${opts.externalHost}:${opts.gatewayPort}${basePath}/${encodedPath}/?${params.toString()}`;
+  // Panels load from a fixed loopback origin (the local asset façade); the
+  // host bridges panel RPC over the pipe, so no remote host/protocol applies.
+  return `http://127.0.0.1:${opts.gatewayPort}${basePath}/${encodedPath}/?${params.toString()}`;
 }
 
 /**
  * Build env vars for a panel, merging base env with system env.
  */
 export function buildPanelEnv(opts: BuildPanelEnvOpts): Record<string, string> {
-  const gatewayServerUrl = opts.gatewayPort
-    ? `${opts.protocol}://${opts.externalHost}:${opts.gatewayPort}`
-    : "";
+  const gatewayServerUrl = opts.gatewayPort ? `http://127.0.0.1:${opts.gatewayPort}` : "";
   const gatewayConfig = gatewayServerUrl
     ? JSON.stringify({
         serverUrl: gatewayServerUrl,

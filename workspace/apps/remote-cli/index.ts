@@ -1,6 +1,5 @@
 import { createRpcClient, type RpcClient } from "@natstack/rpc";
 import { NodeWsLike } from "@natstack/shared/shell/transport/nodeWsLike";
-import { createConnectDeepLink } from "@natstack/shared/connect";
 import { createServerWsTransport } from "@natstack/shared/shell/transport/serverWsTransport";
 import { authMethods } from "@natstack/shared/serviceSchemas/auth";
 import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
@@ -8,16 +7,20 @@ import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import WebSocket from "ws";
 
 export interface PairingInviteLike {
-  connectUrl: string;
+  connectUrl?: string;
   code: string;
   deepLink?: string | null;
   expiresAt?: number;
 }
 
 export function formatPairingInvite(invite: PairingInviteLike): string {
-  const deepLink = invite.deepLink ?? createConnectDeepLink(invite.connectUrl, invite.code);
+  // The server mints the deep link from its WebRTC pairing material (room/fp/
+  // sig); the CLI has no such material, so it cannot synthesize one — a null
+  // deepLink means the server hasn't advertised pairing material yet.
   const expires = invite.expiresAt ? `\nExpires: ${new Date(invite.expiresAt).toISOString()}` : "";
-  return [`Pairing code: ${invite.code}`, `Pair URL: ${deepLink}${expires}`].join("\n");
+  const lines = [`Pairing code: ${invite.code}`];
+  if (invite.deepLink) lines.push(`Pair URL: ${invite.deepLink}`);
+  return `${lines.join("\n")}${expires}`;
 }
 
 function printBootstrapSummary(): void {

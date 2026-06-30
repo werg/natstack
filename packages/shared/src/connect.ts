@@ -2,17 +2,62 @@ export const CONNECT_DEEP_LINK_SCHEME = "natstack:";
 export const CONNECT_DEEP_LINK_HOST = "connect";
 export const PAIRING_CODE_PATTERN = /^[A-Za-z0-9_-]{16,512}$/;
 export const WORKSPACE_ROUTE_PREFIX = "/_workspace/";
+/** Signaling rendezvous room id (UUID or base64url token). */
+export const PAIRING_ROOM_PATTERN = /^[A-Za-z0-9_-]{8,128}$/;
+/** DTLS SHA-256 fingerprint after stripping colons: 32 bytes = 64 hex chars. */
+const FINGERPRINT_HEX_PATTERN = /^[0-9A-Fa-f]{64}$/;
+export const PAIRING_PROTOCOL_VERSION = 1;
+
+export type TurnPolicy = "all" | "relay";
+
+/**
+ * The WebRTC pairing payload carried in the QR / deep link. Replaces the old
+ * `url`+`code` server-origin link OUTRIGHT (no versioned shim): the shell no
+ * longer dials a server URL — it joins a signaling room and pins the server's
+ * DTLS fingerprint. `room`/`fp`/`code`/`sig` are required; `v`/`ice`/`srv` are
+ * optional with documented defaults.
+ */
+export interface ConnectPairing {
+  /** Unguessable signaling rendezvous room id. */
+  room: string;
+  /** Pinned server DTLS SHA-256 fingerprint (the QR `fp`). */
+  fp: string;
+  /** Pairing secret proving QR possession. */
+  code: string;
+  /** Signaling endpoint (decouples us from a hard-coded host). */
+  sig: string;
+  /** Protocol version (defaults to PAIRING_PROTOCOL_VERSION). */
+  v?: number;
+  /** TURN policy — force `relay` to validate TURN-over-TLS:443 (defaults `all`). */
+  ice?: TurnPolicy;
+  /** Optional server/workspace label to disambiguate servers. */
+  srv?: string;
+}
 
 export type ConnectLink =
-  | { kind: "ok"; url: string; code: string }
+  | ({ kind: "ok" } & ConnectPairing)
   | { kind: "error"; reason: string };
 type QueryParseResult =
   | { kind: "ok"; values: Map<string, string> }
   | { kind: "error"; reason: string };
 type QueryDecodeResult = { kind: "ok"; value: string } | { kind: "error"; reason: string };
 
-export function createConnectDeepLink(url: string, code: string): string {
-  return `natstack://connect?url=${encodeURIComponent(url)}&code=${encodeURIComponent(code)}`;
+/** Strip colons/whitespace and upper-case a DTLS fingerprint for comparison. */
+export function normalizeFingerprint(fp: string): string {
+  return fp.replace(/[:\s]/g, "").toUpperCase();
+}
+
+export function createConnectDeepLink(pairing: ConnectPairing): string {
+  const params: string[] = [
+    `room=${encodeURIComponent(pairing.room)}`,
+    `fp=${encodeURIComponent(pairing.fp)}`,
+    `code=${encodeURIComponent(pairing.code)}`,
+    `sig=${encodeURIComponent(pairing.sig)}`,
+    `v=${encodeURIComponent(String(pairing.v ?? PAIRING_PROTOCOL_VERSION))}`,
+    `ice=${encodeURIComponent(pairing.ice ?? "all")}`,
+  ];
+  if (pairing.srv) params.push(`srv=${encodeURIComponent(pairing.srv)}`);
+  return `natstack://connect?${params.join("&")}`;
 }
 
 export function appendServerPath(baseUrl: string | URL, suffix: string): URL {
@@ -99,25 +144,71 @@ export function parseConnectLink(raw: string): ConnectLink {
 
   const queryStart = raw.indexOf("?");
   if (queryStart < 0) {
-    return { kind: "error", reason: "Deep link is missing `url` or `code`" };
+    return { kind: "error", reason: "Deep link is missing pairing parameters" };
   }
+  // Manual (non-`new URL()`) query parse — the natstack: custom scheme is not
+  // URL-parseable on RN/Hermes (asserted by connect.test.ts).
   const params = parseQuery(raw.slice(queryStart + 1));
   if (params.kind === "error") return params;
 
-  const serverUrl = params.values.get("url");
+  const room = params.values.get("room");
+  const fp = params.values.get("fp");
   const code = params.values.get("code");
-  if (!serverUrl || !code) {
-    return { kind: "error", reason: "Deep link is missing `url` or `code`" };
+  const sig = params.values.get("sig");
+  if (!room || !fp || !code || !sig) {
+    return { kind: "error", reason: "Deep link is missing `room`, `fp`, `code`, or `sig`" };
   }
 
-  const parsedUrl = parseConnectServerUrl(serverUrl);
-  if (parsedUrl.kind === "error") return parsedUrl;
-
+  if (!PAIRING_ROOM_PATTERN.test(room)) {
+    return { kind: "error", reason: "Signaling room id has an unexpected format" };
+  }
+  if (!FINGERPRINT_HEX_PATTERN.test(normalizeFingerprint(fp).toLowerCase())) {
+    return { kind: "error", reason: "DTLS fingerprint must be a SHA-256 (64 hex chars)" };
+  }
   if (!PAIRING_CODE_PATTERN.test(code)) {
     return { kind: "error", reason: "Pairing code has an unexpected format" };
   }
+  const sigParsed = parseSignalingEndpoint(sig);
+  if (sigParsed.kind === "error") return sigParsed;
 
-  return { kind: "ok", url: parsedUrl.url, code };
+  const ice = params.values.get("ice");
+  if (ice && ice !== "all" && ice !== "relay") {
+    return { kind: "error", reason: "TURN policy `ice` must be `all` or `relay`" };
+  }
+  const versionRaw = params.values.get("v");
+  const v = versionRaw ? Number(versionRaw) : PAIRING_PROTOCOL_VERSION;
+  if (!Number.isInteger(v) || v < 1) {
+    return { kind: "error", reason: "Protocol version `v` must be a positive integer" };
+  }
+
+  return {
+    kind: "ok",
+    room,
+    fp,
+    code,
+    sig: sigParsed.url,
+    v,
+    ice: (ice as TurnPolicy | undefined) ?? "all",
+    srv: params.values.get("srv") || undefined,
+  };
+}
+
+/** The signaling endpoint is a public wss/https URL (ws/http allowed for loopback dev). */
+export function parseSignalingEndpoint(raw: string): { kind: "ok"; url: string } | { kind: "error"; reason: string } {
+  let endpoint: URL;
+  try {
+    endpoint = new URL(raw);
+  } catch {
+    return { kind: "error", reason: `Signaling endpoint is not parseable: ${raw}` };
+  }
+  const proto = endpoint.protocol;
+  if (proto !== "wss:" && proto !== "https:" && proto !== "ws:" && proto !== "http:") {
+    return { kind: "error", reason: `Signaling endpoint must be ws(s)/http(s) (got ${proto || "no scheme"})` };
+  }
+  if ((proto === "ws:" || proto === "http:") && !isLoopbackHost(endpoint.hostname)) {
+    return { kind: "error", reason: `Cleartext signaling is only allowed for loopback. Use wss:// for ${endpoint.hostname}.` };
+  }
+  return { kind: "ok", url: endpoint.toString() };
 }
 
 function parseQuery(raw: string): QueryParseResult {
@@ -176,45 +267,28 @@ export function parseConnectServerUrl(raw: string): { kind: "ok"; url: string } 
     };
   }
 
-  if (server.protocol === "http:" && !isTrustedCleartextHost(server.hostname)) {
+  if (server.protocol === "http:" && !isLoopbackHost(server.hostname)) {
     return {
       kind: "error",
-      reason: `Cleartext HTTP is only allowed for loopback, private LAN, Tailscale, or local hostnames. Use https:// for ${server.hostname}.`,
+      reason: `Cleartext HTTP is only allowed for loopback. Use https:// for ${server.hostname}.`,
     };
   }
 
   return { kind: "ok", url: `${server.protocol}//${server.host}` };
 }
 
-export function isTrustedCleartextHost(host: string): boolean {
-  const lower = host.toLowerCase();
+/**
+ * Loopback-only cleartext gate (replaces the old isTrustedCleartextHost +
+ * private-IP/Tailscale/single-label helpers, deleted with remote mode §8b). The
+ * data plane no longer rides a cleartext LAN/Tailscale origin — remote is WebRTC
+ * (DTLS-encrypted), local co-located mode is loopback. `10.0.2.2` is kept for
+ * the Android emulator's host loopback alias.
+ */
+export function isLoopbackHost(host: string): boolean {
+  const lower = host.toLowerCase().replace(/^\[/, "").replace(/\]$/, "");
   if (lower === "localhost" || lower === "10.0.2.2") return true;
-  if (/^127\.(\d{1,3}\.){2}\d{1,3}$/.test(lower)) return true;
-  if (isPrivateIPv4(lower)) return true;
-  if (isTailscaleIPv4(lower)) return true;
-  if (lower === "ts.net" || lower.endsWith(".ts.net")) return true;
-  if (isSingleLabelHostname(lower)) return true;
-  if (lower.endsWith(".local")) return true;
+  if (lower === "::1" || lower === "0:0:0:0:0:0:0:1") return true;
+  // 127.0.0.0/8
+  if (/^127\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.test(lower)) return true;
   return false;
-}
-
-function isSingleLabelHostname(host: string): boolean {
-  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(host);
-}
-
-function isPrivateIPv4(host: string): boolean {
-  if (/^10\./.test(host)) return true;
-  const m172 = host.match(/^172\.(\d+)\./);
-  if (m172) {
-    const octet = Number(m172[1]);
-    if (octet >= 16 && octet <= 31) return true;
-  }
-  return /^192\.168\./.test(host);
-}
-
-function isTailscaleIPv4(host: string): boolean {
-  const m = host.match(/^100\.(\d+)\./);
-  if (!m) return false;
-  const octet = Number(m[1]);
-  return octet >= 64 && octet <= 127;
 }

@@ -21,7 +21,7 @@ import type {
   ShouldStartLoadRequest,
   WebViewMessageEvent,
 } from "react-native-webview/lib/WebViewTypes";
-import { isManagedHost, parsePanelUrl } from "../services/panelUrls";
+import { isManagedHost, parsePanelUrl, LOOPBACK_PANEL_HOST } from "../services/panelUrls";
 import { openExternalUrl } from "../services/nativeCapabilities";
 
 export interface PanelNavigationEvent {
@@ -36,6 +36,13 @@ export interface PanelNavigationEvent {
 export interface PanelWebViewHandle {
   injectTheme: (mode: "light" | "dark") => void;
   dispatchHostEvent: (event: string, payload: unknown) => void;
+  /**
+   * Deliver one inbound RPC envelope the host demuxed for this panel's logical
+   * session (host → panel). Pairs with the injected `__natstackShell.onEnvelope`.
+   * (Host seam: the mobile shell must call this with envelopes it receives for
+   * this panel off the pipe.)
+   */
+  deliverEnvelope: (envelope: unknown) => void;
   navigate: (url: string) => void;
   goBack: () => void;
   goForward: () => void;
@@ -49,7 +56,12 @@ export interface PanelWebViewProps {
   visible: boolean;
   managed: boolean;
   panelInit?: unknown;
-  externalHost: string;
+  /**
+   * @deprecated Vestigial — panels load from the loopback façade and the managed
+   * origin is loopback, so this is no longer consulted. Kept only so the mobile
+   * shell (MainScreen) still type-checks; drop it from both when convenient.
+   */
+  externalHost?: string;
   managedBasePath?: string;
   onNavigationStateChange?: (navState: WebViewNavigation) => void;
   onPanelNavigate?: (event: PanelNavigationEvent) => void;
@@ -120,6 +132,7 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
       const panelInit = ${serializeForInjection(panelInit)};
       const pending = new Map();
       const listeners = new Map();
+      const envelopeListeners = new Set();
       let nextListenerId = 1;
       const enableDebug = ${enableDebug ? "true" : "false"};
 
@@ -256,6 +269,13 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
         }
       }
 
+      // Inbound RPC envelopes the host demuxes for this panel's logical session.
+      function deliverEnvelope(envelope) {
+        for (const handler of envelopeListeners) {
+          try { handler(envelope); } catch (_) {}
+        }
+      }
+
       function callHost(method, args) {
         return new Promise(function(resolve, reject) {
           const id = "bridge-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
@@ -284,6 +304,16 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
         );
 
       const shell = {
+        // Panel RPC rides the existing postMessage bridge: postEnvelope hands the
+        // panel's envelope to the host, which muxes it onto its WebRTC control
+        // channel as this panel's logical session; inbound envelopes arrive via
+        // deliverEnvelope → onEnvelope. (No first-class stream(): the RPC client
+        // falls back to the duplex stream-frame envelope path over this bridge.)
+        postEnvelope: (envelope) => callHost("postEnvelope", [envelope]),
+        onEnvelope: (handler) => {
+          envelopeListeners.add(handler);
+          return () => envelopeListeners.delete(handler);
+        },
         getPanelInit: () => callHost("getPanelInit", []),
         getBootstrapConfig: () => callHost("getPanelInit", []),
         getInfo: () => callHost("getInfo", []),
@@ -310,6 +340,7 @@ function buildBridgeBootstrapScript(panelInit: unknown, enableDebug: boolean): s
       globalThis.__natstackMobileHost = {
         resolvePending,
         dispatchEventToListeners,
+        deliverEnvelope,
       };
       globalThis.__natstackShell = shell;
       globalThis.__natstackElectron = shell;
@@ -326,7 +357,6 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       visible,
       managed,
       panelInit,
-      externalHost,
       managedBasePath = "",
       onNavigationStateChange,
       onPanelNavigate,
@@ -370,11 +400,19 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       );
     }, [managed]);
 
+    const deliverEnvelope = useCallback((envelope: unknown) => {
+      if (!managed) return;
+      webViewRef.current?.injectJavaScript(
+        `window.__natstackMobileHost&&window.__natstackMobileHost.deliverEnvelope(${serializeForInjection(envelope)}); true;`,
+      );
+    }, [managed]);
+
     useImperativeHandle(ref, () => ({
       injectTheme: (mode: "light" | "dark") => {
         dispatchHostEvent("runtime:theme", { theme: mode });
       },
       dispatchHostEvent,
+      deliverEnvelope,
       navigate: (nextUrl: string) => {
         webViewRef.current?.injectJavaScript(`location.assign(${JSON.stringify(nextUrl)}); true;`);
       },
@@ -382,7 +420,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       goForward: () => webViewRef.current?.goForward(),
       reload: () => webViewRef.current?.reload(),
       stop: () => webViewRef.current?.stopLoading(),
-    }), [dispatchHostEvent]);
+    }), [dispatchHostEvent, deliverEnvelope]);
 
     useEffect(() => {
       return () => {
@@ -441,8 +479,10 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
     );
 
     const emitManagedNavigation = useCallback((requestUrl: string): boolean => {
-      if (!isManagedHost(requestUrl, externalHost)) return false;
-      const parsed = parsePanelUrl(requestUrl, externalHost, managedBasePath);
+      // Panels are served from the loopback façade, so the managed origin is
+      // loopback — there is no remote managed host to compare against.
+      if (!isManagedHost(requestUrl, LOOPBACK_PANEL_HOST)) return false;
+      const parsed = parsePanelUrl(requestUrl, LOOPBACK_PANEL_HOST, managedBasePath);
       if (!parsed) return false;
       onPanelNavigate?.({
         type: "panel-switch",
@@ -453,7 +493,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
         stateArgs: parsed.stateArgs,
       });
       return true;
-    }, [externalHost, managedBasePath, onPanelNavigate, panelId]);
+    }, [managedBasePath, onPanelNavigate, panelId]);
 
     const handleShouldStartLoad = useCallback(
       (request: ShouldStartLoadRequest): boolean => {
@@ -504,9 +544,9 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       // known top-level navigation URL.
       const sourceUrl = (event.nativeEvent as { url?: string }).url
         ?? currentUrlRef.current;
-      if (!sourceUrl || !isManagedHost(sourceUrl, externalHost)) {
+      if (!sourceUrl || !isManagedHost(sourceUrl, LOOPBACK_PANEL_HOST)) {
         console.warn(
-          `[PanelWebView] Rejecting bridge message from non-managed origin: ${sourceUrl ?? "<unknown>"} (panel=${panelId})`,
+          `[PanelWebView] Rejecting bridge message from non-loopback origin: ${sourceUrl ?? "<unknown>"} (panel=${panelId})`,
         );
         return;
       }
@@ -564,7 +604,7 @@ export const PanelWebView = forwardRef<PanelWebViewHandle, PanelWebViewProps>(
       } catch {
         // Ignore non-bridge messages.
       }
-    }, [diagnosticsEnabled, externalHost, managed, onBridgeCall, onTitleChange, panelId]);
+    }, [diagnosticsEnabled, managed, onBridgeCall, onTitleChange, panelId]);
 
     const handleError = useCallback(
       (syntheticEvent: { nativeEvent: { description?: string; code?: number } }) => {

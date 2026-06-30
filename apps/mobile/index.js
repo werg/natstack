@@ -6,6 +6,9 @@
 // verified by rnHostAbi + integrity, activated from native-owned storage, and
 // then the RN bridge reloads onto that bundle.
 
+// Must precede any @natstack/rpc import: installs a TextDecoder polyfill that
+// Hermes lacks (the WebRTC control-frame codec needs it).
+import "@natstack/mobile-webrtc/polyfills";
 import "react-native-get-random-values";
 import "react-native-url-polyfill/auto";
 import React, { useCallback, useEffect, useRef, useState } from "react";
@@ -23,7 +26,16 @@ import {
   View,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { parseConnectLink, serverRpcHttpUrl, serverRpcWsUrl } from "@natstack/shared/connect";
+import { parseConnectLink } from "@natstack/shared/connect";
+import {
+  establishWebRtcConnection,
+  reconnectViaWebRtc,
+  persistShellCredential,
+  loadShellCredential,
+  clearShellCredential,
+  makeShellTokenProvider,
+  deviceIdFromCallerId,
+} from "@natstack/mobile-webrtc";
 import {
   formatCapabilities,
   launchCopy,
@@ -55,48 +67,31 @@ function missingNativeHostError() {
   return new Error("NatStackMobileHost native module is unavailable");
 }
 
-function randomRequestId(prefix = "mobile-bootstrap") {
-  if (typeof globalThis.crypto?.randomUUID === "function") {
-    return `${prefix}-${globalThis.crypto.randomUUID()}`;
-  }
-  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-}
-
-function callerKindFromId(callerId) {
-  if (typeof callerId !== "string") return "app";
-  if (callerId.startsWith("shell:")) return "shell";
-  if (callerId.startsWith("app:") || callerId.startsWith("@workspace-apps/")) return "app";
-  if (callerId.startsWith("panel:")) return "panel";
-  if (callerId.startsWith("worker:")) return "worker";
-  if (callerId.startsWith("do:")) return "do";
-  if (callerId.startsWith("extension:")) return "extension";
-  return "app";
-}
-
-function rpcCallerFromGrant(grant) {
-  const callerId =
-    typeof grant?.callerId === "string" && grant.callerId.length > 0
-      ? grant.callerId
-      : "mobile-host";
-  return { callerId, callerKind: callerKindFromId(callerId) };
-}
-
-function rpcEnvelopeFromGrant(grant, message, target = "main") {
-  const caller = rpcCallerFromGrant(grant);
-  return {
-    from: caller.callerId,
-    target,
-    delivery: { caller },
-    provenance: [caller],
-    message,
-  };
-}
 
 function parseConnectDeepLink(rawUrl) {
   if (typeof rawUrl !== "string" || !rawUrl.startsWith("natstack://connect")) return null;
   const parsed = parseConnectLink(rawUrl);
   if (parsed.kind === "error") throw new Error(parsed.reason);
-  return { serverUrl: parsed.url, code: parsed.code };
+  // New WebRTC pairing payload: a signaling rendezvous room + the server's pinned
+  // DTLS fingerprint + a one-time pairing code (no server origin URL anymore).
+  return {
+    room: parsed.room,
+    fp: parsed.fp,
+    code: parsed.code,
+    sig: parsed.sig,
+    ice: parsed.ice,
+    srv: parsed.srv,
+  };
+}
+
+/** A human label for a pairing target (the QR carries no server origin). */
+function pairingLabel(pairing) {
+  if (pairing?.srv) return pairing.srv;
+  try {
+    return new URL(pairing.sig).host;
+  } catch {
+    return "this NatStack server";
+  }
 }
 
 async function markConnectLinkConsumed(rawUrl) {
@@ -107,203 +102,342 @@ async function markConnectLinkConsumed(rawUrl) {
   );
 }
 
-async function activateApprovedWorkspaceApp(options = {}) {
+const B64_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const B64_CODES = (() => {
+  const codes = new Uint8Array(64);
+  for (let i = 0; i < 64; i += 1) codes[i] = B64_ALPHABET.charCodeAt(i);
+  return codes;
+})();
+
+/** Standard base64-encode a Uint8Array (O(n), Hermes-safe — no btoa/Buffer). */
+function uint8ToBase64(bytes) {
+  const len = bytes.length;
+  const out = new Uint8Array(Math.ceil(len / 3) * 4);
+  let o = 0;
+  const fullEnd = len - (len % 3);
+  for (let i = 0; i < fullEnd; i += 3) {
+    const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2];
+    out[o++] = B64_CODES[(n >> 18) & 63];
+    out[o++] = B64_CODES[(n >> 12) & 63];
+    out[o++] = B64_CODES[(n >> 6) & 63];
+    out[o++] = B64_CODES[n & 63];
+  }
+  const rem = len - fullEnd;
+  if (rem === 1) {
+    const n = bytes[fullEnd] << 16;
+    out[o++] = B64_CODES[(n >> 18) & 63];
+    out[o++] = B64_CODES[(n >> 12) & 63];
+    out[o++] = 61;
+    out[o++] = 61;
+  } else if (rem === 2) {
+    const n = (bytes[fullEnd] << 16) | (bytes[fullEnd + 1] << 8);
+    out[o++] = B64_CODES[(n >> 18) & 63];
+    out[o++] = B64_CODES[(n >> 12) & 63];
+    out[o++] = B64_CODES[(n >> 6) & 63];
+    out[o++] = 61;
+  }
+  const parts = [];
+  for (let p = 0; p < out.length; p += 0x8000) {
+    parts.push(String.fromCharCode.apply(null, out.subarray(p, p + 0x8000)));
+  }
+  return parts.join("");
+}
+
+/** Pick the primary RN bundle artifact for this platform from the bootstrap manifest. */
+function selectPrimaryArtifact(bootstrap, platform) {
+  const artifacts = Array.isArray(bootstrap?.artifacts) ? bootstrap.artifacts : [];
+  const artifact = artifacts.find((a) => a?.role === "primary" && a?.platform === platform);
+  if (!artifact) {
+    throw new Error(`No primary React Native bundle artifact for ${platform}`);
+  }
+  return artifact;
+}
+
+/**
+ * Fetch + activate the approved workspace app bundle OVER THE WEBRTC PIPE.
+ *
+ * There is no reachable server URL in WebRTC mode, so the asset plane rides the
+ * pipe too: the manifest (`/_r/s/auth/mobile-app-bootstrap`) and the bundle
+ * artifact (`/_a/<buildKey>/...`) are both fetched via the `gateway.fetch`
+ * streaming RPC (loopback fetch on the server, chunked over the bulk channel),
+ * then handed to the native host (`prepareAppBundleFromBytes`) which verifies
+ * integrity + writes the local file for `activatePreparedAppBundle` to reload.
+ */
+/** Drain a `ReadableStream<Uint8Array>` into a single `Uint8Array`. */
+async function drainStream(body) {
+  const reader = body.getReader();
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value && value.length) {
+      chunks.push(value);
+      total += value.length;
+    }
+  }
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+/**
+ * Fetch a gateway asset over the pipe and return its bytes. Uses `streamReadable`
+ * (not `stream`) because RN's whatwg-fetch `Response` cannot consume a
+ * `ReadableStream` body — we read the decoded stream directly via `getReader()`.
+ */
+async function gatewayFetchBytes(connection, descriptor) {
+  const decoded = await connection.rpc.streamReadable("main", "gateway.fetch", [descriptor]);
+  const bytes = await drainStream(decoded.body);
+  if (decoded.status !== 200) {
+    throw new Error(
+      `gateway.fetch ${descriptor.path} failed (${decoded.status}): ` +
+        new TextDecoder().decode(bytes).slice(0, 300)
+    );
+  }
+  return bytes;
+}
+
+/**
+ * Stream a gateway asset over the pipe straight into the native bundle file, a
+ * chunk at a time. Buffering the whole multi-MB bundle and base64-ing it in one
+ * shot would block the JS thread (the WebRTC keepalive would miss and the pipe
+ * would drop) and choke the bridge — so each ~bulk-channel chunk is base64'd and
+ * appended natively, yielding between chunks.
+ */
+async function streamArtifactToNative(connection, descriptor, buildKey, artifactPath) {
+  const decoded = await connection.rpc.streamReadable("main", "gateway.fetch", [descriptor]);
+  if (decoded.status !== 200) {
+    const bytes = await drainStream(decoded.body);
+    throw new Error(
+      `bundle artifact fetch failed (${decoded.status}): ` +
+        new TextDecoder().decode(bytes).slice(0, 300)
+    );
+  }
+  // The server gzips the body on the wire (descriptor.gzip) to keep the transfer
+  // small enough for react-native-webrtc's serialized bulk receive; the native host
+  // decompresses before verifying the uncompressed integrity. The header confirms it.
+  const gzipped = decoded.headers.some(
+    (h) => h[0].toLowerCase() === "x-natstack-content-gzip" && h[1] === "1"
+  );
+  const reader = decoded.body.getReader();
+  let first = true;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (value && value.length) {
+      await nativeHost.appendBundleChunk(uint8ToBase64(value), buildKey, artifactPath, first);
+      first = false;
+    }
+  }
+  if (first) throw new Error("bundle artifact stream was empty");
+  return gzipped;
+}
+
+async function activateApprovedWorkspaceApp(connection, options = {}) {
   if (!nativeHost) throw missingNativeHostError();
-  const credentials = await nativeHost.getCredentials();
-  if (!credentials) {
-    if (options.allowMissingCredentials) return false;
+  const stored = await loadShellCredential();
+  if (!stored) {
     throw new Error(
       "Pair this device with a trusted NatStack server before loading the workspace app."
     );
   }
+
+  // 1. Bootstrap manifest (the endpoint authenticates the device by its refresh
+  //    credential in the body, even though the pipe is already a shell session).
+  const bootstrapBody = {
+    deviceId: stored.deviceId,
+    refreshToken: stored.refreshToken,
+  };
+  if (typeof options.source === "string" && options.source.length > 0) {
+    bootstrapBody.source = options.source;
+  }
+  const manifestBytes = await gatewayFetchBytes(connection, {
+    path: "/_r/s/auth/mobile-app-bootstrap",
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(bootstrapBody),
+  });
+  const bootstrap = JSON.parse(new TextDecoder().decode(manifestBytes))?.bootstrap;
+  if (!bootstrap) throw new Error("Mobile app bootstrap returned no manifest");
+  if (bootstrap.rnHostAbi !== RN_HOST_ABI) {
+    throw new Error(
+      `React Native host ABI mismatch: expected ${RN_HOST_ABI}, got ${bootstrap.rnHostAbi}`
+    );
+  }
   smokePhase("embedded-bundle-activate-start");
-  const prepared = await nativeHost.prepareAppBundle(
-    RN_HOST_ABI,
-    platformName(),
-    options.source ?? null
+  const buildKey = bootstrap.buildKey;
+  const artifact = selectPrimaryArtifact(bootstrap, platformName());
+  const integrity = artifact.integrity;
+  // `url` is absolute on the server origin; its pathname is the gateway path.
+  const artifactPath = new URL(artifact.url).pathname;
+  const nativeArtifactPath = artifact.path ?? artifactPath;
+
+  // 2. Stream the bundle straight into the native bundle file (chunked + gzipped on
+  //    the wire) — bundles are multiple MB; see streamArtifactToNative for why we
+  //    don't buffer and why we compress.
+  const gzipped = await streamArtifactToNative(
+    connection,
+    { path: artifactPath, method: "GET", gzip: true },
+    buildKey,
+    nativeArtifactPath
   );
-  await nativeHost.activatePreparedAppBundle(
-    prepared.localPath,
-    prepared.buildKey,
-    prepared.integrity
-  );
+
+  // 3. Native: decompress if needed, verify the bundle's integrity, then activate.
+  const prepared = await nativeHost.finalizeBundleWrite(integrity, gzipped);
+  await nativeHost.activatePreparedAppBundle(prepared.localPath, buildKey, integrity);
   smokePhase("embedded-bundle-activate-complete");
   return true;
 }
 
-async function rpc(grant, method, args = []) {
-  const requestId = randomRequestId();
-  const envelope = rpcEnvelopeFromGrant(grant, {
-    type: "request",
-    requestId,
-    fromId: rpcCallerFromGrant(grant).callerId,
-    method,
-    args,
-  });
-  const response = await fetch(serverRpcHttpUrl(grant.serverUrl).toString(), {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${grant.connectionGrant}`,
+// ===========================================================================
+// WebRTC connection layer — replaces the HTTP `/rpc` transport and the native
+// HTTP pairing. The host joins the signaling room from the pairing link, pins
+// the server's DTLS fingerprint, opens a `shell` session, and round-trips RPC
+// envelopes over the same DTLS pipe the desktop/CLI use.
+// ===========================================================================
+
+// The shell-credential store + the WebRTC connect helpers
+// (establishWebRtcConnection / reconnectViaWebRtc / persist+loadShellCredential /
+// makeShellTokenProvider / deviceIdFromCallerId) now live in
+// @natstack/mobile-webrtc, shared with the post-reload workspace app. Only the
+// fresh-pairing flow below (which emits the smoke phases) stays here.
+
+/** Fresh pairing: redeem the code, capture + persist the issued device credential. */
+async function pairViaWebRtc(pairing) {
+  smokePhase("embedded-pairing-start");
+  const tokenProvider = makeShellTokenProvider(pairing, null);
+  let pairedCredential = null;
+  const connection = await establishWebRtcConnection(pairing, tokenProvider, {
+    onPaired: (credential) => {
+      // Fires inside the open handshake (before `ready()` resolves): switch the
+      // token provider to the refresh secret so reconnects authenticate.
+      pairedCredential = credential;
+      tokenProvider.setCredential(credential);
     },
-    body: JSON.stringify(envelope),
   });
-  const json = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(json.error || `RPC ${method} failed with HTTP ${response.status}`);
+  if (pairedCredential) {
+    await persistShellCredential(pairedCredential, pairing);
+    connection.deviceId = pairedCredential.deviceId;
+  } else {
+    // The server authenticated us but issued no fresh credential — we are
+    // connected for this session but cannot persist a refresh secret. Surface
+    // it loudly rather than pretending a reconnect will work.
+    console.warn("[mobile-rtc] paired session returned no device credential to persist");
+    connection.deviceId = deviceIdFromCallerId(connection.callerId);
   }
-  const responseEnvelope = json?.envelope || json;
-  const message = responseEnvelope?.message;
-  if (!message) {
-    throw new Error(json.error || `RPC ${method} returned a malformed response`);
-  }
-  if (message.error) throw new Error(String(message.error));
-  if (!("result" in message)) throw new Error(`RPC ${method} returned a malformed response`);
-  return message.result;
+  smokePhase("embedded-pairing-complete");
+  return connection;
 }
 
-function rpcWsUrl(serverUrl) {
-  return serverRpcWsUrl(serverUrl);
+async function rpc(connection, method, args = []) {
+  // All control-plane RPC now rides the WebRTC session (target the server "main").
+  return connection.rpc.call("main", method, args);
 }
 
-function isSelectedWorkspaceUrl(serverUrl) {
-  try {
-    return new URL(serverUrl).pathname.replace(/\/+$/, "").startsWith("/_workspace/");
-  } catch {
-    return false;
-  }
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function createLaunchReadinessEventClient(grant) {
-  const eventNames = HOST_TARGET_LAUNCH_SESSION_WAKE_EVENTS;
-  const callerId = grant.callerId || "mobile-host";
-  return new Promise((resolve, reject) => {
-    let ws = null;
-    let settled = false;
-    let lastSession = null;
-    let revision = 0;
-    let observedRevision = 0;
-    let requestIndex = 0;
-    const waiters = new Set();
-    const notify = () => {
-      revision += 1;
-      for (const waiter of Array.from(waiters)) waiter(true);
-    };
-    const finishCreate = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(authTimer);
-      resolve({
-        waitForLaunchSessionChange(sessionId, timeoutMs) {
-          if (lastSession?.sessionId === sessionId && revision !== observedRevision) {
-            observedRevision = revision;
-            return Promise.resolve(lastSession);
-          }
-          return new Promise((waitResolve) => {
-            const timer = setTimeout(() => {
-              waiters.delete(done);
-              waitResolve(null);
-            }, timeoutMs);
-            const done = (value) => {
-              if (value) observedRevision = revision;
-              clearTimeout(timer);
-              waiters.delete(done);
-              waitResolve(lastSession?.sessionId === sessionId ? lastSession : null);
-            };
-            waiters.add(done);
-          });
-        },
-        close() {
-          for (const waiter of Array.from(waiters)) waiter(false);
-          waiters.clear();
-          try {
-            ws?.close();
-          } catch {}
-        },
-      });
-    };
-    const failCreate = () => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(authTimer);
-      try {
-        ws?.close();
-      } catch {}
-      reject(new Error("Mobile launch event stream is not available."));
-    };
-    const authTimer = setTimeout(failCreate, 10000);
+function isTransientLaunchRpcError(error) {
+  const code = error?.code;
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return (
+    code === "PIPE_CLOSED" ||
+    code === "CONNECTION_LOST" ||
+    /timed out|pipe down|not connected|control channel not open/i.test(message)
+  );
+}
+
+function isBootstrapReadinessError(error) {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return /MOBILE_APP_APPROVAL_REQUIRED|MOBILE_APP_UNAVAILABLE|approval|required|not ready|not available/i.test(
+    message
+  );
+}
+
+async function launchGateRpc(connection, method, args, deadline) {
+  let attempt = 0;
+  for (;;) {
     try {
-      ws = new WebSocket(rpcWsUrl(grant.serverUrl));
-    } catch {
-      failCreate();
-      return;
+      return await connection.rpc.call("main", method, args, { timeoutMs: 15000 });
+    } catch (error) {
+      if (!isTransientLaunchRpcError(error) || Date.now() >= deadline) throw error;
+      attempt += 1;
+      await connection.session?.ready?.().catch(() => {});
+      await delay(Math.min(5000, 500 * 2 ** Math.min(attempt, 4)));
     }
-    ws.onopen = () => {
-      ws.send(
-        JSON.stringify({
-          type: "ws:auth",
-          token: grant.connectionGrant,
-          clientLabel: "Mobile Host",
-          clientPlatform: "mobile",
-        })
-      );
-    };
-    ws.onmessage = (event) => {
-      let message = null;
-      try {
-        message = JSON.parse(String(event.data));
-      } catch {
-        return;
-      }
-      if (message?.type === "ws:auth-result") {
-        if (message.success !== true) {
-          failCreate();
-          return;
-        }
-        for (const name of eventNames) {
-          requestIndex += 1;
-          const requestId = `bootstrap-event-${requestIndex}`;
-          ws?.send(
-            JSON.stringify({
-              type: "ws:rpc",
-              envelope: rpcEnvelopeFromGrant(grant, {
-                type: "request",
-                requestId,
-                fromId: callerId,
-                method: "events.subscribe",
-                args: [name],
-              }),
-            })
-          );
-        }
-        finishCreate();
-        return;
-      }
-      if (message?.type === "ws:event") {
-        const rawEvent = typeof message.event === "string" ? message.event : "";
-        const eventName = rawEvent.startsWith("event:")
-          ? rawEvent.slice("event:".length)
-          : rawEvent;
-        if (isLaunchSessionEventForTarget("react-native", eventName, message.payload)) {
-          lastSession = message.payload;
+  }
+}
+
+/**
+ * Launch-readiness event client over the WebRTC session. Subscribes to the
+ * host-target launch events and lets the gate await the next change. Server
+ * events are an optimization: each wait is capped so the gate falls back to
+ * polling `getLaunchSession` at a bounded cadence (never a busy loop) if no
+ * event arrives — polling guarantees progress.
+ */
+function createLaunchReadinessEventClient(connection) {
+  const eventNames = HOST_TARGET_LAUNCH_SESSION_WAKE_EVENTS;
+  const POLL_CAP_MS = 2000;
+  let lastSession = null;
+  let revision = 0;
+  let observedRevision = 0;
+  const waiters = new Set();
+  const notify = () => {
+    revision += 1;
+    for (const waiter of Array.from(waiters)) waiter(true);
+  };
+  const unsubs = [];
+  for (const name of eventNames) {
+    unsubs.push(
+      connection.rpc.on(name, (ev) => {
+        const raw = typeof ev?.event === "string" ? ev.event : name;
+        const eventName = raw.startsWith("event:") ? raw.slice("event:".length) : raw;
+        if (isLaunchSessionEventForTarget("react-native", eventName, ev?.payload)) {
+          lastSession = ev.payload;
           notify();
         }
+      })
+    );
+    // Best-effort server-side subscription; the poll fallback covers a failure.
+    void connection.rpc.call("main", "events.subscribe", [name]).catch(() => {});
+  }
+  return Promise.resolve({
+    waitForLaunchSessionChange(sessionId, timeoutMs) {
+      if (lastSession?.sessionId === sessionId && revision !== observedRevision) {
+        observedRevision = revision;
+        return Promise.resolve(lastSession);
       }
-    };
-    ws.onerror = failCreate;
-    ws.onclose = () => {
+      const waitMs = Math.max(1, Math.min(timeoutMs, POLL_CAP_MS));
+      return new Promise((waitResolve) => {
+        const timer = setTimeout(() => {
+          waiters.delete(done);
+          waitResolve(null);
+        }, waitMs);
+        const done = (value) => {
+          if (value) observedRevision = revision;
+          clearTimeout(timer);
+          waiters.delete(done);
+          waitResolve(lastSession?.sessionId === sessionId ? lastSession : null);
+        };
+        waiters.add(done);
+      });
+    },
+    close() {
       for (const waiter of Array.from(waiters)) waiter(false);
       waiters.clear();
-    };
+      for (const unsub of unsubs) {
+        try {
+          unsub();
+        } catch {}
+      }
+    },
   });
-}
-
-async function pairParsedLink(parsed) {
-  smokePhase("embedded-pairing-start");
-  await nativeHost.pairServer(parsed.serverUrl, parsed.code);
-  smokePhase("embedded-pairing-complete");
-  const response = await nativeHost.listWorkspaces();
-  return Array.isArray(response?.workspaces) ? response.workspaces : [];
 }
 
 function ActionButton({ title, onPress, variant = "primary", disabled = false }) {
@@ -400,8 +534,20 @@ function NatStackMobileHostBootstrap() {
     const deadline = Date.now() + 120000;
     let eventClient = null;
     try {
+      if (!initialSession) {
+        try {
+          setStatus("Workspace app approved. Activating bundle...");
+          await activateApprovedWorkspaceApp(grant);
+          if (!isCurrent()) return;
+          setStatus("Workspace app activated. Reloading...");
+          return;
+        } catch (error) {
+          if (!isBootstrapReadinessError(error)) throw error;
+        }
+      }
       let session =
-        initialSession ?? (await rpc(grant, "workspace.hostTargets.beginLaunch", ["react-native"]));
+        initialSession ??
+        (await launchGateRpc(grant, "workspace.hostTargets.beginLaunch", ["react-native"], deadline));
       for (;;) {
         if (!isCurrent()) return;
         setLaunchSession(session);
@@ -410,7 +556,12 @@ function NatStackMobileHostBootstrap() {
         if (session?.status === "ready") {
           setApprovals([]);
           setStatus("Workspace app approved. Activating bundle...");
-          await activateApprovedWorkspaceApp({ source: session.launch?.source ?? null });
+          // Fetch + activate the bundle OVER THE PIPE (manifest + artifact via
+          // gateway.fetch). Fails loud if it can't — pair/connect/RPC already
+          // succeeded, so a bundle failure is a real error, not a soft "pending".
+          await activateApprovedWorkspaceApp(grant, {
+            source: session.launch?.source ?? null,
+          });
           if (!isCurrent()) return;
           setStatus("Workspace app activated. Reloading...");
           return;
@@ -437,9 +588,12 @@ function NatStackMobileHostBootstrap() {
             session = observed;
             continue;
           }
-          const refreshed = await rpc(grant, "workspace.hostTargets.getLaunchSession", [
-            session.sessionId,
-          ]);
+          const refreshed = await launchGateRpc(
+            grant,
+            "workspace.hostTargets.getLaunchSession",
+            [session.sessionId],
+            deadline
+          );
           if (!isCurrent()) return;
           if (refreshed) {
             session = refreshed;
@@ -494,7 +648,7 @@ function NatStackMobileHostBootstrap() {
       }
       smokePhase("embedded-deep-link-received");
       setPendingConnect({ ...parsed, rawUrl });
-      setStatus(`Pair this device with ${parsed.serverUrl}?`);
+      setStatus(`Pair this device with ${pairingLabel(parsed)}?`);
       setBusy(false);
     } catch (error) {
       setPendingConnect(null);
@@ -507,6 +661,22 @@ function NatStackMobileHostBootstrap() {
     }
   }, []);
 
+  const selectWorkspaceAndRun = useCallback(
+    async (workspaceName, consumedUrl = null) => {
+      setBusy(true);
+      setStatus(`Opening ${workspaceName}...`);
+      const grant = await nativeHost.selectWorkspace(workspaceName, null);
+      smokePhase("embedded-workspace-selected");
+      if (consumedUrl) {
+        await markConnectLinkConsumed(consumedUrl).catch(() => {});
+      }
+      setPendingConnect(null);
+      setPendingWorkspaces([]);
+      await runLaunchGate(grant);
+    },
+    [runLaunchGate]
+  );
+
   const load = useCallback(async () => {
     setBusy(true);
     setApprovals([]);
@@ -518,75 +688,66 @@ function NatStackMobileHostBootstrap() {
         presentConnectLink(initialUrl);
         return;
       }
-      if (!nativeHost) throw missingNativeHostError();
-      const credentials = await nativeHost.getCredentials();
-      if (!credentials) {
+      // A returning device reconnects over the SAME signaling room with its
+      // stored refresh secret — no HTTP, no native credential read.
+      const stored = await loadShellCredential();
+      if (!stored) {
         setStatus(
           "Open a NatStack pairing link or scan a QR code from a trusted desktop or terminal."
         );
         return;
       }
-      if (!credentials.workspaceName && !credentials.workspaceId) {
-        const response = await nativeHost.listWorkspaces();
-        setPendingWorkspaces(Array.isArray(response?.workspaces) ? response.workspaces : []);
-        setStatus("Choose a workspace on the paired server.");
-        return;
-      }
-      if (credentials.workspaceId && !isSelectedWorkspaceUrl(credentials.serverUrl)) {
-        await nativeHost.clearCredentials?.().catch(() => {});
-        setStatus(
-          "Stored mobile credentials are not scoped to a workspace. Scan a new pairing QR code."
-        );
-        return;
-      }
-      const grant = await nativeHost.issueConnectionGrant();
-      await runLaunchGate(grant);
+      setStatus(`Reconnecting to ${pairingLabel(stored.pairing)}...`);
+      const connection = await reconnectViaWebRtc(stored);
+      await runLaunchGate(connection);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
+      // A rejected refresh secret is terminal — drop it so the next launch asks
+      // for a fresh QR instead of looping on a credential the server won't honor.
+      if (error?.code === "SESSION_AUTH_FAILED") {
+        await clearShellCredential().catch(() => {});
+        setStatus("Your saved pairing was rejected. Scan a fresh NatStack QR code to re-pair.");
+      } else {
+        setStatus(error instanceof Error ? error.message : String(error));
+      }
     } finally {
       setBusy(false);
     }
-  }, [presentConnectLink, runLaunchGate]);
+  }, [presentConnectLink, runLaunchGate, selectWorkspaceAndRun]);
 
   const confirmPendingConnect = useCallback(async () => {
     if (!pendingConnect) return;
     setBusy(true);
-    setStatus("Pairing server...");
+    setStatus("Pairing over a secure WebRTC pipe...");
     try {
-      const workspaces = await pairParsedLink(pendingConnect);
-      setPendingWorkspaces(workspaces);
-      setStatus(
-        workspaces.length > 0
-          ? "Choose a workspace on the paired server."
-          : "The paired server has no workspaces available."
-      );
+      // Pair + connect over WebRTC: pin the server's DTLS fingerprint, redeem the
+      // one-time code, persist the issued device credential. The signaling room
+      // targets one workspace server, so we proceed straight to the launch gate.
+      const connection = await pairViaWebRtc(pendingConnect);
+      smokePhase("embedded-workspace-selected");
+      if (pendingConnect.rawUrl) {
+        await markConnectLinkConsumed(pendingConnect.rawUrl).catch(() => {});
+      }
+      setPendingConnect(null);
+      setPendingWorkspaces([]);
+      await runLaunchGate(connection);
     } catch (error) {
       setStatus(error instanceof Error ? error.message : String(error));
     } finally {
       setBusy(false);
     }
-  }, [pendingConnect]);
+  }, [pendingConnect, runLaunchGate]);
 
   const selectPendingWorkspace = useCallback(
     async (workspaceName) => {
-      setBusy(true);
-      setStatus(`Opening ${workspaceName}...`);
       try {
-        const grant = await nativeHost.selectWorkspace(workspaceName, null);
-        smokePhase("embedded-workspace-selected");
-        if (pendingConnect?.rawUrl) {
-          await markConnectLinkConsumed(pendingConnect.rawUrl).catch(() => {});
-        }
-        setPendingConnect(null);
-        setPendingWorkspaces([]);
-        await runLaunchGate(grant);
+        await selectWorkspaceAndRun(workspaceName, pendingConnect?.rawUrl ?? null);
       } catch (error) {
         setStatus(error instanceof Error ? error.message : String(error));
       } finally {
         setBusy(false);
       }
     },
-    [pendingConnect, runLaunchGate]
+    [pendingConnect, selectWorkspaceAndRun]
   );
 
   const cancelPendingConnect = useCallback(() => {
@@ -719,7 +880,9 @@ function NatStackMobileHostBootstrap() {
               <View style={styles.connectCard}>
                 <Text style={styles.eyebrow}>Workspace</Text>
                 <Text style={styles.sectionTitle}>Choose a workspace</Text>
-                <Text style={styles.hostLabel}>{pendingConnect?.serverUrl ?? "Paired server"}</Text>
+                <Text style={styles.hostLabel}>
+                  {pendingConnect ? pairingLabel(pendingConnect) : "Paired server"}
+                </Text>
               </View>
               {pendingWorkspaces.map((workspace) => (
                 <Pressable
@@ -751,7 +914,7 @@ function NatStackMobileHostBootstrap() {
               <View style={styles.connectCard}>
                 <Text style={styles.eyebrow}>Pairing request</Text>
                 <Text style={styles.sectionTitle}>Connect this device?</Text>
-                <Text style={styles.hostLabel}>{pendingConnect.serverUrl}</Text>
+                <Text style={styles.hostLabel}>{pairingLabel(pendingConnect)}</Text>
               </View>
               <ActionButton title="Pair" onPress={confirmPendingConnect} />
               <ActionButton title="Cancel" onPress={cancelPendingConnect} variant="secondary" />

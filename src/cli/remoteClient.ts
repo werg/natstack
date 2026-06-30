@@ -2,9 +2,7 @@ import * as os from "node:os";
 import {
   serverAuthRouteUrl,
   serverWorkspaceRouteUrl,
-  createConnectDeepLink,
   PAIRING_CODE_PATTERN,
-  parseConnectLink,
   parseConnectServerUrl,
 } from "@natstack/shared/connect";
 import { AuthError } from "./output.js";
@@ -25,8 +23,10 @@ export interface PairOptions {
 
 export interface PairingInvite {
   code: string;
-  deepLink: string;
-  connectUrl: string;
+  deepLink: string | null;
+  /** Legacy WS server URL. WebRTC-paired servers no longer return one, so it is
+   * optional — the deep link (room/fp/sig) is the pairing material now. */
+  connectUrl?: string;
   serverUrl?: string;
   expiresAt?: number;
 }
@@ -143,16 +143,16 @@ export async function createPairingInvite(
   const result = (await auth.createPairingInvite(options.ttlMs ? { ttlMs: options.ttlMs } : {})) as
     | Record<string, unknown>
     | undefined;
-  if (!result || typeof result["code"] !== "string" || typeof result["connectUrl"] !== "string") {
+  if (!result || typeof result["code"] !== "string") {
     throw new Error("invite failed: server returned an unexpected response");
   }
   return {
+    // The server mints the deep link from its WebRTC pairing material (room/fp/
+    // sig); the CLI no longer has that material, so it cannot build one itself.
+    // A null deepLink means the server hasn't advertised pairing material yet.
     code: result["code"],
-    deepLink:
-      typeof result["deepLink"] === "string"
-        ? result["deepLink"]
-        : createConnectDeepLink(result["connectUrl"], result["code"]),
-    connectUrl: result["connectUrl"],
+    deepLink: typeof result["deepLink"] === "string" ? result["deepLink"] : null,
+    connectUrl: typeof result["connectUrl"] === "string" ? result["connectUrl"] : undefined,
     serverUrl: typeof result["serverUrl"] === "string" ? result["serverUrl"] : undefined,
     expiresAt: typeof result["expiresAt"] === "number" ? result["expiresAt"] : undefined,
   };
@@ -166,17 +166,26 @@ function remoteErrorMessage(body: { error?: unknown; code?: unknown }, fallback:
 
 function parsePairOptions(options: PairOptions): { url: string; code: string } {
   if (options.link) {
-    const parsed = parseConnectLink(options.link);
-    if (parsed.kind === "error") throw new Error(parsed.reason);
-    return parsed;
+    // A natstack://connect link now carries a WebRTC room + DTLS fingerprint, not
+    // a server URL — it is redeemed by the desktop/mobile shell over the encrypted
+    // pipe, not by the CLI's HTTP device-credential pairing. There is no origin to
+    // POST a pairing request to, so the CLI pairs against a co-located server URL.
+    throw new Error(
+      "natstack://connect links pair the desktop/mobile app over WebRTC, not the CLI. " +
+        "Pair the CLI against a co-located server with --url <http://127.0.0.1:PORT> --code <code>."
+    );
   }
   if (!options.url || !options.code) {
-    throw new Error("pair requires a natstack:// link or --url and --code");
+    throw new Error("pair requires --url and --code");
   }
   if (!PAIRING_CODE_PATTERN.test(options.code)) {
     throw new Error("pairing code has an unexpected format");
   }
   const parsedUrl = parseConnectServerUrl(options.url);
   if (parsedUrl.kind === "error") throw new Error(parsedUrl.reason);
+  // parseConnectServerUrl's declared return type unions in ConnectLink, whose ok
+  // variant (now WebRTC room/fp, no `url`) it never actually produces — narrow to
+  // the origin-bearing result.
+  if (!("url" in parsedUrl)) throw new Error("server URL did not resolve to an origin");
   return { url: parsedUrl.url, code: options.code };
 }

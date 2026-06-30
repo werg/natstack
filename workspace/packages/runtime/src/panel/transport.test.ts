@@ -3,15 +3,22 @@ import type { RpcEnvelope, RpcMessage } from "@natstack/rpc";
 import { createPanelTransport } from "./transport.js";
 
 const g = globalThis as typeof globalThis & {
-  __natstackTransport?: {
-    send: ReturnType<typeof vi.fn>;
-    onMessage: ReturnType<typeof vi.fn>;
-    onRecovery: ReturnType<typeof vi.fn>;
-  };
   __natstackShell?: {
-    serviceCall: ReturnType<typeof vi.fn>;
+    postEnvelope: ReturnType<typeof vi.fn>;
+    onEnvelope: ReturnType<typeof vi.fn>;
+    onRecovery?: ReturnType<typeof vi.fn>;
+    serviceCall?: ReturnType<typeof vi.fn>;
   };
 };
+
+function makeShell(overrides: Partial<NonNullable<typeof g.__natstackShell>> = {}) {
+  return {
+    postEnvelope: vi.fn(async () => {}),
+    onEnvelope: vi.fn(() => vi.fn()),
+    onRecovery: vi.fn(() => vi.fn()),
+    ...overrides,
+  };
+}
 
 function envelope(target: string, message: RpcMessage): RpcEnvelope {
   return {
@@ -25,17 +32,12 @@ function envelope(target: string, message: RpcMessage): RpcEnvelope {
 
 describe("createPanelTransport", () => {
   afterEach(() => {
-    delete g.__natstackTransport;
     delete g.__natstackShell;
   });
 
-  it("routes canonical endpoint ids unchanged", async () => {
-    const send = vi.fn(async () => {});
-    g.__natstackTransport = {
-      send,
-      onMessage: vi.fn(() => vi.fn()),
-      onRecovery: vi.fn(() => vi.fn()),
-    };
+  it("posts canonical envelopes over the shell bridge unchanged", async () => {
+    const shell = makeShell();
+    g.__natstackShell = shell;
     const transport = createPanelTransport();
     const message: RpcMessage = {
       type: "event",
@@ -47,19 +49,17 @@ describe("createPanelTransport", () => {
     const sentEnvelope = envelope("panel:panel-2", message);
     await transport.send(sentEnvelope);
 
-    expect(send).toHaveBeenCalledWith(sentEnvelope);
+    expect(shell.postEnvelope).toHaveBeenCalledWith(sentEnvelope);
   });
 
   it("delivers incoming envelopes unchanged", () => {
     let incoming!: (envelope: RpcEnvelope) => void;
-    g.__natstackTransport = {
-      send: vi.fn(async () => {}),
-      onMessage: vi.fn((handler) => {
+    g.__natstackShell = makeShell({
+      onEnvelope: vi.fn((handler) => {
         incoming = handler;
         return vi.fn();
       }),
-      onRecovery: vi.fn(() => vi.fn()),
-    };
+    });
     const transport = createPanelTransport();
     const handler = vi.fn();
     const message: RpcMessage = {
@@ -76,15 +76,10 @@ describe("createPanelTransport", () => {
     expect(handler).toHaveBeenCalledWith(inboundEnvelope);
   });
 
-  it("sends panel event subscriptions over the WS transport", async () => {
-    const send = vi.fn(async () => {});
+  it("sends panel event subscriptions over the shell bridge", async () => {
     const serviceCall = vi.fn(async () => {});
-    g.__natstackTransport = {
-      send,
-      onMessage: vi.fn(() => vi.fn()),
-      onRecovery: vi.fn(() => vi.fn()),
-    };
-    g.__natstackShell = { serviceCall };
+    const shell = makeShell({ serviceCall });
+    g.__natstackShell = shell;
     const transport = createPanelTransport();
     const message: RpcMessage = {
       type: "request",
@@ -97,19 +92,14 @@ describe("createPanelTransport", () => {
     const sentEnvelope = envelope("main", message);
     await transport.send(sentEnvelope);
 
-    expect(send).toHaveBeenCalledWith(sentEnvelope);
+    expect(shell.postEnvelope).toHaveBeenCalledWith(sentEnvelope);
     expect(serviceCall).not.toHaveBeenCalled();
   });
 
-  it("sends panel CDP requests over the panel WS transport", async () => {
-    const send = vi.fn(async () => {});
+  it("sends panel CDP requests over the shell bridge", async () => {
     const serviceCall = vi.fn(async () => {});
-    g.__natstackTransport = {
-      send,
-      onMessage: vi.fn(() => vi.fn()),
-      onRecovery: vi.fn(() => vi.fn()),
-    };
-    g.__natstackShell = { serviceCall };
+    const shell = makeShell({ serviceCall });
+    g.__natstackShell = shell;
     const transport = createPanelTransport();
     const message: RpcMessage = {
       type: "request",
@@ -122,19 +112,14 @@ describe("createPanelTransport", () => {
     const sentEnvelope = envelope("main", message);
     await transport.send(sentEnvelope);
 
-    expect(send).toHaveBeenCalledWith(sentEnvelope);
+    expect(shell.postEnvelope).toHaveBeenCalledWith(sentEnvelope);
     expect(serviceCall).not.toHaveBeenCalled();
   });
 
   it("routes Electron-local panel host helpers through serviceCall", async () => {
-    const send = vi.fn(async () => {});
     const serviceCall = vi.fn(async () => "ok");
-    g.__natstackTransport = {
-      send,
-      onMessage: vi.fn(() => vi.fn()),
-      onRecovery: vi.fn(() => vi.fn()),
-    };
-    g.__natstackShell = { serviceCall };
+    const shell = makeShell({ serviceCall });
+    g.__natstackShell = shell;
     const transport = createPanelTransport();
     const handler = vi.fn();
     transport.onMessage(handler);
@@ -151,7 +136,7 @@ describe("createPanelTransport", () => {
     await Promise.resolve();
 
     expect(serviceCall).toHaveBeenCalledWith("panel.reloadView", "panel-1");
-    expect(send).not.toHaveBeenCalled();
+    expect(shell.postEnvelope).not.toHaveBeenCalled();
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({
         from: "main",

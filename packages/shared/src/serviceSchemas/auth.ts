@@ -36,8 +36,6 @@ export const CreatePairingInviteArgsSchema = z.object({
 
 export const ConnectionInfoResponseSchema = z.object({
   serverUrl: z.string(),
-  publicUrl: z.string().nullable(),
-  connectUrl: z.string(),
   protocol: z.enum(["http", "https"]).optional(),
   externalHost: z.string().optional(),
   gatewayPort: z.number().nullable().optional(),

@@ -7,29 +7,28 @@
  */
 
 import { app } from "electron";
-import * as fs from "fs";
-import * as http from "http";
-import * as https from "https";
-import * as os from "os";
+import * as path from "node:path";
 import { createDevLogger } from "@natstack/dev-log";
 import { getAppRoot } from "./paths.js";
 import { ServerProcessManager, type ServerPorts } from "./serverProcessManager.js";
+import { createServerClient, type ServerClient, type ConnectionStatus } from "./serverClient.js";
+import { createWebRtcServerClient } from "./webrtcServerClient.js";
+import { startPanelAssetFacade } from "./panelAssetFacade.js";
+import { relaunchApp } from "./relaunchApp.js";
 import {
-  createServerClient,
-  type ServerClient,
-  type ConnectionStatus,
-  type TlsPinningOptions,
-} from "./serverClient.js";
-import { createPinnedHttpsAgent } from "./tlsPinning.js";
+  loadStoredRemotePairing,
+  persistRotatedRemoteCredential,
+  saveStoredRemote,
+} from "./services/remoteCredService.js";
+import type { StoredRemote } from "./services/remoteCredStore.js";
 import type { PanelHttpServerLike } from "@natstack/shared/panelInterfaces";
 import type { ServerInfo } from "./serverInfo.js";
 import type { WorkspaceConfig } from "@natstack/shared/workspace/types";
 import type { CentralDataManager } from "@natstack/shared/centralData";
 import { workspaceRelaunchArgs, type ConnectedStartupMode } from "./startupMode.js";
-import { loadRemoteCredentials, saveRemoteCredentials } from "./remoteCredentialStore.js";
 import { createTypedServiceClient } from "@natstack/shared/typedServiceClient";
 import { workspaceMethods } from "@natstack/shared/serviceSchemas/workspace";
-import { serverAuthRouteUrl, serverRpcWsUrl } from "@natstack/shared/connect";
+import { serverRpcWsUrl, type ConnectPairing } from "@natstack/shared/connect";
 
 const log = createDevLogger("ServerSession");
 
@@ -49,14 +48,6 @@ export interface SessionConnection {
   serverProcessManager: ServerProcessManager | null;
   panelHttpServer: PanelHttpServerLike;
   serverInfo: ServerInfo;
-}
-
-export function remoteGatewayServerUrl(remoteUrl: URL): string {
-  const url = new URL(remoteUrl.href);
-  url.search = "";
-  url.hash = "";
-  url.pathname = url.pathname.replace(/\/+$/, "") || "/";
-  return url.href.replace(/\/$/, "");
 }
 
 /**
@@ -79,200 +70,66 @@ function buildServerInfo(
   };
 }
 
-interface ShellCredentialResponse {
-  deviceId: string;
-  refreshToken?: string;
-  shellToken: string;
-  serverId?: string;
-  serverBootId?: string;
-  workspaceId?: string;
-}
-
-async function postAuthJson(
-  remoteUrl: URL,
-  path: string,
-  bodyValue: unknown,
-  bearerToken: string | null,
-  tls?: TlsPinningOptions
-): Promise<{ statusCode: number; statusMessage: string; body: string }> {
-  const requestUrl = path.startsWith("/_r/s/auth/")
-    ? serverAuthRouteUrl(remoteUrl, path.slice("/_r/s/auth/".length))
-    : new URL(path, remoteUrl);
-  const body = JSON.stringify(bodyValue);
-  return new Promise<{
-    statusCode: number;
-    statusMessage: string;
-    body: string;
-  }>((resolve, reject) => {
-    const isHttps = requestUrl.protocol === "https:";
-    const agent =
-      isHttps && tls?.fingerprint
-        ? createPinnedHttpsAgent(tls.fingerprint)
-        : isHttps && tls?.caPath
-          ? new https.Agent({ ca: fs.readFileSync(tls.caPath) })
-          : undefined;
-    const headers: Record<string, string | number> = {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(body),
-    };
-    if (bearerToken) headers["Authorization"] = `Bearer ${bearerToken}`;
-    const req = (isHttps ? https : http).request(
-      requestUrl,
-      {
-        method: "POST",
-        agent,
-        headers,
-      },
-      (res) => {
-        const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
-        res.on("end", () => {
-          resolve({
-            statusCode: res.statusCode ?? 0,
-            statusMessage: res.statusMessage ?? "",
-            body: Buffer.concat(chunks).toString("utf8"),
-          });
-        });
-      }
-    );
-    req.on("error", reject);
-    req.end(body);
-  });
-}
-
-async function issueElectronDevice(
-  remoteUrl: URL,
-  adminToken: string,
-  tls?: TlsPinningOptions
-): Promise<ShellCredentialResponse> {
-  const responseBody = await postAuthJson(
-    remoteUrl,
-    "/_r/s/auth/issue-device",
-    { label: `Electron on ${os.hostname()}`, platform: "desktop" },
-    adminToken,
-    tls
-  );
-  const json = JSON.parse(responseBody.body || "{}") as Partial<ShellCredentialResponse> & {
-    error?: unknown;
-  };
-  if (
-    responseBody.statusCode < 200 ||
-    responseBody.statusCode >= 300 ||
-    typeof json.shellToken !== "string" ||
-    typeof json.deviceId !== "string"
-  ) {
-    throw new Error(
-      `Failed to issue remote device credential (${responseBody.statusCode}): ${
-        typeof json.error === "string" ? json.error : responseBody.statusMessage
-      }`
-    );
+/**
+ * Connect to a remote server over the WebRTC pipe (the only remote transport;
+ * §8 deleted the direct-wss/TLS-pin path). The QR-pairing flow hands its parsed
+ * `ConnectPairing` ({room, fp, code, sig, ice}) here, along with the shell-token
+ * provider derived from the persisted device credential.
+ *
+ * Returns a `ServerClient` indistinguishable from the loopback-WS one
+ * (`createServerClient`): the main `shell` principal and each Electron-hosted
+ * `app` principal are logical sessions multiplexed over one DTLS pipe. The
+ * device-credential → shell-token derivation is the pairing layer's concern
+ * (`getShellToken`), exactly as the local path receives `ports.shellToken` from
+ * its child server — the transport never sees a half-authenticated pipe.
+ */
+export function connectRemoteViaWebRtc(
+  pairing: ConnectPairing,
+  options: {
+    /** The shell's caller id, e.g. `shell:<deviceId>`. */
+    callerId: string;
+    /** Device-credential → short-lived shell token (re-invoked per session open). */
+    getShellToken: () => Promise<string> | string;
+    connectionId?: string;
+    /** Fired when a fresh device is paired — persist the returned credential. */
+    onPaired?: (credential: { deviceId: string; refreshToken: string }) => void;
+    onServerEvent?: (event: string, payload: unknown) => void;
+    onConnectionStatusChanged?: (status: ConnectionStatus) => void;
+    onRecovery?: (kind: "resubscribe" | "cold-recover") => void | Promise<void>;
   }
-  return json as ShellCredentialResponse;
-}
-
-async function refreshShellCredential(
-  remoteUrl: URL,
-  deviceId: string,
-  refreshToken: string,
-  tls?: TlsPinningOptions
-): Promise<ShellCredentialResponse> {
-  const responseBody = await postAuthJson(
-    remoteUrl,
-    "/_r/s/auth/refresh-shell",
-    { deviceId, refreshToken },
-    null,
-    tls
-  );
-  const json = JSON.parse(responseBody.body || "{}") as Partial<ShellCredentialResponse> & {
-    error?: unknown;
-  };
-  if (
-    responseBody.statusCode < 200 ||
-    responseBody.statusCode >= 300 ||
-    typeof json.shellToken !== "string"
-  ) {
-    throw new Error(
-      `Failed to refresh shell token (${responseBody.statusCode}): ${
-        typeof json.error === "string" ? json.error : responseBody.statusMessage
-      }`
-    );
-  }
-  return json as ShellCredentialResponse;
-}
-
-function persistRemoteShellCredential(
-  mode: Extract<ConnectedStartupMode, { kind: "remote" }>,
-  credential: ShellCredentialResponse
-): void {
-  if (!credential.refreshToken) return;
-  const current = loadRemoteCredentials();
-  const preserved =
-    current?.url === mode.remoteUrl.href
-      ? { hubUrl: current.hubUrl, workspaceName: current.workspaceName }
-      : {};
-  if (mode.bootstrap === "device") {
-    saveRemoteCredentials({
-      kind: "device",
-      url: mode.remoteUrl.href,
-      ...preserved,
-      deviceId: credential.deviceId,
-      refreshToken: credential.refreshToken,
-      caPath: mode.tls?.caPath,
-      fingerprint: mode.tls?.fingerprint,
-    });
-  } else if (mode.adminToken) {
-    saveRemoteCredentials({
-      kind: "hybrid",
-      url: mode.remoteUrl.href,
-      ...preserved,
-      adminToken: mode.adminToken,
-      deviceId: credential.deviceId,
-      refreshToken: credential.refreshToken,
-      caPath: mode.tls?.caPath,
-      fingerprint: mode.tls?.fingerprint,
-    });
-    mode.bootstrap = "hybrid";
-  }
-  mode.deviceId = credential.deviceId;
-  mode.refreshToken = credential.refreshToken;
-}
-
-async function acquireShellCredential(
-  mode: Extract<ConnectedStartupMode, { kind: "remote" }>
-): Promise<ShellCredentialResponse> {
-  if (mode.deviceId && mode.refreshToken) {
-    try {
-      return await refreshShellCredential(
-        mode.remoteUrl,
-        mode.deviceId,
-        mode.refreshToken,
-        mode.tls
-      );
-    } catch (err) {
-      const message = (err as Error).message;
-      log.warn(`Stored device credential could not refresh shell token: ${message}`);
-      if (mode.bootstrap === "device") {
-        if (/Failed to refresh shell token \((401|403)\)/.test(message)) {
-          throw new Error("Device credential expired or revoked — re-pair from the server");
-        }
-        throw err;
-      }
-    }
-  }
-
-  if (!mode.adminToken) {
-    throw new Error("Remote admin token is unavailable — re-pair from the server");
-  }
-  const credential = await issueElectronDevice(mode.remoteUrl, mode.adminToken, mode.tls);
-  persistRemoteShellCredential(mode, credential);
-  return credential;
+): Promise<ServerClient> {
+  return createWebRtcServerClient({ pairing, ...options });
 }
 
 /**
- * Establish a server session — either by spawning a local server or connecting to remote.
+ * Establish a server session. Three branches, in precedence order:
+ *
+ *   (a) FRESH pair — `args.pendingPairing` carries a pairing link the bootstrap
+ *       chooser redeemed THIS launch. The single pairing connection authenticates
+ *       with the one-time `code` and stays as the session; the device credential
+ *       the server issues is persisted so the next launch reconnects via refresh.
+ *       (No throwaway redeem-then-relaunch.)
+ *   (b) Returning device — a pairing persisted on a prior launch. Re-dial it and
+ *       re-authenticate with the refresh token (a RUNTIME branch, not a startup
+ *       mode).
+ *   (c) Local — spawn the local child server and connect over loopback WS.
+ *
+ * Remote topology is always WebRTC (`connectRemoteViaWebRtc`), never a direct
+ * socket.
  */
 export async function establishServerSession(args: {
-  mode: ConnectedStartupMode;
+  mode: ConnectedStartupMode | null;
+  /**
+   * A pairing the bootstrap chooser redeemed this launch. When set, the pairing
+   * connection IS the session (branch (a) above) — it takes precedence over both
+   * a stored pairing and a local spawn.
+   */
+  pendingPairing?: ConnectPairing;
+  /**
+   * Suppress returning-device auto-dial for this launch. Used by the chooser
+   * fallback after a failed remote launch so a local workspace choice stays local.
+   */
+  skipStoredRemote?: boolean;
   centralData: CentralDataManager;
   onServerEvent: (event: string, payload: unknown) => void;
   onConnectionStatusChanged?: (status: ConnectionStatus) => void;
@@ -282,83 +139,48 @@ export async function establishServerSession(args: {
     msg: Record<string, unknown>
   ) => Promise<Record<string, unknown> | null>;
 }): Promise<SessionConnection> {
-  const { mode, onServerEvent } = args;
+  const { mode, pendingPairing, skipStoredRemote, onServerEvent } = args;
+
+  // (a) FRESH pair: the bootstrap chooser handed us a pairing link this launch.
+  // The pairing connection authenticates with the code and stays as the session.
+  if (pendingPairing) {
+    return establishFreshPairSession(pendingPairing, args);
+  }
+  // (b) Returning device: a paired WebRTC remote persisted on a prior launch
+  // takes precedence over the local spawn. Here we just re-dial it.
+  const storedRemote = skipStoredRemote ? null : loadStoredRemotePairing();
+  if (storedRemote) {
+    return establishRemoteSession(storedRemote, args);
+  }
+  // (c) Local spawn.
+  if (!mode) {
+    throw new Error(
+      "establishServerSession: no connected startup mode, fresh pairing, or stored remote pairing"
+    );
+  }
 
   let serverClient: ServerClient;
   let serverProcessManager: ServerProcessManager | null = null;
   let ports: ServerPorts;
-  let protocol: "http" | "https";
-  let externalHost: string;
   let gatewayConfig: { serverUrl: string };
 
-  if (mode.kind === "remote") {
-    // Remote mode: connect to existing server with automatic reconnection
-    const { remoteUrl, tls } = mode;
-    externalHost = remoteUrl.hostname;
-    protocol = remoteUrl.protocol === "https:" ? "https" : "http";
-    const remotePort = parseInt(remoteUrl.port) || (protocol === "https" ? 443 : 80);
-    gatewayConfig = { serverUrl: remoteGatewayServerUrl(remoteUrl) };
-
-    let shellCredential = await acquireShellCredential(mode);
-    let shellToken = shellCredential.shellToken;
-    ports = {
-      workerdPort: remotePort,
-      gatewayPort: remotePort,
-      adminToken: mode.adminToken ?? "",
-      shellToken,
-    };
-
-    serverClient = await createServerClient(remotePort, shellToken, {
-      wsUrl: serverRpcWsUrl(remoteUrl),
-      tls,
-      reconnect: true,
-      refreshAuthToken: async () => {
-        if (!shellCredential.refreshToken) {
-          shellCredential = await acquireShellCredential(mode);
-        } else {
-          shellCredential = await refreshShellCredential(
-            remoteUrl,
-            shellCredential.deviceId,
-            shellCredential.refreshToken,
-            tls
-          ).catch(() => acquireShellCredential(mode));
-        }
-        shellToken = shellCredential.shellToken;
-        persistRemoteShellCredential(mode, shellCredential);
-        ports.shellToken = shellToken;
-        return shellToken;
-      },
-      onConnectionStatusChanged: (status) => {
-        args.onConnectionStatusChanged?.(status);
-      },
-      onRecovery: args.onRecovery,
-      onDisconnect: () => {
-        // Called only after all reconnection attempts are exhausted
-        console.error(
-          "[App] Remote server disconnected: connection was lost and could not be re-established after multiple attempts. Exiting."
-        );
-        app.exit(1);
-      },
-      onServerEvent,
-    });
-
-    log.info(`[Server] Connected to remote server at ${remoteUrl.href}`);
-  } else {
-    // Local mode: spawn server as child process
-    protocol = "http";
-    externalHost = "localhost";
-
+  // Local topology: spawn the server as a child process and connect over
+  // loopback WS. Remote topology is WebRTC (`establishRemoteSession`), never a
+  // direct socket — so the session is always http/localhost here.
+  const protocol = "http" as const;
+  const externalHost = "localhost";
+  {
     serverProcessManager = new ServerProcessManager({
       wsDir: mode.wsDir,
       appRoot: getAppRoot(),
       isEphemeral: mode.isEphemeral,
+      autoApproveStartupUnits: mode.autoApproveStartupUnits,
       onCrash: (code) => {
         console.error(`[App] Server process crashed with code ${code}`);
         console.error(
           "[App] Server process exited repeatedly and could not be recovered. Relaunching."
         );
-        app.relaunch();
-        app.exit(1);
+        relaunchApp({ exitCode: 1 });
       },
       onRestart: (restartedPorts) => {
         Object.assign(ports, restartedPorts);
@@ -376,8 +198,7 @@ export async function establishServerSession(args: {
       },
       onRelaunch: (name) => {
         log.info(`[App] Relaunching into workspace "${name}"`);
-        app.relaunch({ args: workspaceRelaunchArgs(name) });
-        app.exit(0);
+        relaunchApp({ args: workspaceRelaunchArgs(name) });
       },
     });
 
@@ -441,14 +262,160 @@ export async function establishServerSession(args: {
     workerdPort: ports.workerdPort ?? 0,
     workspaceId: wsInfo.config.id,
     workspacePath: wsInfo.path,
-    /** The server's own state directory — lives on the remote filesystem.
-     *  Do NOT use for local I/O; use getRemoteUserDataDir() instead. */
+    /** The local child server's own state directory (same host). */
     statePath: wsInfo.statePath,
     workspaceConfig: wsInfo.config,
     adminToken: ports.adminToken,
     shellToken: ports.shellToken ?? "",
     serverClient,
     serverProcessManager,
+    panelHttpServer,
+    serverInfo,
+  };
+}
+
+/** The connect-callback subset both remote-session paths forward to the pipe. */
+type RemoteConnectArgs = {
+  onServerEvent: (event: string, payload: unknown) => void;
+  onConnectionStatusChanged?: (status: ConnectionStatus) => void;
+  onRecovery?: (kind: "resubscribe" | "cold-recover") => void | Promise<void>;
+};
+
+/**
+ * Connect to a paired WebRTC remote as the RETURNING device and shape it into a
+ * {@link SessionConnection}. The shell re-authenticates with its refresh token
+ * (`refresh:<deviceId>:<refreshToken>`); the RPC plane rides the pipe exactly as
+ * the local loopback-WS plane does.
+ */
+async function establishRemoteSession(
+  stored: StoredRemote,
+  args: RemoteConnectArgs
+): Promise<SessionConnection> {
+  const serverClient = await connectRemoteViaWebRtc(
+    { ...stored.pairing, code: "" },
+    {
+      callerId: `shell:${stored.deviceId}`,
+      getShellToken: () => `refresh:${stored.deviceId}:${stored.refreshToken}`,
+      // A returning device re-auths with its refresh token; if the server rotates
+      // it (delivered via onPaired), persist the fresh secret for next launch.
+      onPaired: (credential) => persistRotatedRemoteCredential(credential),
+      onServerEvent: args.onServerEvent,
+      onConnectionStatusChanged: args.onConnectionStatusChanged,
+      onRecovery: args.onRecovery,
+    }
+  );
+  log.info("[Server] Shell client connected over WebRTC remote pipe (returning device)");
+  return buildRemoteSessionConnection(serverClient);
+}
+
+/**
+ * Pair a FRESH device over WebRTC and KEEP the pipe as the session. The one-time
+ * `code` is presented as the session token (which pairs a new device server-side
+ * and delivers `{deviceId, refreshToken}` via `onPaired`); that credential is
+ * persisted so the next launch reconnects as a returning device. There is no
+ * throwaway redeem — this connection IS the session.
+ */
+async function establishFreshPairSession(
+  pairing: ConnectPairing,
+  args: RemoteConnectArgs
+): Promise<SessionConnection> {
+  const serverClient = await connectRemoteViaWebRtc(pairing, {
+    // The server assigns the real `shell:<deviceId>` principal when it redeems the
+    // one-time code; we don't know that id yet, so dial with a stable selfId. (If
+    // the resolved id is ever threaded back, swap it in here.)
+    callerId: "shell:pairing",
+    getShellToken: () => pairing.code,
+    // Persist the issued device credential against the pairing material (minus the
+    // one-time code) so the NEXT launch reconnects via refresh:<deviceId>:<token>.
+    onPaired: (credential) =>
+      saveStoredRemote({
+        pairing: {
+          room: pairing.room,
+          fp: pairing.fp,
+          sig: pairing.sig,
+          ice: pairing.ice,
+          srv: pairing.srv,
+        },
+        deviceId: credential.deviceId,
+        refreshToken: credential.refreshToken,
+        pairedAt: Date.now(),
+      }),
+    onServerEvent: args.onServerEvent,
+    onConnectionStatusChanged: args.onConnectionStatusChanged,
+    onRecovery: args.onRecovery,
+  });
+  log.info("[Server] Shell client connected over WebRTC remote pipe (fresh pairing)");
+  return buildRemoteSessionConnection(serverClient);
+}
+
+/**
+ * Shape an already-connected remote WebRTC pipe into a {@link SessionConnection}.
+ * Shared by the fresh-pair and returning-device paths — the only difference
+ * between them is HOW the pipe authenticated (one-time code vs refresh token).
+ */
+async function buildRemoteSessionConnection(
+  serverClient: ServerClient
+): Promise<SessionConnection> {
+  const protocol = "http" as const;
+  const externalHost = "localhost";
+  // There is no local gateway/workerd process in remote mode — the RPC plane
+  // rides the pipe. Panel ASSETS, however, must still load from a loopback
+  // origin (buildPanelUrl → http://127.0.0.1:{gatewayPort}/{source}/), so stand
+  // up an assets-only façade that proxies each request to the remote server's
+  // own gateway over the pipe (gateway.fetch RPC). The façade lives for the
+  // whole session; there is no teardown hook on this path (the process exits
+  // with the session), which is acceptable for a single loopback listener.
+  const facade = await startPanelAssetFacade(serverClient);
+  const remotePorts: ServerPorts = { gatewayPort: facade.port, workerdPort: 0, adminToken: "" };
+  const gatewayConfig = { serverUrl: `http://127.0.0.1:${facade.port}` };
+
+  const serverInfo = buildServerInfo(
+    remotePorts,
+    externalHost,
+    protocol,
+    gatewayConfig,
+    () => serverClient
+  );
+
+  // Mirror the local path: read the remote workspace's identity + config over
+  // the pipe so the shell can label and route the session.
+  const workspaceClient = createTypedServiceClient("workspace", workspaceMethods, (svc, m, a) =>
+    serverClient.call(svc, m, a)
+  );
+  const wsInfo = await workspaceClient.getInfo();
+  log.info(`[Workspace] Remote workspace: ${wsInfo.config.id}`);
+
+  const panelHttpServer: PanelHttpServerLike = {
+    hasBuild: () => false,
+    getBuildRevision: () => undefined,
+    invalidateBuild: () => {},
+    getPort: () => facade.port,
+  };
+
+  // Local consumers (shellCore, app state, diagnostics) WRITE to statePath, so it
+  // must be a locally-writable path — the remote `wsInfo.statePath` describes the
+  // server's host, not ours. Scope a local scratch dir under userData.
+  const statePath = path.join(app.getPath("userData"), "remote-state");
+
+  return {
+    protocol,
+    gatewayPort: remotePorts.gatewayPort,
+    externalHost,
+    gatewayConfig,
+    workerdPort: remotePorts.workerdPort ?? 0,
+    workspaceId: wsInfo.config.id,
+    // TODO(remote): wsInfo.path is the REMOTE host's tree — panel manifests are
+    // not present locally. Full remote panel serving (manifests + assets over the
+    // bridge) is a follow-up; carried here so the session is labelled correctly.
+    workspacePath: wsInfo.path,
+    statePath,
+    workspaceConfig: wsInfo.config,
+    // TODO(remote): no local admin/shell token in remote mode — session auth is
+    // the device refresh credential, derived per session by connectRemoteViaWebRtc.
+    adminToken: "",
+    shellToken: "",
+    serverClient,
+    serverProcessManager: null,
     panelHttpServer,
     serverInfo,
   };

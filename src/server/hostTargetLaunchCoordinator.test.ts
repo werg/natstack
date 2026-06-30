@@ -136,6 +136,58 @@ describe("HostTargetLaunchCoordinator", () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  it("returns a starting session promptly while launch resolution continues", async () => {
+    const { coordinator, emit, launchHostTarget } = makeCoordinator({});
+    let resolveLaunch!: (value: HostTargetLaunchResult) => void;
+    const launch = new Promise<HostTargetLaunchResult>((resolve) => {
+      resolveLaunch = resolve;
+    });
+    launchHostTarget.mockImplementationOnce(async () => await launch);
+    vi.useFakeTimers();
+    try {
+      const pending = coordinator.beginLaunch("react-native");
+
+      await vi.advanceTimersByTimeAsync(300);
+      const session = await pending;
+
+      expect(session).toMatchObject({
+        target: "react-native",
+        status: "starting",
+        settled: false,
+      });
+      expect(emit).not.toHaveBeenCalled();
+
+      resolveLaunch({
+        status: "ready",
+        launched: true,
+        target: "react-native",
+        source: "apps/mobile",
+        appId: "@workspace-apps/mobile",
+        buildKey: "build-mobile",
+      });
+      await vi.runAllTimersAsync();
+
+      expect(coordinator.getLaunchSession(session.sessionId)).toMatchObject({
+        status: "ready",
+        settled: true,
+        launch: expect.objectContaining({
+          status: "ready",
+          appId: "@workspace-apps/mobile",
+        }),
+      });
+      expect(emit).toHaveBeenCalledWith(
+        "host-target-launch:session-changed",
+        expect.objectContaining({
+          sessionId: session.sessionId,
+          target: "react-native",
+          status: "ready",
+        })
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("emits explicit target change notifications for underlying state changes", () => {
     const { coordinator, emit } = makeCoordinator({});
 

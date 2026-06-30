@@ -27,7 +27,7 @@ function makeDeps(overrides?: {
   acquireResult?: { acquired: boolean; lease?: { holderLabel: string } };
 }) {
   return {
-    getPanelInit: jest.fn(async () => overrides?.panelInit ?? { entityId: "entity-1" }),
+    getPanelInit: jest.fn(async () => overrides?.panelInit ?? { entityId: "panel:nav-1" }),
     acquireLease: jest.fn(async () => overrides?.acquireResult ?? { acquired: true }),
     takeOverLease: jest.fn(async () => overrides?.acquireResult ?? { acquired: true }),
   };
@@ -52,7 +52,7 @@ describe("materializeMobilePanel", () => {
       panelInit: null,
     });
     expect(deps.getPanelInit).toHaveBeenCalledWith("panel-1");
-    expect(deps.acquireLease).toHaveBeenCalledWith("panel-1", "entity-1", {
+    expect(deps.acquireLease).toHaveBeenCalledWith("panel-1", "panel:nav-1", {
       connectionId: expect.stringMatching(/^mobile-panel-1-/),
     });
     expect(deps.takeOverLease).not.toHaveBeenCalled();
@@ -69,7 +69,7 @@ describe("materializeMobilePanel", () => {
       leaseMode: "takeOver",
     });
 
-    expect(deps.takeOverLease).toHaveBeenCalledWith("panel-1", "entity-1", {
+    expect(deps.takeOverLease).toHaveBeenCalledWith("panel-1", "panel:nav-1", {
       connectionId: expect.stringMatching(/^mobile-panel-1-/),
     });
     expect(deps.acquireLease).not.toHaveBeenCalled();
@@ -92,7 +92,7 @@ describe("materializeMobilePanel", () => {
   });
 
   it("keeps managed panel materialization payloads lease-bound", async () => {
-    const deps = makeDeps({ panelInit: { entityId: "entity-1", slotId: "panel-1" } });
+    const deps = makeDeps({ panelInit: { entityId: "panel:nav-1", slotId: "panel-1" } });
 
     const result = await materializeMobilePanel({
       panelId: "panel-1",
@@ -104,10 +104,12 @@ describe("materializeMobilePanel", () => {
 
     expect(result).toMatchObject({
       panelId: "panel-1",
-      url: "https://natstack.example.com:3000/_workspace/dev/panels/editor/?contextId=ctx-panel-1",
+      // Mobile serves panels through the local asset façade (127.0.0.1:<port>) over
+      // the WebRTC pipe, not the remote host directly.
+      url: "http://127.0.0.1:3000/_workspace/dev/panels/editor/?contextId=ctx-panel-1",
       managed: true,
       panelInit: {
-        entityId: "entity-1",
+        entityId: "panel:nav-1",
         slotId: "panel-1",
         clientLabel: "Mobile",
         connectionId: expect.stringMatching(/^mobile-panel-1-/),

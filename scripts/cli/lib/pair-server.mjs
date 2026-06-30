@@ -3,10 +3,14 @@ import { fileURLToPath } from "node:url";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { pickMobileHost, printConnectBanner } from "./connect-utils.mjs";
+import { printConnectBanner } from "./connect-utils.mjs";
 import { createServerInvocation, serverEntryArg } from "./server-entry.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "..");
+
+// Loopback host the co-located server binds. Remote reach is WebRTC (the QR
+// carries room/fp/sig); there is no LAN/Tailscale/public-URL origin anymore.
+const LOOPBACK_HOST = "127.0.0.1";
 
 function parsePort(value, label) {
   const port = Number(value);
@@ -18,16 +22,12 @@ function parsePort(value, label) {
 
 export function parsePairArgs(argv, config) {
   const options = {
-    host: firstDefined(config.hostEnv.map((key) => process.env[key])) ?? "vpn",
     port: parsePort(
       firstDefined(config.portEnv.map((key) => process.env[key])) ?? "3030",
       config.portEnv[0] ?? "NATSTACK_PAIR_PORT"
     ),
-    protocol: process.env.NATSTACK_PROTOCOL ?? "http",
     appRoot: null,
-    publicUrl: process.env.NATSTACK_PUBLIC_URL ?? null,
     dev: process.env[config.devEnv] === "1",
-    requirePublicUrl: false,
     help: false,
   };
 
@@ -35,20 +35,16 @@ export function parsePairArgs(argv, config) {
     const arg = argv[i];
     if (arg === "--") {
       throw new Error("Forwarding raw server flags is no longer supported");
-    } else if (arg === "--host") {
-      options.host = argv[++i] ?? "";
     } else if (arg === "--port" || arg === "--gateway-port") {
       options.port = parsePort(argv[++i], arg);
-    } else if (arg === "--protocol") {
-      options.protocol = argv[++i] ?? "";
+    } else if (arg === "--host" || arg === "--protocol" || arg === "--public-url" || arg === "--require-public-url") {
+      throw new Error(
+        `${arg} is no longer supported; remote reach is WebRTC and the server binds loopback only`
+      );
     } else if (arg === "--workspace" || arg === "--workspace-dir") {
       throw new Error(`${arg} is no longer supported; choose a workspace after pairing`);
     } else if (arg === "--app-root") {
       options.appRoot = argv[++i] ?? "";
-    } else if (arg === "--public-url") {
-      options.publicUrl = argv[++i] ?? "";
-    } else if (arg === "--require-public-url") {
-      options.requirePublicUrl = true;
     } else if (arg === "--dev" || arg === "--ephemeral") {
       options.dev = true;
     } else if (arg === "--no-init") {
@@ -60,39 +56,25 @@ export function parsePairArgs(argv, config) {
     }
   }
 
-  if (options.protocol !== "http" && options.protocol !== "https") {
-    throw new Error("--protocol must be http or https");
-  }
   return options;
 }
 
 export function printPairHelp(config) {
   console.log(`${config.commandName}
 
-If Tailscale is running and \`tailscale serve --bg <port>\` has been configured
-on the server, the QR/deep link points at the MagicDNS HTTPS URL and OAuth,
-panel chrome, and pairing all use the same URL. Otherwise it falls back to the
-IP+HTTP gateway address. Explicit \`--host tailscale\` requires the Tailscale
-HTTPS URL and exits if it cannot be verified.
+Starts the co-located NatStack server (bound to loopback) and prints a pairing
+QR/deep link. The device reaches the server over an encrypted WebRTC pipe — the
+link carries the signaling room, the server's DTLS fingerprint, and a one-time
+pairing code, not a server URL.
 
 Usage:
 ${config.usage.map((line) => `  ${line}`).join("\n")}
 
 Options:
-  --host <host|lan|tailscale|vpn>
-      External hostname or address the device can reach. Defaults through:
-      ${config.hostEnv.join(", ")}.
   --port, --gateway-port <port>
-      Stable gateway port for HTTP/WS traffic. Defaults through ${config.portEnv.join(", ")} or 3030.
-  --protocol <http|https>
-      URL protocol advertised to the client. Defaults to http.
+      Stable gateway port for the loopback server. Defaults through ${config.portEnv.join(", ")} or 3030.
   --app-root <path>
       Application root passed to the server.
-  --public-url <url>
-      Override the externally reachable URL used by OAuth/webhook routes.
-  --require-public-url
-      Exit nonzero unless the server can advertise a verified public URL.
-      This is implied by --host tailscale.
   --dev, --ephemeral
       Use a disposable dev workspace copied fresh from the template and deleted
       when the server exits.
@@ -112,14 +94,9 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
     return;
   }
 
-  const selectedHost = pickMobileHost(options.host, {
-    defaultPreference: "vpn",
-    includeTunnel: true,
-  });
-  const requirePublicUrl = options.requirePublicUrl || options.host === "tailscale";
   let serverArgs = hooks.buildServerArgs
-    ? hooks.buildServerArgs(options, selectedHost.address)
-    : buildServerArgs(options, selectedHost.address, config);
+    ? hooks.buildServerArgs(options, LOOPBACK_HOST)
+    : buildServerArgs(options, config);
   let ownedReadyDir = null;
   let readyFile = readyFileFromServerArgs(serverArgs);
   if (!readyFile) {
@@ -128,15 +105,10 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
     serverArgs = [...serverArgs, "--ready-file", readyFile];
   }
 
-  hooks.beforeStart?.({ options, selectedHost, requirePublicUrl, serverArgs });
+  hooks.beforeStart?.({ options, serverArgs });
 
-  console.log(
-    `[${config.logPrefix}] Host: ${selectedHost.address}${selectedHost.interfaceName ? ` (${selectedHost.interfaceName})` : ""}`
-  );
+  console.log(`[${config.logPrefix}] Loopback host: ${LOOPBACK_HOST}`);
   console.log(`[${config.logPrefix}] Gateway port: ${options.port}`);
-  if (requirePublicUrl) {
-    console.log(`[${config.logPrefix}] Tailscale HTTPS pairing URL required`);
-  }
   if (options.dev) {
     console.log(`[${config.logPrefix}] Dev workspace: fresh template copy, deleted on exit`);
   }
@@ -147,32 +119,23 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
   let buffer = "";
   let stderrBuffer = "";
   const stderrLines = [];
-  let strictPublicUrlFailure = false;
   let hasSpawned = false;
   const baseEnv = {
     ...process.env,
-    NATSTACK_HOST: selectedHost.address,
+    NATSTACK_HOST: LOOPBACK_HOST,
     NATSTACK_GATEWAY_PORT: String(options.port),
-    NATSTACK_PROTOCOL: options.protocol,
-    ...(requirePublicUrl ? { NATSTACK_REQUIRE_PUBLIC_URL: "1" } : {}),
     ...(options.dev ? { NODE_ENV: "development", NATSTACK_WORKSPACE_EPHEMERAL: "1" } : {}),
   };
-  const env = hooks.buildEnv
-    ? hooks.buildEnv(baseEnv, { options, selectedHost, requirePublicUrl, serverArgs })
-    : baseEnv;
+  const env = hooks.buildEnv ? hooks.buildEnv(baseEnv, { options, serverArgs }) : baseEnv;
 
-  let gatewayUrl = null;
-  let mobileUrl = null;
+  // WebRTC pairing material advertised by the running server (the seam between
+  // the server's WebRTC cert + signaling room and this banner). `room`/`fp`/
+  // `sig` come from the server; until all three plus a pairing code arrive the
+  // banner waits.
+  let pairing = { room: null, fp: null, sig: null };
   let pairingCode = null;
   let qrPairingCode = null;
   let bannerPrinted = false;
-  let pendingServeActivationUrl = null;
-  let publicUrlNotReachable = null;
-  const serveActionLines = [];
-  let pendingTimer = null;
-  let qrPendingTimer = null;
-  let waitElapsed = false;
-  let qrWaitElapsed = false;
   let readyPoll = null;
   let readyPollStartedAt = 0;
 
@@ -180,14 +143,6 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
     if (readyPoll !== null) {
       clearInterval(readyPoll);
       readyPoll = null;
-    }
-    if (pendingTimer !== null) {
-      clearTimeout(pendingTimer);
-      pendingTimer = null;
-    }
-    if (qrPendingTimer !== null) {
-      clearTimeout(qrPendingTimer);
-      qrPendingTimer = null;
     }
     if (ownedReadyDir) {
       try {
@@ -202,27 +157,16 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
     buffer = "";
     stderrBuffer = "";
     if (hasSpawned) {
-      gatewayUrl = null;
-      mobileUrl = null;
+      pairing = { room: null, fp: null, sig: null };
       pairingCode = null;
       qrPairingCode = null;
       bannerPrinted = false;
-      waitElapsed = false;
-      qrWaitElapsed = false;
       if (ownedReadyDir) {
         try {
           fs.unlinkSync(readyFile);
         } catch {
           // It may not have been written yet.
         }
-      }
-      if (pendingTimer !== null) {
-        clearTimeout(pendingTimer);
-        pendingTimer = null;
-      }
-      if (qrPendingTimer !== null) {
-        clearTimeout(qrPendingTimer);
-        qrPendingTimer = null;
       }
     }
     hasSpawned = true;
@@ -240,12 +184,11 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
   };
 
   const applyReadyPayload = (payload) => {
-    if (typeof payload?.connectUrl === "string" && payload.connectUrl) {
-      mobileUrl = payload.connectUrl;
-    } else if (typeof payload?.publicUrl === "string" && payload.publicUrl) {
-      mobileUrl = payload.publicUrl;
-    } else if (typeof payload?.gatewayUrl === "string" && payload.gatewayUrl) {
-      gatewayUrl = payload.gatewayUrl;
+    const advertised = payload?.pairing;
+    if (advertised && typeof advertised === "object") {
+      if (typeof advertised.room === "string" && advertised.room) pairing.room = advertised.room;
+      if (typeof advertised.fp === "string" && advertised.fp) pairing.fp = advertised.fp;
+      if (typeof advertised.sig === "string" && advertised.sig) pairing.sig = advertised.sig;
     }
     if (typeof payload?.pairingCode === "string" && payload.pairingCode) {
       pairingCode = payload.pairingCode;
@@ -279,88 +222,17 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
     }, 100);
   };
 
-  const printServeActionFollowup = () => {
-    if (
-      requirePublicUrl ||
-      (!pendingServeActivationUrl && !publicUrlNotReachable && serveActionLines.length === 0)
-    ) {
-      return;
-    }
-    const divider = "=".repeat(72);
-    console.log(`\n${divider}`);
-    console.log("  ACTION NEEDED — HTTPS pairing URL is not ready");
-    console.log(divider);
-    if (publicUrlNotReachable) console.log(`  Public URL: ${publicUrlNotReachable}`);
-    if (pendingServeActivationUrl) {
-      console.log("  Enable Tailscale Serve here:");
-      console.log(`    ${pendingServeActivationUrl}`);
-    }
-    if (serveActionLines.length > 0) {
-      for (const actionLine of serveActionLines) console.log(actionLine ? `  ${actionLine}` : "");
-    } else {
-      console.log("  NatStack found a Tailscale HTTPS name, but it is not usable yet.");
-      console.log("  The QR above used the HTTP fallback instead.");
-      console.log("");
-      console.log("  Basic pairing may work, but mobile OAuth/browser redirects need");
-      console.log("  the HTTPS Tailscale URL.");
-    }
-    console.log("");
-    console.log(`  Then restart \`${config.restartCommand}\` to pick up the HTTPS URL.`);
-    console.log(`${divider}\n`);
-  };
-
   const tryPrintBanner = () => {
-    if (bannerPrinted || !pairingCode || (!gatewayUrl && !mobileUrl)) return;
-    if (!mobileUrl && !waitElapsed && pendingTimer === null) {
-      pendingTimer = setTimeout(() => {
-        pendingTimer = null;
-        waitElapsed = true;
-        tryPrintBanner();
-      }, 500);
-      return;
-    }
-    if (!qrPairingCode && !qrWaitElapsed && qrPendingTimer === null) {
-      qrPendingTimer = setTimeout(() => {
-        qrPendingTimer = null;
-        qrWaitElapsed = true;
-        tryPrintBanner();
-      }, 100);
-      return;
-    }
-    if (requirePublicUrl && !mobileUrl) {
-      strictPublicUrlFailure = true;
-      const divider = "=".repeat(72);
-      console.error(`\n${divider}`);
-      console.error("  ERROR — Required Tailscale HTTPS pairing URL is not ready");
-      console.error(divider);
-      if (publicUrlNotReachable) console.error(`  Public URL: ${publicUrlNotReachable}`);
-      console.error("  Refusing to print an HTTP fallback pairing QR for --host tailscale.");
-      console.error("");
-      console.error("  Fix Tailscale Serve, then restart this command:");
-      console.error(`    ${config.restartCommand}`);
-      console.error(`${divider}\n`);
-      child?.kill("SIGTERM");
-      return;
-    }
+    if (bannerPrinted) return;
+    if (!pairing.room || !pairing.fp || !pairing.sig || !pairingCode) return;
     bannerPrinted = true;
-    if (pendingTimer !== null) {
-      clearTimeout(pendingTimer);
-      pendingTimer = null;
-    }
-    if (qrPendingTimer !== null) {
-      clearTimeout(qrPendingTimer);
-      qrPendingTimer = null;
-    }
     printConnectBanner({
       title: config.bannerTitle,
-      gatewayUrl: mobileUrl ?? gatewayUrl,
-      pairingCode,
+      pairing: { room: pairing.room, fp: pairing.fp, sig: pairing.sig, code: pairingCode },
       qrPairingCode,
       deepLinkLabel: config.deepLinkLabel,
-      clientCommandLabel: config.clientCommandLabel,
       instructions: config.instructions,
     });
-    printServeActionFollowup();
   };
 
   const control = {
@@ -369,12 +241,6 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
     },
     get options() {
       return options;
-    },
-    get selectedHost() {
-      return selectedHost;
-    },
-    get requirePublicUrl() {
-      return requirePublicUrl;
     },
     get serverArgs() {
       return serverArgs;
@@ -424,31 +290,18 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
     if (handled) return;
     if (hooks.onServerLine) process.stdout.write(`${line}\n`);
 
-    const mobileMatch = line.match(/Mobile URL:\s+(\S+)/);
-    if (mobileMatch) mobileUrl = mobileMatch[1];
-    const gatewayMatch = line.match(/Gateway:\s+(\S+)/);
-    if (gatewayMatch) gatewayUrl = gatewayMatch[1];
-    const publicUrlMatch = line.match(/Public URL:\s+(\S+).*\(not yet reachable/);
-    if (publicUrlMatch) publicUrlNotReachable = publicUrlMatch[1];
+    const roomMatch = line.match(/NATSTACK_PAIRING_ROOM=(\S+)/);
+    if (roomMatch) pairing.room = roomMatch[1];
+    const fpMatch = line.match(/NATSTACK_PAIRING_FP=(\S+)/);
+    if (fpMatch) pairing.fp = fpMatch[1];
+    const sigMatch = line.match(/NATSTACK_PAIRING_SIG=(\S+)/);
+    if (sigMatch) pairing.sig = sigMatch[1];
     const pairingMatch = line.match(/(?:NATSTACK_PAIRING_CODE=|Pairing code:\s+)([A-Za-z0-9_-]+)/);
     if (pairingMatch) pairingCode = pairingMatch[1];
     const qrPairingMatch = line.match(
       /(?:NATSTACK_QR_PAIRING_CODE=|QR pairing code:\s+)([A-Za-z0-9_-]+)/
     );
     if (qrPairingMatch) qrPairingCode = qrPairingMatch[1];
-    const serveActivationMatch = line.match(/(https:\/\/login\.tailscale\.com\/f\/serve\?\S+)/);
-    if (serveActivationMatch) pendingServeActivationUrl = serveActivationMatch[1];
-    if (isServeActionLine(line)) {
-      const cleaned = line.trim();
-      if (
-        cleaned &&
-        !cleaned.startsWith("Tailscale:") &&
-        !cleaned.startsWith("Persistent across reboots") &&
-        !serveActionLines.includes(cleaned)
-      ) {
-        serveActionLines.push(cleaned);
-      }
-    }
 
     tryPrintBanner();
   };
@@ -481,9 +334,7 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
       if (restarting) return;
       cleanupReadyState();
       if (stderrBuffer) stderrLines.push(stderrBuffer);
-      if (hooks.onChildExit?.({ code, signal, strictPublicUrlFailure, stderrLines }, control))
-        return;
-      if (strictPublicUrlFailure) process.exit(1);
+      if (hooks.onChildExit?.({ code, signal, stderrLines }, control)) return;
       if (signal) process.kill(process.pid, signal);
       else process.exit(code ?? 0);
     });
@@ -499,22 +350,19 @@ export function runPairServer(config, argv = process.argv.slice(2), hooks = {}) 
   }
 }
 
-function buildServerArgs(options, host, config = {}) {
+function buildServerArgs(options, config = {}) {
   const args = [
     serverEntryArg(),
     "--host",
-    host,
+    LOOPBACK_HOST,
     "--gateway-port",
     String(options.port),
-    "--protocol",
-    options.protocol,
     "--serve-panels",
     "--print-credentials",
   ];
 
   if (options.dev) args.push("--ephemeral");
   if (options.appRoot) args.push("--app-root", options.appRoot);
-  if (options.publicUrl) args.push("--public-url", options.publicUrl);
   if (config.requireMobileReady) args.push("--require-mobile-ready");
   if (config.requireElectronReady) args.push("--require-electron-ready");
   return args;
@@ -531,20 +379,4 @@ function readyFileFromServerArgs(args) {
 
 function firstDefined(values) {
   return values.find((value) => value !== undefined && value !== "");
-}
-
-function isServeActionLine(line) {
-  return (
-    line.includes("sudo tailscale") ||
-    line.includes("tailscale serve reset") ||
-    line.includes("tailscale serve status") ||
-    line.includes("Tailscale Serve") ||
-    line.includes("HTTPS Certificates") ||
-    line.includes("HTTP fallback") ||
-    line.includes("mobile OAuth") ||
-    line.includes("configured but not reachable") ||
-    line.includes("Last check:") ||
-    line.includes("stale Serve target") ||
-    line.includes("curl http://127.0.0.1")
-  );
 }

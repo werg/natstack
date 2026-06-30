@@ -15,9 +15,7 @@ import {
   type IncomingMessage,
   type ServerResponse,
 } from "http";
-import { createServer as createHttpsServer } from "https";
 import { randomBytes } from "crypto";
-import * as fs from "fs";
 import { connect as connectNet } from "net";
 import { WebSocketServer, WebSocket } from "ws";
 import type { Duplex } from "stream";
@@ -160,16 +158,10 @@ export interface GatewayDeps {
    *  (`/_workercode/{name}`, `/_workerversion/{name}`). The workerd manager
    *  satisfies this; absent until workerd is wired. */
   getWorkerHost?: () => WorkerHostCodeProvider | null | undefined;
-  /** External hostname for generated public URLs and origin checks */
+  /** External hostname for origin checks (loopback only). */
   externalHost: string;
-  /** Current public URL for origin checks, including --public-url / NATSTACK_PUBLIC_URL overrides. */
-  getPublicUrl?: () => string | null | undefined;
-  /** Bind host (default "0.0.0.0") */
+  /** Bind host (loopback only; default "127.0.0.1") */
   bindHost?: string;
-  /** Path to TLS certificate file (enables HTTPS) */
-  tlsCert?: string;
-  /** Path to TLS private key file (enables HTTPS) */
-  tlsKey?: string;
   /** Called by /healthz to produce the JSON body */
   healthProvider?: (detailed: boolean) => Record<string, unknown>;
   /** Admin token — when provided and presented as Bearer, /healthz returns detailed fields */
@@ -206,8 +198,6 @@ export class Gateway {
   }
 
   async start(port: number): Promise<number> {
-    const { tlsCert, tlsKey } = this.deps;
-
     const { healthProvider, adminToken, tokenManager, routeRegistry } = this.deps;
     const workerdToken = this.workerdGatewayToken;
 
@@ -498,15 +488,9 @@ export class Gateway {
       res.end("Not Found");
     };
 
-    // Create HTTP or HTTPS server
-    if (tlsCert && tlsKey) {
-      this.server = createHttpsServer(
-        { cert: fs.readFileSync(tlsCert), key: fs.readFileSync(tlsKey) },
-        requestHandler
-      );
-    } else {
-      this.server = createServer(requestHandler);
-    }
+    // Loopback HTTP only — the public/TLS ingress is decommissioned; remote
+    // reach is the WebRTC pipe, co-located reach is loopback WS.
+    this.server = createServer(requestHandler);
 
     // WebSocket upgrade routing. No payload cap is configured here so the
     // gateway preserves existing WebSocket behavior for large developer flows.
@@ -517,10 +501,7 @@ export class Gateway {
       const rpcHandler = this.deps.getRpcHandler?.() ?? this.deps.rpcHandler;
       const panelHttpHandler = this.deps.getPanelHttpHandler?.() ?? this.deps.panelHttpHandler;
       const workerdPort = this.deps.getWorkerdPort?.() ?? this.deps.workerdPort;
-      const allowedOrigins = buildOriginAllowList(
-        this.deps.externalHost,
-        this.deps.getPublicUrl?.()
-      );
+      const allowedOrigins = buildOriginAllowList(this.deps.externalHost);
 
       // Origin allow-list (audit #30). Bearer auth still gates the actual
       // RPC, but rejecting cross-site browser connects defends against the
@@ -613,13 +594,12 @@ export class Gateway {
       socket.destroy();
     });
 
-    const isTls = !!(tlsCert && tlsKey);
-    const bindHost = this.deps.bindHost ?? "0.0.0.0";
+    const bindHost = this.deps.bindHost ?? "127.0.0.1";
     return new Promise((resolve, reject) => {
       assertPresent(this.server).listen(port, bindHost, () => {
         const addr = assertPresent(this.server).address();
         const assignedPort = typeof addr === "object" && addr ? addr.port : port;
-        log.info(`Gateway listening on ${bindHost}:${assignedPort}${isTls ? " (TLS)" : ""}`);
+        log.info(`Gateway listening on ${bindHost}:${assignedPort}`);
         resolve(assignedPort);
       });
       assertPresent(this.server).on("error", reject);
@@ -653,30 +633,17 @@ export class Gateway {
  * curl, the Electron preload, etc., do not send Origin).
  *
  * The list intentionally does not contain a port: we accept any port the
- * caller used (the gateway is loopback-bound on the dev host; in remote
- * mode the externalHost resolves to a fixed published port).
+ * caller used (the gateway is loopback-bound).
  *
  * Override / extension: set `NATSTACK_WS_ALLOWED_ORIGINS` to a comma list
  * of additional origins (e.g. `http://my-dev-host:5173,chrome-extension://xyz`).
  */
-function buildOriginAllowList(
-  externalHost: string,
-  publicUrl?: string | null
-): { exact: Set<string>; suffix: Set<string> } {
+function buildOriginAllowList(externalHost: string): { exact: Set<string>; suffix: Set<string> } {
   const exact = new Set<string>();
   const suffix = new Set<string>();
   // Bare host on http/https.
   exact.add(`http://${externalHost}`);
   exact.add(`https://${externalHost}`);
-  if (publicUrl) {
-    try {
-      const parsed = new URL(publicUrl);
-      exact.add(parsed.origin);
-      exact.add(`${parsed.protocol}//${parsed.hostname}`);
-    } catch {
-      log.warn(`Ignoring invalid public URL for WS Origin allow-list: ${publicUrl}`);
-    }
-  }
   // Loopback dev origins.
   for (const h of ["localhost", "127.0.0.1", "[::1]"]) {
     exact.add(`http://${h}`);

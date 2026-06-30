@@ -67,3 +67,6 @@ workspace/.secrets.yml
 
 # Test results
 test-results/
+
+# Generated Miniflare/Durable Object state (never commit)
+.wrangler/

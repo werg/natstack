@@ -20,7 +20,7 @@ import {
   type ServiceDispatcher,
   type VerifiedCodeIdentity,
 } from "@natstack/shared/serviceDispatcher";
-import type { ServerClient } from "./serverClient.js";
+import type { PanelSession, ServerClient } from "./serverClient.js";
 import type { EventService, Subscriber } from "@natstack/shared/eventsService";
 import type { CallerKind } from "@natstack/shared/serviceDispatcher";
 import type { WebSocket } from "ws";
@@ -88,6 +88,13 @@ export interface IpcDispatcherDeps {
   ) => { callerId: string; callerKind: "shell" | "panel" | "app" } | null;
   getCodeIdentityForCaller?: (callerId: string) => VerifiedCodeIdentity | null;
   getWebContentsForCaller: (callerId: string) => WebContents | null;
+  /**
+   * Runtime entity id + lease connectionId for a panel, used to open its
+   * per-panel relay session. Undefined until the panel's runtime lease exists.
+   */
+  getPanelRuntimeConnection?: (
+    panelId: string
+  ) => { runtimeEntityId: string; connectionId: string } | undefined;
   authorizeAppServerCall?: (
     callerId: string,
     service: string,
@@ -160,6 +167,10 @@ export class IpcDispatcher {
   private deps: IpcDispatcherDeps;
   private readonly appMessageBridges = new Map<string, () => void>();
   private readonly appEventSubscribers = new Map<string, IpcSubscriber>();
+  /** One relay session per panel principal (callerId = panel view id). */
+  private readonly panelSessions = new Map<string, Promise<PanelSession>>();
+  /** webContents ids with a destroy teardown attached (so we attach it once). */
+  private readonly panelDestroyHooked = new Set<number>();
 
   constructor(deps: IpcDispatcherDeps) {
     this.deps = deps;
@@ -171,10 +182,24 @@ export class IpcDispatcher {
 
     ipcMain.on("natstack:rpc:send", (event, envelope: RpcEnvelope) => {
       const caller = this.deps.resolveCallerForWebContents(event.sender.id);
-      if (!caller || (caller.callerKind !== "shell" && caller.callerKind !== "app")) {
+      if (!caller) {
+        console.warn(
+          `[IpcDispatcher] Rejecting natstack:rpc:send from unresolved sender ` +
+            `(webContentsId=${event.sender.id})`
+        );
+        return;
+      }
+      if (caller.callerKind === "panel") {
+        // A panel's FULL RPC surface (requests, routed DO calls, events, streams)
+        // rides a dedicated panel-principal session — handleEnvelope's request→main
+        // path is shell/app only. Desktop analogue of the mobile bridge relay.
+        this.relayPanelEnvelope(event.sender, caller.callerId, envelope);
+        return;
+      }
+      if (caller.callerKind !== "shell" && caller.callerKind !== "app") {
         console.warn(
           `[IpcDispatcher] Rejecting natstack:rpc:send from unauthorized sender ` +
-            `(webContentsId=${event.sender.id})`
+            `(webContentsId=${event.sender.id}, kind=${caller.callerKind})`
         );
         return;
       }
@@ -313,6 +338,83 @@ export class IpcDispatcher {
         responseEnvelopeFor(requestEnvelope, MAIN_CALLER, response)
       );
     }
+  }
+
+  /**
+   * Relay one envelope from a panel webview onto its dedicated panel-principal
+   * session — requests, routed DO calls, events, and streams all ride it.
+   * server→panel messages return via the session's onMessage (see
+   * {@link ensurePanelSession}). A relay failure surfaces as an error response so
+   * the panel's pending request rejects rather than hanging.
+   */
+  private relayPanelEnvelope(sender: WebContents, callerId: string, envelope: RpcEnvelope): void {
+    void this.ensurePanelSession(sender, callerId)
+      .then((session) => session.send(envelope))
+      .catch((err: unknown) => {
+        const message = envelope.message;
+        if (message?.type === "request") {
+          this.sendResponse(sender, envelope, {
+            type: "response",
+            requestId: (message as RpcRequest).requestId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        console.warn(
+          `[IpcDispatcher] panel relay failed for ${callerId}: ` +
+            `${err instanceof Error ? err.message : String(err)}`
+        );
+      });
+  }
+
+  /**
+   * Open (or reuse) the relay session for a panel principal, redeeming its runtime
+   * lease. A terminally-closed/disconnected session is dropped and re-opened on the
+   * current lease (lease revoke / pipe drop). The session is closed when the panel
+   * webview is destroyed.
+   */
+  private ensurePanelSession(sender: WebContents, callerId: string): Promise<PanelSession> {
+    const existing = this.panelSessions.get(callerId);
+    if (existing) {
+      return existing.then((session) => {
+        const live = !session.isClosed?.() && (session.status?.() ?? "connected") === "connected";
+        if (live) return session;
+        this.panelSessions.delete(callerId);
+        session.close();
+        return this.ensurePanelSession(sender, callerId);
+      });
+    }
+    const conn = this.deps.getPanelRuntimeConnection?.(callerId);
+    if (!conn) {
+      return Promise.reject(new Error(`No runtime lease for panel ${callerId}`));
+    }
+    // Tear down the relay when the panel webview is destroyed — attached once per
+    // webContents (not per session re-open), closing whichever session is current.
+    if (!this.panelDestroyHooked.has(sender.id)) {
+      this.panelDestroyHooked.add(sender.id);
+      sender.once("destroyed", () => {
+        this.panelDestroyHooked.delete(sender.id);
+        const pending = this.panelSessions.get(callerId);
+        this.panelSessions.delete(callerId);
+        if (pending) void pending.then((s) => s.close()).catch(() => undefined);
+      });
+    }
+    const opening = this.deps.serverClient
+      .openPanelSession(conn.runtimeEntityId, conn.connectionId)
+      .then((session) => {
+        // Deliver server→panel messages (responses, events, stream frames) to the
+        // panel's current webContents.
+        session.onMessage((env) => {
+          const wc = this.deps.getWebContentsForCaller(callerId);
+          if (wc && !wc.isDestroyed()) wc.send("natstack:rpc:message", env);
+        });
+        return session;
+      })
+      .catch((err: unknown) => {
+        this.panelSessions.delete(callerId);
+        throw err;
+      });
+    this.panelSessions.set(callerId, opening);
+    return opening;
   }
 
   private ensureAppMessageBridge(callerId: string): void {

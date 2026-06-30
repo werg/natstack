@@ -1131,12 +1131,7 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
     container.registerManaged({
       name: "panelHttpServer",
       async start() {
-        const server = new PanelHttpServer(
-          hostConfig.bindHost,
-          adminToken,
-          hostConfig.externalHost,
-          hostConfig.protocol
-        );
+        const server = new PanelHttpServer();
         server.initHandlers();
         return { server, port: 0 };
       },
@@ -1409,7 +1404,6 @@ export async function registerPanelServices(deps: CommonDeps): Promise<void> {
       panelHttpServer.populateSourceRegistry(entries);
 
       panelHttpServer.setCallbacks({
-        listPanels: () => [],
         getBuild: (source, ref) => buildSystem.getBuild(source, ref),
         onBuildComplete: (source, error) => {
           rpcServer.broadcastToControlPlane({

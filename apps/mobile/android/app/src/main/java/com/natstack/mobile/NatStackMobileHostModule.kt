@@ -36,6 +36,14 @@ class NatStackMobileHostModule(
     private val prefs: SharedPreferences =
         reactContext.getSharedPreferences("natstack-mobile-host", Context.MODE_PRIVATE)
 
+    // Streaming bundle write (WebRTC path): the bundle bytes arrive a chunk at a
+    // time from JS so a multi-MB transfer never blocks the JS thread / bridge. They
+    // land in a `.transfer` file (gzipped on the wire); `finalizeBundleWrite`
+    // decompresses to the final file while hashing the decompressed bytes.
+    private var bundleStream: java.io.FileOutputStream? = null
+    private var bundleTransferFile: File? = null
+    private var bundleFinalFile: File? = null
+
     override fun getName(): String = "NatStackMobileHost"
 
     override fun getConstants(): MutableMap<String, Any> = hashMapOf(
@@ -293,6 +301,96 @@ class NatStackMobileHostModule(
         }
     }
 
+    /**
+     * WebRTC path: the JS host fetches the bundle over the encrypted pipe and
+     * STREAMS it here a chunk at a time. A single multi-MB base64 string would
+     * block the JS thread (so the WebRTC keepalive misses → the pipe drops) and
+     * choke the bridge, so each chunk is decoded + appended to a `.transfer` file.
+     * The bytes are gzipped on the wire (react-native-webrtc serializes its bulk
+     * receive, so a raw 4 MB bundle streams too slowly over a relay) — so the digest
+     * is NOT computed here; `finalizeBundleWrite` decompresses + hashes the real bytes.
+     */
+    @ReactMethod
+    fun appendBundleChunk(
+        bytesBase64: String,
+        buildKey: String,
+        artifactPath: String,
+        reset: Boolean,
+        promise: Promise,
+    ) {
+        try {
+            if (reset) {
+                bundleStream?.close()
+                val safeBuildKey = buildKey.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                val safeArtifact = artifactPath.replace(Regex("[^A-Za-z0-9._-]"), "_")
+                val dir = File(reactApplicationContext.cacheDir, "natstack-rn/$safeBuildKey")
+                dir.mkdirs()
+                bundleFinalFile = File(dir, safeArtifact)
+                bundleTransferFile = File(dir, "$safeArtifact.transfer")
+                bundleStream = java.io.FileOutputStream(bundleTransferFile, false)
+            }
+            val stream = bundleStream
+                ?: throw IllegalStateException("appendBundleChunk called before reset")
+            stream.write(Base64.decode(bytesBase64, Base64.DEFAULT))
+            promise.resolve(null)
+        } catch (error: Exception) {
+            bundleStream?.runCatching { close() }
+            bundleStream = null
+            promise.reject("bundle_append_failed", error.message, error)
+        }
+    }
+
+    @ReactMethod
+    fun finalizeBundleWrite(integrity: String, gzip: Boolean, promise: Promise) {
+        try {
+            val stream = bundleStream
+                ?: throw IllegalStateException("finalizeBundleWrite called before any chunk")
+            stream.flush()
+            stream.close()
+            bundleStream = null
+            val transferFile = bundleTransferFile
+                ?: throw IllegalStateException("missing transfer file")
+            val finalFile = bundleFinalFile
+                ?: throw IllegalStateException("missing bundle file")
+            bundleTransferFile = null
+            bundleFinalFile = null
+            // Copy the transferred bytes to the final file, decompressing if they were
+            // gzipped on the wire, and hash the DECOMPRESSED bytes — integrity is over
+            // the real bundle, never the compressed transfer encoding.
+            val digest = MessageDigest.getInstance("SHA-256")
+            val input: java.io.InputStream =
+                if (gzip) java.util.zip.GZIPInputStream(java.io.FileInputStream(transferFile))
+                else java.io.FileInputStream(transferFile)
+            input.use { inp ->
+                java.io.FileOutputStream(finalFile).use { out ->
+                    val buf = ByteArray(64 * 1024)
+                    while (true) {
+                        val n = inp.read(buf)
+                        if (n < 0) break
+                        out.write(buf, 0, n)
+                        digest.update(buf, 0, n)
+                    }
+                }
+            }
+            transferFile.delete()
+            val expected = integrity.removePrefix("sha256-")
+            val actual = digest.digest().joinToString("") { "%02x".format(it.toInt() and 0xff) }
+            if (
+                expected.length != 64 ||
+                expected.any { it !in '0'..'9' && it !in 'a'..'f' && it !in 'A'..'F' } ||
+                !actual.equals(expected, ignoreCase = true)
+            ) {
+                throw IllegalStateException("React Native bundle integrity mismatch")
+            }
+            Log.i(TAG, "[NatStackMobileSmoke] phase=native-bundle-prepared-from-bytes")
+            promise.resolve(Arguments.createMap().apply {
+                putString("localPath", finalFile.absolutePath)
+            })
+        } catch (error: Exception) {
+            promise.reject("bundle_finalize_failed", error.message, error)
+        }
+    }
+
     @ReactMethod
     fun activatePreparedAppBundle(localPath: String, buildKey: String, integrity: String, promise: Promise) {
         try {
@@ -397,21 +495,33 @@ class NatStackMobileHostModule(
         ?.takeIf { it.isNotBlank() }
 
     private fun updateActiveAppSource(source: String?) {
+        // commit(), not apply(): a bundle activation is immediately followed by
+        // reloadReactNative()'s Runtime.exit(0), which bypasses SharedPreferences'
+        // QueuedWork flush — an async apply() write would be dropped before the
+        // relaunched process reads it.
         if (!source.isNullOrBlank()) {
-            prefs.edit().putString(ACTIVE_APP_SOURCE_KEY, source).apply()
+            prefs.edit().putString(ACTIVE_APP_SOURCE_KEY, source).commit()
         } else {
-            prefs.edit().remove(ACTIVE_APP_SOURCE_KEY).apply()
+            prefs.edit().remove(ACTIVE_APP_SOURCE_KEY).commit()
         }
     }
 
     private fun clearStoredCredentials() {
+        Log.w(
+            TAG,
+            "[NatStackMobileSmoke] phase=native-clear-credentials pid=${android.os.Process.myPid()}",
+            Exception("clearStoredCredentials caller trace")
+        )
+        // commit(): a reset-to-pairing may be followed by a process relaunch; an
+        // async apply() clear could be lost across Runtime.exit(0) (see
+        // updateActiveAppSource), leaving stale credentials behind.
         prefs.edit()
             .remove(CREDENTIAL_KEY)
             .remove(ACTIVE_APP_SOURCE_KEY)
             .remove(PUBLIC_DEVICE_ID_KEY)
             .remove(PUBLIC_SERVER_ID_KEY)
             .remove(PUBLIC_SERVER_URL_KEY)
-            .apply()
+            .commit()
     }
 
     private fun isWorkspaceMobileAppCaller(callerId: String, deviceId: String): Boolean =
@@ -559,16 +669,30 @@ class NatStackMobileHostModule(
             .put("refreshToken", credential.refreshToken)
             .put("serverId", credential.serverId)
             .put("workspaceId", credential.workspaceId)
-        prefs.edit()
+        // commit(), not apply(): selectWorkspace persists the workspace-scoped
+        // credential immediately before reloadReactNative()'s Runtime.exit(0),
+        // which bypasses SharedPreferences' QueuedWork flush. An async apply()
+        // here is dropped, so the relaunched workspace app reads no credential
+        // (getCredentials() -> null) and dead-ends at the login screen.
+        val committed = prefs.edit()
             .putString(CREDENTIAL_KEY, encrypt(json.toString()))
             .putString(PUBLIC_DEVICE_ID_KEY, credential.deviceId)
             .putString(PUBLIC_SERVER_ID_KEY, credential.serverId)
             .putString(PUBLIC_SERVER_URL_KEY, credential.serverUrl)
-            .apply()
+            .commit()
+        Log.i(
+            TAG,
+            "[NatStackMobileSmoke] phase=native-save-credential pid=${android.os.Process.myPid()} committed=$committed workspaceId='${credential.workspaceId}'"
+        )
     }
 
     private fun loadCredential(): Credential? {
-        val encrypted = prefs.getString(CREDENTIAL_KEY, null) ?: return null
+        val encrypted = prefs.getString(CREDENTIAL_KEY, null)
+        Log.i(
+            TAG,
+            "[NatStackMobileSmoke] phase=native-load-credential pid=${android.os.Process.myPid()} present=${encrypted != null}"
+        )
+        if (encrypted == null) return null
         val json = JSONObject(decrypt(encrypted))
         return Credential(
             serverUrl = json.getString("serverUrl"),

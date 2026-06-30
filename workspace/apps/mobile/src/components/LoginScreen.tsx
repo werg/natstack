@@ -11,11 +11,11 @@ import type { StackNavigationProp } from "@react-navigation/stack";
 import { useAtomValue, useSetAtom } from "jotai";
 import type { RootStackParamList } from "../navigation/RootNavigator";
 import {
-  getCredentials,
   resetToNativeBootstrap,
   StoredCredentialsNeedRepairError,
   type Credentials,
 } from "../services/auth";
+import { loadShellCredential, clearShellCredential } from "@natstack/mobile-webrtc";
 import { ShellClient } from "../services/shellClient";
 import {
   serverUrlAtom,
@@ -27,8 +27,9 @@ import { connectionStatusAtom } from "../state/connectionAtoms";
 import { shellClientAtom, panelTreeAtom } from "../state/shellClientAtom";
 import { themeColorsAtom } from "../state/themeAtoms";
 
-function smokePhase(phase: string): void {
-  console.log(`[NatStackMobileSmoke] phase=${phase}`);
+function smokePhase(phase: string, details?: Record<string, unknown>): void {
+  const suffix = details ? ` ${JSON.stringify(details)}` : "";
+  console.log(`[NatStackMobileSmoke] phase=${phase}${suffix}`);
 }
 
 type LoginScreenNavigationProp = StackNavigationProp<RootStackParamList, "Login">;
@@ -62,6 +63,11 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
     setAuthLoading(true);
     setAuthError(null);
     try {
+      // Clear the WebRTC reconnect credential BEFORE the native reset relaunches:
+      // the native reset only forgets the native-side credential, so without this
+      // the reloaded bootstrap reads the stale credential and silently reconnects
+      // to the old pairing instead of showing the pairing screen.
+      await clearShellCredential();
       await resetToNativeBootstrap();
     } catch (error) {
       setAuthLoading(false);
@@ -78,7 +84,7 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       client.startPeriodicSync();
 
       setShellClient(client);
-      setServerUrlAtom(credentials.serverUrl);
+      setServerUrlAtom(client.serverUrl);
       setAuthenticated(true);
       setAuthLoading(false);
       setAuthError(null);
@@ -90,10 +96,22 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
       setAuthLoading(true);
       setAuthError(null);
       try {
-        const credentials = await getCredentials();
-        if (!credentials?.workspaceId) {
-          throw new Error(missingWorkspaceMessage(credentials));
+        smokePhase("workspace-login-connect-start");
+        // WebRTC model: the device identity is the stored shell credential
+        // (deviceId + the signaling-room pairing). There is no native "workspace
+        // credential" to read — the bootstrap pairs straight to a room — so the
+        // workspace id is resolved from the server (getInfo) once the pipe is up.
+        const stored = await loadShellCredential();
+        smokePhase("workspace-login-credentials", { hasShellCredential: Boolean(stored) });
+        if (!stored) {
+          throw new Error(
+            "No NatStack pairing is stored on this device. Scan a pairing QR code from a trusted desktop or terminal."
+          );
         }
+        const credentials: Credentials = {
+          deviceId: stored.deviceId,
+          serverId: stored.pairing.srv ?? "",
+        };
 
         const client = new ShellClient({
           credentials,
@@ -124,6 +142,14 @@ export function LoginScreen({ navigation }: LoginScreenProps) {
             : error instanceof Error
               ? error.message
               : "Could not open the selected workspace.";
+        smokePhase("workspace-login-error", {
+          message,
+          name: error instanceof Error ? error.name : typeof error,
+          stack:
+            error instanceof Error && error.stack
+              ? error.stack.split("\n").slice(0, 5).join(" || ")
+              : undefined,
+        });
         setAuthError(message);
       }
     };

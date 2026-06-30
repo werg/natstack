@@ -13,6 +13,12 @@ import {
 export { isManagedHost };
 
 /**
+ * Panels are served from the loopback asset façade on every platform, so the
+ * managed-origin gate is loopback — there is no remote managed host.
+ */
+export const LOOPBACK_PANEL_HOST = "127.0.0.1";
+
+/**
  * Host configuration extracted from the server URL.
  *
  * Example: serverUrl "https://natstack.example.com:3000"
@@ -65,8 +71,13 @@ export function buildPanelUrl(
   contextId: string,
   hostConfig: HostConfig,
 ): string {
+  // Panels load from a fixed loopback origin (the on-device asset façade), never
+  // a remote server: panel RPC rides the postMessage bridge, not a direct
+  // socket. `hostConfig.port` is the loopback façade port; protocol/host are
+  // fixed loopback. (Native seam: the embedded loopback server supplies the
+  // façade port via `hostConfig.port`.)
   const portSuffix = hostConfig.port ? `:${hostConfig.port}` : "";
-  const origin = `${hostConfig.protocol}://${hostConfig.host}${portSuffix}${hostConfig.basePath ?? ""}`;
+  const origin = `http://${LOOPBACK_PANEL_HOST}${portSuffix}${hostConfig.basePath ?? ""}`;
   const encodedPath = encodeURIComponent(source).replace(/%2F/g, "/");
   return `${origin}/${encodedPath}/?contextId=${encodeURIComponent(contextId)}`;
 }
@@ -96,9 +107,10 @@ export function parsePanelUrl(url: string, externalHost: string, basePath = "") 
 }
 
 /**
- * Extract the externalHost value from a HostConfig.
- * This is the host that isManagedHost() and parsePanelUrl() check against.
+ * The host that isManagedHost() and parsePanelUrl() check against. Panels load
+ * from the loopback façade, so the managed origin is always loopback regardless
+ * of the (now transport-only) server URL in `hostConfig`.
  */
-export function getExternalHost(hostConfig: HostConfig): string {
-  return hostConfig.host;
+export function getExternalHost(_hostConfig: HostConfig): string {
+  return LOOPBACK_PANEL_HOST;
 }

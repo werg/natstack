@@ -5,6 +5,10 @@
  * the unified RPC client API (createRpcClient).
  */
 
+import type { DecodedFramedStream } from "./protocol/streamCodec.js";
+
+export type { DecodedFramedStream };
+
 /**
  * RPC request message sent between endpoints.
  */
@@ -296,6 +300,15 @@ export interface EnvelopeRpcTransport {
    * `Response`. Socket transports omit this and keep the frame-envelope path.
    */
   stream?(envelope: RpcEnvelope, signal?: AbortSignal | null): Promise<Response>;
+  /**
+   * Streaming variant returning the decoded head + raw `ReadableStream<Uint8Array>`
+   * body (no `Response` wrapper) — for RN clients. Transports that support duplex
+   * streaming implement this; `createRpcClient.streamReadable()` delegates here.
+   */
+  streamReadable?(
+    envelope: RpcEnvelope,
+    signal?: AbortSignal | null
+  ): Promise<DecodedFramedStream>;
 }
 
 export type RpcConnectionStatus = "connected" | "connecting" | "disconnected";
@@ -422,6 +435,18 @@ export interface RpcClient {
     args: unknown[],
     options?: RpcStreamOptions
   ): Promise<Response>;
+  /**
+   * Like `stream`, but returns the decoded head + a raw `ReadableStream<Uint8Array>`
+   * body instead of a `Response` — for React Native, whose whatwg-fetch `Response`
+   * cannot consume a ReadableStream body (the caller reads it via `getReader()`).
+   * Node callers should prefer `stream`.
+   */
+  streamReadable(
+    targetId: string,
+    method: string,
+    args: unknown[],
+    options?: RpcStreamOptions
+  ): Promise<DecodedFramedStream>;
   emit(targetId: string, event: string, payload: unknown, options?: RpcCallOptions): Promise<void>;
   on(event: string, listener: (event: RpcEventContext) => void): () => void;
   peer<

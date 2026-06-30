@@ -7,12 +7,30 @@ compatibility_date = "2024-11-15"
 #   cd apps/webhook-relay
 #   wrangler deploy
 #
-# Required secrets:
-#   wrangler secret put NATSTACK_SERVER_BASE_URL
+# Required secret (backhaul auth + relay-envelope signing):
 #   wrangler secret put NATSTACK_RELAY_SIGNING_SECRET
+#
+# Universal-link host (mobile OAuth deep-link). Set as plain vars or secrets:
+#   NATSTACK_APPLE_APP_ID                      e.g. ABCDE12345.com.natstack.mobile (comma-separated for multiple)
+#   NATSTACK_ANDROID_PACKAGE_NAME              e.g. com.natstack.mobile
+#   NATSTACK_ANDROID_SHA256_CERT_FINGERPRINTS  uppercase colon-separated, comma-separated for multiple
+#
+# NATSTACK_SERVER_BASE_URL is GONE — routing is multi-tenant now: each home
+# server holds one authenticated backhaul WebSocket (/backhaul) into the global
+# RelayRegistry DO and claims its own subscriptionIds (first-writer-wins).
 #
 # account_id and route/zone bindings are environment-specific. Set them under
 # your own [env.<name>] block or via CLOUDFLARE_ACCOUNT_ID.
 
 [vars]
 ENVIRONMENT = "development"
+
+# Multi-tenant registry: backhaul sockets, first-writer-wins registration,
+# durable webhook buffer, ephemeral OAuth handoff map. One global instance.
+[[durable_objects.bindings]]
+name = "RELAY_REGISTRY"
+class_name = "RelayRegistry"
+
+[[migrations]]
+tag = "v1"
+new_classes = ["RelayRegistry"]

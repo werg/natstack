@@ -1,229 +1,140 @@
-import { createServer, type Server } from "node:http";
-import { createServer as createHttpsServer } from "node:https";
-import { execFileSync } from "node:child_process";
-import { X509Certificate } from "node:crypto";
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createVerifiedCaller, type ServiceContext } from "@natstack/shared/serviceDispatcher";
+import type { StoredRemote } from "./remoteCredStore.js";
 
 const mocks = vi.hoisted(() => ({
   app: {
     relaunch: vi.fn(),
     exit: vi.fn(),
+    getPath: vi.fn(() => "/tmp/natstack-remote-cred-test"),
   },
-  dialog: {
-    showOpenDialog: vi.fn(),
+  safeStorage: {
+    encryptString: vi.fn((s: string) => Buffer.from(s, "utf8")),
+    decryptString: vi.fn((b: Buffer) => b.toString("utf8")),
+    isEncryptionAvailable: vi.fn(() => false),
   },
-  loadRemoteCredentials: vi.fn(),
-  saveRemoteCredentials: vi.fn(),
-  clearRemoteCredentials: vi.fn(),
+  // In-memory backing for the (mocked) remoteCredStore so tests can drive the
+  // persisted-pairing state without touching disk or safeStorage.
+  store: { value: null as StoredRemote | null },
 }));
 
-vi.mock("electron", () => ({ app: mocks.app, dialog: mocks.dialog }));
-vi.mock("../remoteCredentialStore.js", () => ({
-  loadRemoteCredentials: mocks.loadRemoteCredentials,
-  saveRemoteCredentials: mocks.saveRemoteCredentials,
-  clearRemoteCredentials: mocks.clearRemoteCredentials,
+vi.mock("electron", () => ({ app: mocks.app, safeStorage: mocks.safeStorage }));
+
+vi.mock("./remoteCredStore.js", () => ({
+  createRemoteCredStore: () => ({
+    load: () => mocks.store.value,
+    save: (value: StoredRemote) => {
+      mocks.store.value = value;
+    },
+    clear: () => {
+      mocks.store.value = null;
+    },
+  }),
 }));
 
 const shellCtx: ServiceContext = { caller: createVerifiedCaller("shell", "shell") };
 
-describe("remoteCredService", () => {
-  let server: Server | null = null;
+const localStartupMode = {
+  kind: "local" as const,
+  wsDir: "/tmp/ws",
+  workspaceName: "ws",
+  workspaceId: "ws",
+  isEphemeral: false,
+  autoApproveStartupUnits: false,
+};
 
+const sampleStored: StoredRemote = {
+  pairing: { room: "room-abc", fp: "AA".repeat(32), sig: "wss://sig.example/" },
+  deviceId: "dev_self",
+  refreshToken: "refresh-secret",
+  workspaceName: "main",
+  pairedAt: 123,
+};
+
+describe("remoteCredService", () => {
   beforeEach(() => {
     mocks.app.relaunch.mockClear();
     mocks.app.exit.mockClear();
-    mocks.loadRemoteCredentials.mockReset();
-    mocks.saveRemoteCredentials.mockReset();
-    mocks.clearRemoteCredentials.mockReset();
+    mocks.store.value = null;
   });
 
-  afterEach(async () => {
-    await new Promise<void>((resolve) => {
-      if (!server) {
-        resolve();
-        return;
-      }
-      server.close(() => resolve());
-      server = null;
+  afterEach(() => {
+    vi.resetModules();
+  });
+
+  it("reports no configured remote when nothing is stored", async () => {
+    const { createRemoteCredService } = await import("./remoteCredService.js");
+    const service = createRemoteCredService({ startupMode: localStartupMode });
+    await expect(service.handler(shellCtx, "getCurrent", [])).resolves.toEqual({
+      configured: false,
+      isActive: false,
+      bootstrap: "none",
     });
   });
 
-  it("exchanges a pairing code and persists device-only credentials", async () => {
-    const seenBodies: unknown[] = [];
-    const url = await startAuthServer(async (req, res, body) => {
-      if (req.method === "GET" && req.url === "/healthz") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, serverId: "srv_1", workspaceId: "ws_1" }));
-        return;
-      }
-      if (req.method === "POST" && req.url === "/_r/s/auth/complete-pairing") {
-        seenBodies.push(JSON.parse(body || "{}"));
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ deviceId: "dev_1", refreshToken: "refresh_1" }));
-        return;
-      }
-      res.writeHead(404).end();
-    });
-
+  it("reflects a stored pairing as a configured device, active when the pipe is up", async () => {
+    mocks.store.value = sampleStored;
     const { createRemoteCredService } = await import("./remoteCredService.js");
     const service = createRemoteCredService({
-      startupMode: {
-        kind: "local",
-        wsDir: "/tmp/ws",
-        workspaceId: "ws",
-        isEphemeral: false,
-        createdFromTemplate: false,
-      },
+      startupMode: localStartupMode,
+      getServerClient: () => ({ isConnected: () => true, call: vi.fn() }) as never,
     });
-
-    await expect(
-      service.handler(shellCtx, "exchangePairingCode", [
-        { url, code: "A".repeat(24), label: "Desk" },
-      ])
-    ).resolves.toEqual({ ok: true });
-
-    expect(seenBodies).toEqual([{ code: "A".repeat(24), label: "Desk", platform: "desktop" }]);
-    expect(mocks.saveRemoteCredentials).toHaveBeenCalledWith({
-      kind: "device",
-      url,
-      hubUrl: url,
-      deviceId: "dev_1",
-      refreshToken: "refresh_1",
-      caPath: undefined,
-      fingerprint: undefined,
-    });
-    expect(mocks.app.relaunch).not.toHaveBeenCalled();
-    expect(mocks.app.exit).not.toHaveBeenCalled();
-  });
-
-  it("probes a CA-valid HTTP health endpoint without TOFU", async () => {
-    const url = await startAuthServer(async (req, res) => {
-      if (req.method === "GET" && req.url === "/healthz") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ ok: true, version: "0.1.0", serverId: "srv_1" }));
-        return;
-      }
-      res.writeHead(404).end();
-    });
-
-    const { probeRemoteTrust } = await import("./remoteCredService.js");
-    await expect(probeRemoteTrust({ url })).resolves.toMatchObject({
-      ok: true,
-      serverVersion: "0.1.0",
-      serverId: "srv_1",
-    });
-  });
-
-  it.runIf(hasOpenssl())("exercises self-signed TLS TOFU and pin matching", async () => {
-    const fixture = await startSelfSignedHealthServer();
-    try {
-      const { probeRemoteTrust } = await import("./remoteCredService.js");
-
-      const unpinned = await probeRemoteTrust({ url: fixture.url });
-      expect(unpinned).toMatchObject({
-        ok: false,
-        error: "tls-mismatch",
-        observedFingerprint: fixture.fingerprint,
-      });
-
-      await expect(
-        probeRemoteTrust({ url: fixture.url, fingerprint: fixture.fingerprint })
-      ).resolves.toMatchObject({
-        ok: true,
-        serverId: "srv_tls",
-        workspaceId: "ws_tls",
-      });
-
-      await expect(
-        probeRemoteTrust({
-          url: fixture.url,
-          fingerprint: "AA:" + "00:".repeat(30) + "FF",
-        })
-      ).resolves.toMatchObject({
-        ok: false,
-        error: "tls-mismatch",
-        observedFingerprint: fixture.fingerprint,
-      });
-    } finally {
-      await fixture.close();
-    }
-  });
-
-  it.runIf(hasOpenssl())("uses stored TLS pins when choosing workspaces on the hub", async () => {
-    const fixture = await startSelfSignedWorkspaceHub();
-    try {
-      mocks.loadRemoteCredentials.mockReturnValue({
-        kind: "device",
-        url: fixture.url,
-        hubUrl: fixture.url,
-        deviceId: "dev_self",
-        refreshToken: "refresh",
-        fingerprint: fixture.fingerprint,
-      });
-      const { listRemoteWorkspaces, selectRemoteWorkspace } =
-        await import("./remoteCredService.js");
-
-      await expect(listRemoteWorkspaces()).resolves.toEqual([
-        { name: "dev", lastOpened: 123, running: true, ephemeral: undefined },
-      ]);
-      await expect(selectRemoteWorkspace("dev")).resolves.toEqual({
-        workspaceName: "dev",
-        serverUrl: `${fixture.url}/_workspace/dev`,
-      });
-      expect(mocks.saveRemoteCredentials).toHaveBeenCalledWith(
-        expect.objectContaining({
-          url: `${fixture.url}/_workspace/dev`,
-          hubUrl: fixture.url,
-          workspaceName: "dev",
-          fingerprint: fixture.fingerprint,
-        })
-      );
-    } finally {
-      await fixture.close();
-    }
-  });
-
-  it("proxies paired-device list and self-revoke through the active server client", async () => {
-    mocks.loadRemoteCredentials.mockReturnValue({
-      kind: "device",
-      url: "https://host.tailnet.ts.net",
+    await expect(service.handler(shellCtx, "getCurrent", [])).resolves.toMatchObject({
+      configured: true,
+      isActive: true,
+      bootstrap: "device",
       deviceId: "dev_self",
-      refreshToken: "refresh",
+      workspaceName: "main",
     });
-    const call = vi.fn(async (_service: string, method: string) => {
-      if (method === "listDevices") {
-        return { devices: [{ deviceId: "dev_self", label: "This", createdAt: 1 }] };
-      }
-      if (method === "revokeDevice") return { revoked: true };
-      throw new Error(method);
-    });
+  });
 
+  it("reports a stored pairing as configured but inactive without a live client", async () => {
+    mocks.store.value = sampleStored;
     const { createRemoteCredService } = await import("./remoteCredService.js");
-    const service = createRemoteCredService({
-      startupMode: {
-        kind: "remote",
-        remoteUrl: new URL("https://host.tailnet.ts.net"),
-        bootstrap: "device",
-        deviceId: "dev_self",
-        refreshToken: "refresh",
-      },
-      getServerClient: () => ({ call }) as never,
+    const service = createRemoteCredService({ startupMode: localStartupMode });
+    await expect(service.handler(shellCtx, "getCurrent", [])).resolves.toMatchObject({
+      configured: true,
+      isActive: false,
+      bootstrap: "device",
     });
+  });
 
-    await expect(service.handler(shellCtx, "listDevices", [])).resolves.toEqual([
-      { deviceId: "dev_self", label: "This", createdAt: 1 },
-    ]);
-    await expect(service.handler(shellCtx, "revokeDevice", ["dev_self"])).resolves.toEqual({
-      revoked: true,
-    });
-    expect(call).toHaveBeenCalledWith("auth", "listDevices", []);
-    expect(call).toHaveBeenCalledWith("auth", "revokeDevice", ["dev_self"]);
-    expect(mocks.clearRemoteCredentials).toHaveBeenCalled();
-    expect(mocks.app.relaunch).toHaveBeenCalled();
+  it("saveStoredRemote persists the fresh pairing + device credential", async () => {
+    // The throwaway exchangePairingCode redeem was removed; the fresh-pair session
+    // now persists the issued credential through saveStoredRemote (serverSession's
+    // establishFreshPairSession onPaired) so the next launch reconnects via refresh.
+    const { saveStoredRemote } = await import("./remoteCredService.js");
+    expect(mocks.store.value).toBeNull();
+    saveStoredRemote(sampleStored);
+    expect(mocks.store.value).toEqual(sampleStored);
+  });
+
+  it("fails loud when asked to persist an admin-token remote (replaced by WebRTC pairing)", async () => {
+    const { createRemoteCredService } = await import("./remoteCredService.js");
+    const service = createRemoteCredService({ startupMode: localStartupMode });
+    await expect(
+      service.handler(shellCtx, "save", [
+        { url: "http://127.0.0.1:3030/_workspace/dev", token: "t" },
+      ])
+    ).rejects.toThrow(/removed/i);
+  });
+
+  it("rejects a non-loopback cleartext URL in testConnection", async () => {
+    const { createRemoteCredService } = await import("./remoteCredService.js");
+    const service = createRemoteCredService({ startupMode: localStartupMode });
+    await expect(
+      service.handler(shellCtx, "testConnection", [
+        { url: "http://server.example.com:3030/_workspace/dev", token: "t" },
+      ])
+    ).resolves.toMatchObject({ ok: false, error: "invalid-url" });
+  });
+
+  it("rejects a URL without a selected workspace in testConnection", async () => {
+    const { createRemoteCredService } = await import("./remoteCredService.js");
+    const service = createRemoteCredService({ startupMode: localStartupMode });
+    await expect(
+      service.handler(shellCtx, "testConnection", [{ url: "http://127.0.0.1:3030", token: "t" }])
+    ).resolves.toMatchObject({ ok: false, error: "invalid-url" });
   });
 
   it("proxies pairing invite creation through the active server client", async () => {
@@ -232,9 +143,7 @@ describe("remoteCredService", () => {
       expect(args).toEqual([{ ttlMs: 60_000 }]);
       return {
         code: "A".repeat(24),
-        deepLink:
-          "natstack://connect?url=http%3A%2F%2F127.0.0.1%3A3030&code=AAAAAAAAAAAAAAAAAAAAAAAA",
-        connectUrl: "http://127.0.0.1:3030",
+        deepLink: null,
         serverUrl: "http://127.0.0.1:3030",
         expiresAt: 123,
         expiresInMs: 60_000,
@@ -246,197 +155,72 @@ describe("remoteCredService", () => {
 
     const { createRemoteCredService } = await import("./remoteCredService.js");
     const service = createRemoteCredService({
-      startupMode: {
-        kind: "remote",
-        remoteUrl: new URL("http://127.0.0.1:3030"),
-        bootstrap: "device",
-        deviceId: "dev_self",
-        refreshToken: "refresh",
-      },
+      startupMode: localStartupMode,
       getServerClient: () => ({ call }) as never,
     });
 
     await expect(
       service.handler(shellCtx, "createPairingInvite", [{ ttlMs: 60_000 }])
-    ).resolves.toMatchObject({
-      code: "A".repeat(24),
-      connectUrl: "http://127.0.0.1:3030",
-    });
+    ).resolves.toMatchObject({ code: "A".repeat(24), serverUrl: "http://127.0.0.1:3030" });
     expect(call).toHaveBeenCalledWith("auth", "createPairingInvite", [{ ttlMs: 60_000 }]);
   });
 
-  it("does not proxy paired-device management while running locally", async () => {
-    const call = vi.fn();
+  it("lists devices via the active server client and is empty without one", async () => {
+    const call = vi.fn(async (_service: string, method: string) => {
+      if (method === "listDevices") {
+        return { devices: [{ deviceId: "dev_self", label: "This", createdAt: 1 }] };
+      }
+      throw new Error(method);
+    });
+
     const { createRemoteCredService } = await import("./remoteCredService.js");
-    const service = createRemoteCredService({
-      startupMode: {
-        kind: "local",
-        wsDir: "/tmp/ws",
-        workspaceId: "ws",
-        isEphemeral: false,
-        createdFromTemplate: false,
-      },
+
+    const connected = createRemoteCredService({
+      startupMode: localStartupMode,
       getServerClient: () => ({ call }) as never,
     });
+    await expect(connected.handler(shellCtx, "listDevices", [])).resolves.toEqual([
+      { deviceId: "dev_self", label: "This", createdAt: 1 },
+    ]);
 
-    await expect(service.handler(shellCtx, "listDevices", [])).resolves.toEqual([]);
-    await expect(service.handler(shellCtx, "revokeDevice", ["dev_self"])).rejects.toThrow(
-      /remote server/
+    const offline = createRemoteCredService({ startupMode: localStartupMode });
+    await expect(offline.handler(shellCtx, "listDevices", [])).resolves.toEqual([]);
+  });
+
+  it("revokes a device via the active server client and throws without one", async () => {
+    const call = vi.fn(async (_service: string, method: string) => {
+      if (method === "revokeDevice") return { revoked: true };
+      throw new Error(method);
+    });
+
+    const { createRemoteCredService } = await import("./remoteCredService.js");
+
+    const connected = createRemoteCredService({
+      startupMode: localStartupMode,
+      getServerClient: () => ({ call }) as never,
+    });
+    await expect(connected.handler(shellCtx, "revokeDevice", ["dev_self"])).resolves.toEqual({
+      revoked: true,
+    });
+    expect(call).toHaveBeenCalledWith("auth", "revokeDevice", ["dev_self"]);
+
+    const offline = createRemoteCredService({ startupMode: localStartupMode });
+    await expect(offline.handler(shellCtx, "revokeDevice", ["dev_self"])).rejects.toThrow(
+      /Not connected to a server/
     );
-    expect(call).not.toHaveBeenCalled();
   });
 
-  async function startAuthServer(
-    handler: (
-      req: import("node:http").IncomingMessage,
-      res: import("node:http").ServerResponse,
-      body: string
-    ) => Promise<void> | void
-  ): Promise<string> {
-    server = createServer((req, res) => {
-      const chunks: Buffer[] = [];
-      req.on("data", (chunk: Buffer) => chunks.push(chunk));
-      req.on("end", () => {
-        void handler(req, res, Buffer.concat(chunks).toString("utf8"));
-      });
-    });
-    await new Promise<void>((resolve) => server?.listen(0, "127.0.0.1", resolve));
-    const address = server.address();
-    if (!address || typeof address === "string") throw new Error("missing server port");
-    return `http://127.0.0.1:${address.port}`;
-  }
+  it("clears the persisted pairing", async () => {
+    mocks.store.value = sampleStored;
+    const { createRemoteCredService } = await import("./remoteCredService.js");
+    const service = createRemoteCredService({ startupMode: localStartupMode });
+    await expect(service.handler(shellCtx, "clear", [])).resolves.toEqual({ ok: true });
+    expect(mocks.store.value).toBeNull();
+  });
+
+  it("loadStoredRemotePairing reflects the store", async () => {
+    mocks.store.value = sampleStored;
+    const { loadStoredRemotePairing } = await import("./remoteCredService.js");
+    expect(loadStoredRemotePairing()).toEqual(sampleStored);
+  });
 });
-
-function hasOpenssl(): boolean {
-  try {
-    execFileSync("openssl", ["version"], { stdio: "pipe" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function startSelfSignedHealthServer(): Promise<{
-  url: string;
-  fingerprint: string;
-  close: () => Promise<void>;
-}> {
-  return startSelfSignedServer((req, res) => {
-    if (req.method === "GET" && req.url === "/healthz") {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          ok: true,
-          product: "natstack",
-          discoveryVersion: 1,
-          serverId: "srv_tls",
-          workspaceId: "ws_tls",
-        })
-      );
-      return;
-    }
-    res.writeHead(404).end();
-  });
-}
-
-async function startSelfSignedWorkspaceHub(): Promise<{
-  url: string;
-  fingerprint: string;
-  close: () => Promise<void>;
-}> {
-  return startSelfSignedServer((req, res) => {
-    const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => {
-      const body = JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}") as Record<
-        string,
-        unknown
-      >;
-      if (body["deviceId"] !== "dev_self" || body["refreshToken"] !== "refresh") {
-        res.writeHead(401, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Unauthorized" }));
-        return;
-      }
-      if (req.method === "POST" && req.url === "/_r/s/workspaces/list") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            workspaces: [{ name: "dev", lastOpened: 123, running: true }],
-          })
-        );
-        return;
-      }
-      if (req.method === "POST" && req.url === "/_r/s/workspaces/select") {
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(
-          JSON.stringify({
-            workspaceName: "dev",
-            serverUrl: `https://${req.headers.host}/_workspace/${body["name"]}`,
-          })
-        );
-        return;
-      }
-      res.writeHead(404).end();
-    });
-  });
-}
-
-async function startSelfSignedServer(
-  handler: (
-    req: import("node:http").IncomingMessage,
-    res: import("node:http").ServerResponse
-  ) => void
-): Promise<{
-  url: string;
-  fingerprint: string;
-  close: () => Promise<void>;
-}> {
-  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-remotecred-tls-"));
-  const keyPath = path.join(tmpDir, "key.pem");
-  const certPath = path.join(tmpDir, "cert.pem");
-  execFileSync(
-    "openssl",
-    [
-      "req",
-      "-x509",
-      "-newkey",
-      "rsa:2048",
-      "-sha256",
-      "-keyout",
-      keyPath,
-      "-out",
-      certPath,
-      "-days",
-      "1",
-      "-nodes",
-      "-subj",
-      "/CN=127.0.0.1",
-      "-addext",
-      "subjectAltName=IP:127.0.0.1",
-    ],
-    { stdio: "pipe" }
-  );
-  const fingerprint = new X509Certificate(fs.readFileSync(certPath)).fingerprint256;
-  const httpsServer = createHttpsServer({
-    cert: fs.readFileSync(certPath),
-    key: fs.readFileSync(keyPath),
-  });
-  httpsServer.on("request", handler);
-
-  const port = await new Promise<number>((resolve) => {
-    httpsServer.listen(0, "127.0.0.1", () => {
-      const address = httpsServer.address();
-      if (!address || typeof address === "string") throw new Error("missing server port");
-      resolve(address.port);
-    });
-  });
-
-  return {
-    url: `https://127.0.0.1:${port}`,
-    fingerprint,
-    close: async () => {
-      await new Promise<void>((resolve) => httpsServer.close(() => resolve()));
-      fs.rmSync(tmpDir, { recursive: true, force: true });
-    },
-  };
-}

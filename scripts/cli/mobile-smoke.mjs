@@ -4,19 +4,23 @@
 // the workspace app, and rendering a panel WebView.
 
 import fsp from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { spawn } from "node:child_process";
+import { randomBytes, randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { inflateSync } from "node:zlib";
 import {
   createServerInvocation,
   serverEntryArg,
 } from "./lib/server-entry.mjs";
-import { pickMobileHost } from "./lib/connect-utils.mjs";
+import { createConnectDeepLink, parseConnectLink } from "./lib/connect-utils.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const wranglerBin = path.join(repoRoot, "node_modules", ".bin", "wrangler");
+const signalingDir = path.join(repoRoot, "apps", "signaling");
 const androidDir = path.join(repoRoot, "apps", "mobile", "android");
 const mobileInstallScript = path.join(repoRoot, "scripts", "cli", "mobile-install.mjs");
 const defaultApkPath = path.join(
@@ -50,7 +54,6 @@ function parseArgs(argv) {
     noReset: false,
     noTap: false,
     realModel: false,
-    network: "local",
     timeoutMs: 420_000,
     pairingTimeoutMs: 180_000,
     agentTimeoutMs: 300_000,
@@ -81,10 +84,6 @@ function parseArgs(argv) {
       options.noTap = true;
     } else if (arg === "--real-model") {
       options.realModel = true;
-    } else if (arg === "--network") {
-      options.network = parseNetwork(argv[++i]);
-    } else if (arg === "--tailscale") {
-      options.network = "tailscale";
     } else if (arg === "--timeout-ms") {
       options.timeoutMs = parsePositiveInt(argv[++i], "--timeout-ms");
     } else if (arg === "--pairing-timeout-ms") {
@@ -101,11 +100,6 @@ function parseArgs(argv) {
   if (!options.packageName) throw new Error("--package must not be empty");
   if (!options.activityName) throw new Error("--activity must not be empty");
   return options;
-}
-
-function parseNetwork(value) {
-  if (value === "local" || value === "tailscale") return value;
-  throw new Error("--network must be local or tailscale");
 }
 
 function parsePositiveInt(value, label) {
@@ -135,9 +129,6 @@ Runner options:
   --no-tap            Do not automate the Pair button tap.
   --real-model        Use the real model provider/credential path instead of
                        the deterministic E2E model stub.
-  --network <mode>    Pair through local adb reverse or Tailscale HTTPS.
-                       Values: local, tailscale. Defaults to local.
-  --tailscale         Alias for --network tailscale.
   --timeout-ms <ms>   Time to wait for Android boot, build/install, and server
                        readiness. Defaults to 420000.
   --pairing-timeout-ms <ms>
@@ -149,15 +140,17 @@ Runner options:
   --help              Show this help message.
 
 By default, the smoke delegates APK build/install/reset/launcher startup to
-natstack mobile install --reset-app --launch. It then starts a disposable local
-server, reverses its gateway port through adb, sends a natstack://connect intent
-to the launched internal app, confirms the Pair screen, then waits for native
-bundle activation, workspace connection, panel materialization, panel WebView
-load log markers, and the initial agent turn.
+natstack mobile install --reset-app --launch. It then spawns the signaling worker
+(wrangler dev apps/signaling), starts a disposable local server as a WebRTC
+answerer, reverses the signaling and gateway ports through adb, sends a
+natstack://connect intent (carrying the signaling room, the server's DTLS
+fingerprint, and a pairing code) to the launched internal app, confirms the Pair
+screen, then waits for native bundle activation, workspace connection, panel
+materialization, panel WebView load log markers, and the initial agent turn.
 
-With --network tailscale, the smoke starts the server on the detected Tailscale
-address, requires a verified HTTPS public URL, skips adb reverse, and pairs the
-phone through that HTTPS URL.
+Remote reach is the encrypted WebRTC pipe (no Tailscale). The server answerer
+loads the native node-datachannel module lazily; run \`pnpm rebuild
+node-datachannel\` once before this smoke.
 `);
 }
 
@@ -366,16 +359,28 @@ async function waitForServerReady(readyFile, serverChild, timeoutMs = 180_000) {
   throw new Error(`Timed out waiting for server ready file: ${readyFile}`);
 }
 
-function createConnectLink(ready) {
-  const serverUrl = ready.connectUrl || ready.gatewayUrl;
-  const code = ready.qrPairingCode || ready.pairingCode;
-  if (!serverUrl) throw new Error("Ready file did not include connectUrl or gatewayUrl");
-  if (!code) throw new Error("Ready file did not include qrPairingCode or pairingCode");
-  return `natstack://connect?url=${encodeURIComponent(serverUrl)}&code=${encodeURIComponent(code)}`;
+// Parse the WebRTC pairing link the server answerer logs and rebuild it with the
+// canonical builder. The phone joins the signaling room over loopback (the
+// adb-reversed `sig` port), pins the server's DTLS `fp`, and proves possession
+// with `code` — no server URL.
+function buildConnectLinkFromLog(loggedLink) {
+  const parsed = parseConnectLink(loggedLink);
+  if (parsed.kind !== "ok") {
+    throw new Error(`Server logged an invalid pairing link: ${parsed.reason}`);
+  }
+  return createConnectDeepLink({
+    room: parsed.room,
+    fp: parsed.fp,
+    code: parsed.code,
+    sig: parsed.sig,
+    ice: parsed.ice,
+  });
 }
 
-function createServerArgs(options, readyFilePath) {
-  const args = [
+function createServerArgs(readyFilePath) {
+  // Loopback-only: the gateway binds 127.0.0.1; remote reach is the WebRTC pipe
+  // attached to the same RpcServer when NATSTACK_WEBRTC_SIGNAL_URL is set.
+  return [
     serverEntryArg(),
     "--app-root",
     repoRoot,
@@ -384,79 +389,175 @@ function createServerArgs(options, readyFilePath) {
     "--ephemeral",
     "--serve-panels",
     "--print-credentials",
+    "--host",
+    "127.0.0.1",
+    "--bind-host",
+    "127.0.0.1",
   ];
-
-  if (options.network === "tailscale") {
-    const selectedHost = pickMobileHost("tailscale", { includeTunnel: true });
-    console.log(
-      `[mobile-smoke] Tailscale host: ${selectedHost.address}` +
-        (selectedHost.interfaceName ? ` (${selectedHost.interfaceName})` : "")
-    );
-    args.push("--host", selectedHost.address, "--gateway-port", "3030", "--require-public-url");
-  } else {
-    args.push("--host", "127.0.0.1", "--bind-host", "127.0.0.1", "--no-vpn-detect");
-  }
-
-  return args;
 }
 
-function assertTailscaleReady(ready) {
-  const connectUrl = ready.connectUrl || "";
-  if (!connectUrl.startsWith("https://")) {
-    throw new Error(
-      `Tailscale smoke requires an HTTPS connectUrl, but server advertised: ` +
-        `${connectUrl || "(none)"}`
-    );
-  }
+function findFreePort() {
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once("error", reject);
+    srv.listen(0, "127.0.0.1", () => {
+      const { port } = srv.address();
+      srv.close(() => resolve(port));
+    });
+  });
 }
 
-async function waitForPhoneTcpReachable(device, rawUrl, timeoutMs = 45_000) {
-  const endpoint = tcpEndpointForUrl(rawUrl);
-  const deadlineMs = Date.now() + timeoutMs;
-  let lastError = "not attempted";
-  while (Date.now() < deadlineMs) {
-    await ensureDeviceInteractive(device);
-    try {
-      await adbCapture(
-        device,
-        "shell",
-        "nc",
-        "-z",
-        "-w",
-        "5",
-        endpoint.host,
-        String(endpoint.port)
-      );
-      console.log(
-        `[mobile-smoke] Phone can open ${endpoint.host}:${endpoint.port} over ${endpoint.protocol}`
-      );
-      return;
-    } catch (error) {
-      lastError = error instanceof Error ? error.message : String(error);
-      await sleep(2_000);
+// The first non-internal 192.168.x IPv4 — the host LAN address both the emulator
+// (via QEMU's NAT) and the server can reach for the TURN relay.
+function hostLanIp() {
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const a of addrs ?? []) {
+      if (a.family === "IPv4" && !a.internal && a.address.startsWith("192.168.")) return a.address;
     }
   }
-  throw new Error(
-    `Android device could not open ${endpoint.host}:${endpoint.port} for ${rawUrl}. ` +
-      `Check the phone's Tailscale VPN state, Tailnet ACLs, Tailscale Serve, and any host firewall on tailscale0. ` +
-      `Last adb nc error: ${lastError}`
-  );
+  return null;
 }
 
-function tcpEndpointForUrl(rawUrl) {
-  const parsed = new URL(rawUrl);
-  const protocol = parsed.protocol.replace(/:$/, "");
-  const port = parsed.port
-    ? Number(parsed.port)
-    : parsed.protocol === "https:"
-      ? 443
-      : parsed.protocol === "http:"
-        ? 80
-        : null;
-  if (!parsed.hostname || !port) {
-    throw new Error(`Cannot derive TCP endpoint from URL: ${rawUrl}`);
+// Local coturn relay for testing against an Android EMULATOR: QEMU's user-mode NAT
+// cannot hold a direct WebRTC pipe (ICE consent-freshness goes stale ~30-60s in),
+// so we relay through coturn and force `NATSTACK_WEBRTC_ICE=relay`. Physical
+// devices on the LAN and desktop loopback don't need this. coturn must be on PATH
+// (`turnserver`). Returns the iceServer creds the signaling worker advertises to
+// BOTH peers, plus the managed child (caller pushes it to `children` for cleanup).
+async function startLocalTurn() {
+  const lanIp = hostLanIp();
+  if (!lanIp) throw new Error("No 192.168.x LAN IP found for the local TURN relay");
+  const port = 47000;
+  const user = "natstack";
+  const pass = "natstackpass";
+  const confPath = path.join(os.tmpdir(), `natstack-coturn-${process.pid}.conf`);
+  // relay-ip MUST be the LAN IP, not 127.0.0.1 — coturn returns 403 Forbidden on
+  // CREATE_PERMISSION for a loopback relay address.
+  await fsp.writeFile(
+    confPath,
+    [
+      `listening-port=${port}`,
+      `listening-ip=127.0.0.1`,
+      `listening-ip=${lanIp}`,
+      `relay-ip=${lanIp}`,
+      `realm=natstack.local`,
+      `lt-cred-mech`,
+      `user=${user}:${pass}`,
+      `no-tls`,
+      `no-dtls`,
+      `allowed-peer-ip=${lanIp}`,
+      `min-port=48000`,
+      `max-port=48100`,
+      // Default pidfile is /var/run/turnserver.pid (needs root) — point it at a
+      // writable temp path so coturn doesn't log a permission warning.
+      `pidfile=${path.join(os.tmpdir(), `natstack-coturn-${process.pid}.pid`)}`,
+      "",
+    ].join("\n")
+  );
+  // NOTE: no `-n` flag — `-n` means "ignore the config file", which would make
+  // coturn fall back to its defaults (TLS on :3478, clashing with any system
+  // coturn). `-c` loads our config; coturn stays in the foreground by default
+  // (no `-o`/daemon) so spawnManaged can track + reap it.
+  const child = spawnManaged("turnserver", ["-c", confPath], { label: "coturn" });
+  await sleep(1_500); // coturn has no health endpoint; let it bind.
+  if (child.exitCode != null) {
+    throw new Error(`coturn (turnserver) exited before ready (code ${child.exitCode}) — is it installed?`);
   }
-  return { protocol, host: parsed.hostname, port };
+  return { child, host: lanIp, port: String(port), user, pass };
+}
+
+// Cloudflare's local runtime (Miniflare) hosting the real SignalingRoom DO, the
+// WebRTC rendezvous — exactly as tests/webrtc-system.e2e.test.ts drives it.
+async function startSignaling(port, turn = null) {
+  const vars = ["--var", "ENVIRONMENT:test"];
+  if (turn) {
+    // The signaling worker's mintIceServers returns this relay to both peers.
+    vars.push(
+      "--var", `NATSTACK_LOCAL_TURN_HOST:${turn.host}`,
+      "--var", `NATSTACK_LOCAL_TURN_PORT:${turn.port}`,
+      "--var", `NATSTACK_LOCAL_TURN_USER:${turn.user}`,
+      "--var", `NATSTACK_LOCAL_TURN_PASS:${turn.pass}`
+    );
+  }
+  const child = spawnManaged(
+    wranglerBin,
+    ["dev", "--port", String(port), "--local", ...vars],
+    { cwd: signalingDir, label: "signaling" }
+  );
+  for (let i = 0; i < 90; i++) {
+    if (child.exitCode != null) {
+      throw new Error(`wrangler dev (signaling) exited before healthy (code ${child.exitCode})`);
+    }
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/healthz`);
+      if (res.ok) return child;
+    } catch {
+      // Not up yet.
+    }
+    await sleep(1_000);
+  }
+  throw new Error("wrangler dev (signaling) did not become healthy");
+}
+
+// Watch the answerer's stdout for the `[webrtc-answerer] pairing link:
+// natstack://connect?...` line. Attach this BEFORE the link can be printed so no
+// chunk is missed.
+function waitForPairingLink(serverChild, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    let buffer = "";
+    const onData = (chunk) => {
+      buffer += chunk.toString();
+      const match = buffer.match(/natstack:\/\/connect\?\S+/);
+      if (match) {
+        cleanup();
+        resolve(match[0]);
+      }
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      serverChild.stdout?.off("data", onData);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(
+        new Error(
+          "Timed out waiting for the server's [webrtc-answerer] pairing link. " +
+            "Is node-datachannel built? Run `pnpm rebuild node-datachannel`."
+        )
+      );
+    }, timeoutMs);
+    serverChild.stdout?.on("data", onData);
+  });
+}
+
+// Pre-warm: wait until the server reports the react-native workspace app BUILT
+// (`status=running`/`available` with a real build key) before we pair. Otherwise
+// the cold Metro-extension + app build (~1-2 min) burns the emulator's ~2-min
+// relay window before the bundle can stream. Best-effort — resolves false on
+// timeout so the run still proceeds (and physical devices don't need it).
+function waitForReactNativeAppReady(serverChild, timeoutMs) {
+  return new Promise((resolve) => {
+    let buffer = "";
+    const ready =
+      /target=react-native\b[^\n]*\bstatus=(?:running|available)\b[^\n]*\bbuild=(?!none\b)[0-9a-f]{6,}/;
+    const onData = (chunk) => {
+      buffer += chunk.toString();
+      if (ready.test(buffer)) {
+        cleanup();
+        resolve(true);
+      }
+      if (buffer.length > 1_000_000) buffer = buffer.slice(-200_000);
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      serverChild.stdout?.off("data", onData);
+    };
+    const timer = setTimeout(() => {
+      cleanup();
+      resolve(false);
+    }, timeoutMs);
+    serverChild.stdout?.on("data", onData);
+  });
 }
 
 function startLogcat(device, expectedPhases, deadlineMs) {
@@ -1265,6 +1366,143 @@ function shellCommand(args) {
   return args.map(shellQuote).join(" ");
 }
 
+function routeUrl(baseUrl, pathName) {
+  const url = new URL(baseUrl);
+  const basePath = url.pathname.replace(/\/+$/, "");
+  url.pathname = `${basePath}${pathName}`;
+  url.search = "";
+  url.hash = "";
+  return url.toString();
+}
+
+async function postJson(baseUrl, pathName, body, token, timeoutMs = 15_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const res = await fetch(routeUrl(baseUrl, pathName), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body ?? {}),
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    const json = text ? JSON.parse(text) : {};
+    if (!res.ok) {
+      throw new Error(`${pathName} failed ${res.status}: ${JSON.stringify(json)}`);
+    }
+    return json;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function rpcHttp(baseUrl, shellToken, callerId, method, args = [], timeoutMs = 60_000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const caller = { callerId, callerKind: "shell" };
+  try {
+    const res = await fetch(routeUrl(baseUrl, "/rpc"), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${shellToken}`,
+      },
+      body: JSON.stringify({
+        from: caller.callerId,
+        target: "main",
+        delivery: { caller },
+        provenance: [caller],
+        message: {
+          type: "request",
+          requestId: randomUUID(),
+          fromId: caller.callerId,
+          method,
+          args,
+        },
+      }),
+      signal: controller.signal,
+    });
+    const text = await res.text();
+    const body = text ? JSON.parse(text) : {};
+    const message = (body?.envelope ?? body)?.message;
+    if (!res.ok || message?.error) {
+      throw new Error(message?.error ?? body?.error ?? `/rpc failed ${res.status}`);
+    }
+    return message?.result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function describeHostTargetLaunch(result) {
+  if (!result || typeof result !== "object") return "unknown launch result";
+  const bits = [`status=${result.status ?? "unknown"}`];
+  if (result.reason) bits.push(`reason=${result.reason}`);
+  if (result.appId) bits.push(`app=${result.appId}`);
+  if (result.buildKey) bits.push(`build=${result.buildKey}`);
+  return bits.join(" ");
+}
+
+async function prewarmReactNativeAppLaunch(ready, timeoutMs) {
+  if (!ready?.gatewayUrl || !ready?.adminToken) return false;
+  const deadline = Date.now() + timeoutMs;
+  let issued = null;
+  try {
+    issued = await postJson(
+      ready.gatewayUrl,
+      "/_r/s/auth/issue-device",
+      { label: "Mobile smoke pre-warm", platform: "desktop" },
+      ready.adminToken,
+      Math.min(15_000, Math.max(1_000, deadline - Date.now()))
+    );
+    const shellToken = issued?.shellToken;
+    const callerId = issued?.callerId ?? (issued?.deviceId ? `shell:${issued.deviceId}` : null);
+    if (typeof shellToken !== "string" || typeof callerId !== "string") {
+      throw new Error("admin-issued pre-warm credential did not include a shell token");
+    }
+    let last = null;
+    while (Date.now() < deadline) {
+      const remaining = Math.max(1_000, deadline - Date.now());
+      last = await rpcHttp(
+        ready.gatewayUrl,
+        shellToken,
+        callerId,
+        "workspace.hostTargets.launch",
+        ["react-native"],
+        remaining
+      );
+      if (last?.status === "ready") return true;
+      if (last?.status === "approval-required" || last?.status === "unavailable") {
+        console.warn(`[mobile-smoke] pre-warm: ${describeHostTargetLaunch(last)}`);
+        return false;
+      }
+      await sleep(Math.min(2_000, Math.max(1, deadline - Date.now())));
+    }
+    if (last) console.warn(`[mobile-smoke] pre-warm: ${describeHostTargetLaunch(last)}`);
+    return false;
+  } catch (error) {
+    console.warn(
+      `[mobile-smoke] pre-warm: active launch failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return false;
+  } finally {
+    if (issued?.deviceId && ready?.gatewayUrl && ready?.adminToken) {
+      await postJson(
+        ready.gatewayUrl,
+        "/_r/s/auth/revoke-device",
+        { deviceId: issued.deviceId },
+        ready.adminToken,
+        10_000
+      ).catch(() => {});
+    }
+  }
+}
+
 async function startConnectIntent(device, packageName, activityName, link) {
   const packageResult = await adbCapture(
     device,
@@ -1310,6 +1548,7 @@ async function main() {
   const children = [];
   let cleanedUp = false;
   let emulatorChild = null;
+  let launchedEmulator = false;
   let readyInfo = null;
   const readyFilePath = path.join(os.tmpdir(), `natstack-mobile-smoke-ready-${process.pid}.json`);
   const deadlineMs = Date.now() + options.timeoutMs;
@@ -1359,6 +1598,7 @@ async function main() {
       );
       await waitForSpawn(emulatorChild, process.env.ANDROID_EMULATOR ?? "emulator", []);
       children.push(emulatorChild);
+      launchedEmulator = true;
     }
 
     await waitForAndroidBoot(options.device);
@@ -1382,11 +1622,48 @@ async function main() {
       await fsp.unlink(readyFilePath);
     } catch {}
 
-    const serverArgs = createServerArgs(options, readyFilePath);
+    // 1. Local signaling (Cloudflare local runtime) — the WebRTC rendezvous. The
+    //    phone reaches it over loopback via the adb-reversed signaling port.
+    const signalPort = await findFreePort();
+    // An emulator is NAT'd behind QEMU and can't hold a direct WebRTC pipe, so
+    // relay it through a local coturn. Physical devices on the LAN don't need it.
+    const useTurn = launchedEmulator || (options.device ?? "").startsWith("emulator-");
+    let turn = null;
+    if (useTurn) {
+      turn = await startLocalTurn();
+      children.push(turn.child);
+      console.log(`[mobile-smoke] Local TURN relay (emulator NAT): turn:${turn.host}:${turn.port}`);
+    }
+    const signalingChild = await startSignaling(signalPort, turn);
+    children.push(signalingChild);
+    const signalUrl = `ws://127.0.0.1:${signalPort}`;
+
+    // 2. The disposable server, as a WebRTC answerer. We pick the room + pairing
+    //    code; the server presents its persistent DTLS cert and logs the
+    //    natstack://connect link whose `fp` pins that cert.
+    const room = randomUUID();
+    const pairingCode = randomBytes(18).toString("base64url");
+    const serverArgs = createServerArgs(readyFilePath);
     const serverInvocation = createServerInvocation(serverArgs);
     const serverEnv = {
       ...process.env,
       NODE_ENV: process.env.NODE_ENV ?? "development",
+      NATSTACK_WEBRTC_SIGNAL_URL: signalUrl,
+      NATSTACK_WEBRTC_ROOM: room,
+      NATSTACK_PAIRING_CODE: pairingCode,
+      // Force the single-workspace server path: `--serve-panels` with no workspace
+      // otherwise boots the hub (no WebRTC answerer), so pairing never connects.
+      NATSTACK_FORCE_WORKSPACE_SERVER: "1",
+      // Auto-approve startup units so the declared react-native app BUILDS at
+      // server startup instead of waiting for the post-pairing host-target
+      // approval. That makes the launch fast, so the bundle starts streaming
+      // seconds after pairing — on a fresh pipe — rather than ~75s in (by which
+      // point the emulator's relay has degraded). See unitApprovalCoordinator.
+      NATSTACK_AUTO_APPROVE_STARTUP_UNITS: "1",
+      // Emulator: force relay-only through the local coturn (a direct NAT'd pipe
+      // can't hold ICE consent freshness). The answerer threads this into the
+      // pairing link's `ice=relay`, which the client honors.
+      ...(turn ? { NATSTACK_WEBRTC_ICE: "relay" } : {}),
     };
     if (options.realModel) {
       delete serverEnv.NATSTACK_TEST_MODE;
@@ -1400,6 +1677,11 @@ async function main() {
     });
     await waitForSpawn(serverChild, serverInvocation.command, serverInvocation.args);
     children.push(serverChild);
+    // Capture the answerer's pairing link from stdout now (before readiness).
+    const pairingLinkPromise = waitForPairingLink(
+      serverChild,
+      Math.max(1_000, deadlineMs - Date.now())
+    );
 
     const ready = await waitForServerReady(
       readyFilePath,
@@ -1407,24 +1689,41 @@ async function main() {
       Math.max(1_000, deadlineMs - Date.now())
     );
     readyInfo = ready;
-    if (options.network === "tailscale") {
-      assertTailscaleReady(ready);
-      await waitForPhoneTcpReachable(options.device, ready.connectUrl);
-    }
 
-    if (options.network === "local") {
-      await adb(options.device, "reverse", `tcp:${ready.gatewayPort}`, `tcp:${ready.gatewayPort}`);
-    }
+    // The phone reaches the host's loopback services over adb reverse: the
+    // signaling room (WebRTC rendezvous) and the gateway (native-bundle bootstrap
+    // + panel HTTP). Remote reach is the encrypted WebRTC pipe — no Tailscale.
+    await adb(options.device, "reverse", `tcp:${signalPort}`, `tcp:${signalPort}`);
+    await adb(options.device, "reverse", `tcp:${ready.gatewayPort}`, `tcp:${ready.gatewayPort}`);
     await adb(options.device, "logcat", "-c");
 
+    // Pre-warm: give the server time to BUILD the react-native app before pairing,
+    // so the emulator's ~2-min relay window (the clock starts at the pairing tap)
+    // is not consumed by the cold Metro extension + app build. Best-effort and
+    // emulator/TURN-only — physical devices hold the pipe long enough regardless.
+    if (useTurn) {
+      console.log("[mobile-smoke] pre-warm: waiting for the react-native app build…");
+      const prewarmBudgetMs = Math.min(150_000, Math.max(1_000, deadlineMs - Date.now()));
+      let warm = await prewarmReactNativeAppLaunch(ready, prewarmBudgetMs);
+      if (!warm) {
+        warm = await waitForReactNativeAppReady(
+          serverChild,
+          Math.min(prewarmBudgetMs, Math.max(1_000, deadlineMs - Date.now()))
+        );
+      }
+      console.log(`[mobile-smoke] pre-warm: ${warm ? "react-native app built" : "timed out, proceeding"}`);
+    }
+
+    // Embedded WebRTC flow (the host pairs + connects over the DTLS pipe in JS;
+    // there is no native HTTP pairing). Phases are emitted by apps/mobile/index.js.
     const phases = [
       "embedded-deep-link-received",
       "embedded-pairing-complete",
-      "native-pairing-complete",
-      "native-bundle-bootstrap-fetched",
-      "native-bundle-prepared",
-      "native-bundle-activated",
-      "native-rn-reload-requested",
+      "embedded-workspace-selected",
+      "embedded-host-target-approval-required",
+      "embedded-host-target-preparing",
+      "embedded-bundle-activate-start",
+      "embedded-bundle-activate-complete",
       "workspace-connected",
       "workspace-panel-activate-start",
       "workspace-panel-materialized",
@@ -1435,10 +1734,10 @@ async function main() {
     children.push(logcat.child);
     await waitForLogcatReady(options.device, logcat);
 
-    const link = createConnectLink(ready);
-    console.log(`[mobile-smoke] Network: ${options.network}`);
-    console.log(`[mobile-smoke] Gateway: ${ready.gatewayUrl}`);
-    console.log(`[mobile-smoke] Connect URL: ${ready.connectUrl || ready.gatewayUrl}`);
+    const link = buildConnectLinkFromLog(await pairingLinkPromise);
+    console.log(`[mobile-smoke] Signaling: ${signalUrl} (adb-reversed)`);
+    console.log(`[mobile-smoke] Gateway:   ${ready.gatewayUrl} (adb-reversed)`);
+    console.log(`[mobile-smoke] Connect:   ${link}`);
     await ensureDeviceInteractive(options.device);
     // The install helper may launch the app before the server is ready. Deliver
     // the connect link as a cold-start intent so React Native can read it
@@ -1449,21 +1748,37 @@ async function main() {
     await logcat.waitForPhase("embedded-deep-link-received");
     await ensureDeviceInteractive(options.device);
 
+    // The deep link surfaces a "Pair" button; tapping it starts WebRTC pairing.
+    // The host then auto-selects the single workspace the room targets (no
+    // workspace-picker tap), so wait straight through to the launch gate.
     if (!options.noTap) {
       await tapButtonByText(options.device, "Pair", pairingDeadlineMs);
     }
-
     await logcat.waitForPhase("embedded-pairing-complete");
-    await logcat.waitForPhase("native-pairing-complete");
+    await logcat.waitForPhase("embedded-workspace-selected");
+    // Startup-unit auto-approval pre-approves the host target, so the
+    // approval-required + preparing phases are SKIPPED and the app goes straight to
+    // bundle activation. Fire a best-effort "Trust and start" tap in the background
+    // (for runs WITHOUT auto-approve) but never block on the approval phase — under
+    // auto-approve the button never appears and activation has already begun.
     if (!options.noTap) {
-      await tapButtonByText(options.device, "dev", pairingDeadlineMs);
-    }
-    if (!options.noTap) {
-      const approved = await tapOptionalButtonByText(options.device, "Trust and start", 15_000);
-      if (approved) console.log("[mobile-smoke] Approved mobile workspace app launch gate");
+      void tapOptionalButtonByText(options.device, "Trust and start", 12_000)
+        .then((approved) => {
+          if (approved) console.log("[mobile-smoke] Approved mobile workspace app launch gate");
+        })
+        .catch(() => {});
     }
 
-    for (const phase of phases.slice(3)) {
+    // Post-launch phases: bundle activate → workspace connect → panel webview loaded.
+    // (approval-required + host-target-preparing are optional — skipped under auto-approve.)
+    for (const phase of [
+      "embedded-bundle-activate-start",
+      "embedded-bundle-activate-complete",
+      "workspace-connected",
+      "workspace-panel-activate-start",
+      "workspace-panel-materialized",
+      "workspace-panel-webview-loaded",
+    ]) {
       await waitForPhaseTappingApprovals(options.device, logcat, phase, pairingDeadlineMs);
     }
     const panelResult = await captureAndAssertPanelVisible(

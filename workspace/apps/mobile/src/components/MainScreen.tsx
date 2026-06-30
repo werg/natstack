@@ -174,6 +174,15 @@ export function MainScreen() {
       cancelled = true;
     };
   }, [shellClient]);
+  // Route host→panel RPC envelopes (relay replies + events) into the target
+  // panel's webview. The shell-client relay holds this sink; we supply it here
+  // because the webview handles live in the UI layer.
+  useEffect(() => {
+    if (!shellClient) return;
+    shellClient.panels.setDeliverToPanel((panelId, envelope) => {
+      webViewRefsMap.current.get(panelId)?.deliverEnvelope(envelope);
+    });
+  }, [shellClient]);
   const handleWebViewUnmount = useCallback(
     (panelId: string) => {
       webViewRefsMap.current.delete(panelId);

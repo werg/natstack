@@ -1,19 +1,27 @@
 import type { TokenManager } from "@natstack/shared/tokenManager";
-import { createConnectDeepLink } from "@natstack/shared/connect";
+import { type ConnectPairing, createConnectDeepLink } from "@natstack/shared/connect";
 import { DEFAULT_PAIRING_CODE_TTL_MS, type DeviceAuthStore } from "../deviceAuthStore.js";
+
+/**
+ * The WebRTC pairing material the running server advertises (its signaling
+ * `room`, DTLS `fp`, and signaling endpoint `sig`, plus optional turn policy /
+ * label). `code` is minted per-invite, so it is NOT part of the seam — the
+ * server-side WebRTC/signaling wiring populates this; until it does, invites
+ * carry a null `deepLink`.
+ */
+export type ConnectPairingSeam = Omit<ConnectPairing, "code" | "v">;
 
 export interface AuthConnectionInfo {
   serverUrl: string;
-  publicUrl?: string | null;
   protocol?: "http" | "https";
   externalHost?: string;
   gatewayPort?: number | null;
+  /** WebRTC pairing material (room/fp/sig) used to mint the pairing deep link. */
+  pairing?: ConnectPairingSeam;
 }
 
 export interface ConnectionInfoResponse {
   serverUrl: string;
-  publicUrl: string | null;
-  connectUrl: string;
   protocol?: "http" | "https";
   externalHost?: string;
   gatewayPort?: number | null;
@@ -52,12 +60,8 @@ export function connectionInfoResponse(deps: {
   getConnectionInfo?: () => AuthConnectionInfo;
 }): ConnectionInfoResponse {
   const info = deps.getConnectionInfo?.() ?? { serverUrl: "" };
-  const publicUrl = info.publicUrl || null;
-  const connectUrl = publicUrl || info.serverUrl;
   return {
     serverUrl: info.serverUrl,
-    publicUrl,
-    connectUrl,
     protocol: info.protocol,
     externalHost: info.externalHost,
     gatewayPort: info.gatewayPort,
@@ -79,12 +83,13 @@ export function createPairingInviteResponse(
   const expiresInMs = ttlMs ?? DEFAULT_PAIRING_CODE_TTL_MS;
   const code = deps.deviceAuthStore.createPairingCode(expiresInMs);
   const info = connectionInfoResponse(deps);
+  const pairing = deps.getConnectionInfo?.().pairing;
   return {
     ...info,
     code,
     expiresInMs,
     expiresAt: Date.now() + expiresInMs,
-    deepLink: info.connectUrl ? createConnectDeepLink(info.connectUrl, code) : null,
+    deepLink: pairing ? createConnectDeepLink({ ...pairing, code }) : null,
   };
 }
 

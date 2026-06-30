@@ -701,6 +701,17 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
     };
   }
 
+  /**
+   * The runtime entity id + lease connectionId for a panel, so the host can open
+   * a panel-principal server session on that exact lease (ipcDispatcher relay).
+   * Undefined until the panel's runtime lease is acquired.
+   */
+  getPanelRuntimeConnection(
+    panelId: string
+  ): { runtimeEntityId: string; connectionId: string } | undefined {
+    return this.runtimeConnectionBySlot.get(panelId);
+  }
+
   listRuntimePanels(parentId?: string | null) {
     return parentId ? this.registry.getChildren(parentId) : this.registry.listPanels();
   }
@@ -1458,8 +1469,6 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
       contextId: getPanelContextId(panel),
       ref: getPanelRef(panel),
       gatewayPort: this.deps.gatewayPort,
-      externalHost: this.externalHost,
-      protocol: this.deps.protocol,
       basePath: this.deps.gatewayBasePath,
     });
   }
@@ -1574,8 +1583,6 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
       contextId: getPanelContextId(panel),
       ref: getPanelRef(panel),
       gatewayPort: this.deps.gatewayPort,
-      externalHost: this.externalHost,
-      protocol: this.deps.protocol,
       basePath: this.deps.gatewayBasePath,
     });
   }
@@ -1624,8 +1631,6 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
       contextId: snapshot.contextId,
       ref: snapshot.options.ref,
       gatewayPort: this.deps.gatewayPort,
-      externalHost: this.externalHost,
-      protocol: this.deps.protocol,
       basePath: this.deps.gatewayBasePath,
     });
     if (navigateInPlace) {
@@ -1678,8 +1683,6 @@ export class PanelOrchestrator implements BridgePanelLifecycle, PanelHost {
       contextId: snapshot.contextId,
       ref: snapshot.options.ref,
       gatewayPort: this.deps.gatewayPort,
-      externalHost: this.externalHost,
-      protocol: this.deps.protocol,
       basePath: this.deps.gatewayBasePath,
     });
     await view.createViewForPanel(panelId, panelUrl, snapshot.contextId);

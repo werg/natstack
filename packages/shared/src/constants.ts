@@ -64,26 +64,24 @@ export const PANEL_UI_MAX_LOADED_HEADLESS = 8;
 // =============================================================================
 
 /**
- * Build a permissive CSP for panels and workers.
- * Allows connections to localhost services and external APIs.
- * When externalHost is provided, also allows connections to that host.
+ * Build a permissive CSP for panels and workers. Panels load from a loopback
+ * origin and never connect to a remote managed host (panel RPC rides the shell
+ * bridge, not a direct socket), so this is loopback-only — an independent
+ * panel-egress control, not a transport dependency.
  */
-export function buildPanelCsp(externalHost?: string): string {
-  const hostEntries = externalHost && externalHost !== "localhost"
-    ? ` ws://${externalHost}:* wss://${externalHost}:* http://${externalHost}:* https://${externalHost}:*`
-    : "";
+export function buildPanelCsp(): string {
   return [
     "default-src 'self' https: data: blob:",
     "script-src 'self' 'unsafe-inline' 'unsafe-eval' https: http://localhost:* http://127.0.0.1:*",
     "style-src 'self' 'unsafe-inline' https:",
     "img-src 'self' https: data: blob:",
     "font-src 'self' https: data:",
-    `connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:* http://127.0.0.1:* https://127.0.0.1:* ws://localhost:* wss://localhost:* http://localhost:* https://localhost:* ws: wss: https:${hostEntries}`,
+    `connect-src 'self' ws://127.0.0.1:* wss://127.0.0.1:* http://127.0.0.1:* https://127.0.0.1:* ws://localhost:* wss://localhost:* http://localhost:* https://localhost:* ws: wss: https:`,
   ].join("; ");
 }
 
 /**
- * Default CSP for localhost-only panels (backwards compatible).
+ * Default CSP for loopback-origin panels.
  */
 export const PANEL_CSP = buildPanelCsp();
 

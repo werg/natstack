@@ -1,33 +1,25 @@
-// Parsing + validation for `natstack://connect?url=…&code=…` deep links.
+// Parsing + validation for `natstack://connect` WebRTC pairing deep links.
 //
 // The deep-link flow is user-triggered onboarding (scan QR, tap link), which
-// means any installed Android app can fire one. Without validation, an
-// attacker could redirect the client to a server they control with a pairing code
-// they chose. The checks below constrain what can be auto-applied:
+// means any installed Android app can fire one. Without validation, an attacker
+// could propose a pairing the user did not intend. The shared parser constrains
+// what can be auto-applied:
 //
-//   - Only http:// or https:// server URLs.
-//   - http:// is accepted only for hosts where cleartext is either local to
-//     the device, on a private LAN segment, inside a Tailscale tailnet
-//     (which already encrypts end-to-end), or addressed by a single-label /
-//     .local hostname that only resolves in local trusted networks. Everything
-//     else requires https.
-//   - Pairing code must match a plausible character set/length so obvious junk
-//     is rejected before we try to pair with it.
+//   - `room` is an unguessable signaling rendezvous id; `fp` is the server's
+//     pinned DTLS SHA-256 fingerprint; `code` proves QR possession; `sig` is the
+//     signaling endpoint (wss/https, or ws/http only for loopback dev).
+//   - The pairing code/room/fingerprint must match a plausible format so obvious
+//     junk is rejected before we try to pair with it.
 //
-// The UI layer is still responsible for asking the user to confirm before
-// overwriting credentials — this module only decides whether the link is
-// structurally safe to propose.
+// There is no server URL anymore: remote reach is an encrypted WebRTC pipe whose
+// peer identity is the pinned fingerprint, not a TLS origin. The UI layer is
+// still responsible for asking the user to confirm before overwriting
+// credentials — this module only decides whether the link is structurally safe.
 
-import { isTrustedCleartextHost, parseConnectLink } from "@natstack/shared/connect";
+import { type ConnectLink, parseConnectLink } from "@natstack/shared/connect";
 
-export { isTrustedCleartextHost };
-
-export type ConnectDeepLinkResult =
-  | { kind: "ok"; serverUrl: string; pairingCode: string }
-  | { kind: "error"; reason: string };
+export type ConnectDeepLinkResult = ConnectLink;
 
 export function parseConnectDeepLink(rawUrl: string): ConnectDeepLinkResult {
-  const parsed = parseConnectLink(rawUrl);
-  if (parsed.kind === "error") return parsed;
-  return { kind: "ok", serverUrl: parsed.url, pairingCode: parsed.code };
+  return parseConnectLink(rawUrl);
 }

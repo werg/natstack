@@ -7,7 +7,7 @@ import { createVerifiedCaller, ServiceDispatcher } from "@natstack/shared/servic
 import { Gateway } from "../gateway.js";
 import { RpcServer } from "../rpcServer.js";
 import { RouteRegistry } from "../routeRegistry.js";
-import { createAuthService } from "./authService.js";
+import { createAuthService, createPairingRedeemer } from "./authService.js";
 import { DeviceAuthStore } from "./deviceAuthStore.js";
 import { EntityCache } from "@natstack/shared/runtime/entityCache";
 import type { EntityRecord } from "@natstack/shared/runtime/entitySpec";
@@ -41,8 +41,10 @@ function makeAppRecord(id: string): EntityRecord {
   };
 }
 
-type PairingCodeResponse = { code: string; connectUrl: string; deepLink: string };
-type ConnectionInfoResponse = { serverUrl: string; connectUrl: string; workspaceId: string };
+// `deepLink` is no longer minted server-side: the full WebRTC pairing link needs
+// the answerer's room/fp (assembled at the pairing banner, not the auth service).
+type PairingCodeResponse = { code: string; serverUrl: string; deepLink?: string };
+type ConnectionInfoResponse = { serverUrl: string; workspaceId: string };
 type IssueDeviceResponse = {
   deviceId: string;
   refreshToken: string;
@@ -98,7 +100,6 @@ describe("auth service device credentials", () => {
       getWorkspaceId: () => "workspace_test",
       getConnectionInfo: () => ({
         serverUrl: gatewayUrl,
-        publicUrl: "https://host.tailnet.ts.net",
         protocol: "http",
         externalHost: "127.0.0.1",
         gatewayPort,
@@ -169,10 +170,9 @@ describe("auth service device credentials", () => {
     );
     expect(pairing.status).toBe(200);
     expect(pairing.body.code).toMatch(/^[A-Za-z0-9_-]{16,}$/);
-    expect(pairing.body.connectUrl).toBe("https://host.tailnet.ts.net");
-    expect(pairing.body.deepLink).toBe(
-      `natstack://connect?url=https%3A%2F%2Fhost.tailnet.ts.net&code=${pairing.body.code}`
-    );
+    expect(pairing.body.serverUrl).toBe(gatewayUrl);
+    // The full WebRTC deep link (room/fp/sig) is assembled by the answerer, not here.
+    expect(pairing.body.deepLink).toBeNull();
 
     const issued = await postJson<IssueDeviceResponse>(
       "/_r/s/auth/issue-device",
@@ -309,7 +309,6 @@ describe("auth service device credentials", () => {
       )
     ).resolves.toMatchObject({
       serverUrl: "http://127.0.0.1:3030",
-      connectUrl: "http://127.0.0.1:3030",
       workspaceId: "workspace_rpc",
     } satisfies Partial<ConnectionInfoResponse>);
 
@@ -319,10 +318,8 @@ describe("auth service device credentials", () => {
       [{ ttlMs: 30_000 }]
     )) as PairingCodeResponse;
     expect(invite.code).toMatch(/^[A-Za-z0-9_-]{16,}$/);
-    expect(invite.connectUrl).toBe("http://127.0.0.1:3030");
-    expect(invite.deepLink).toBe(
-      `natstack://connect?url=http%3A%2F%2F127.0.0.1%3A3030&code=${invite.code}`
-    );
+    expect(invite.serverUrl).toBe("http://127.0.0.1:3030");
+    expect(invite.deepLink).toBeNull();
 
     await expect(
       authService.definition.handler(
@@ -330,7 +327,7 @@ describe("auth service device credentials", () => {
         "createPairingInvite",
         [{}]
       )
-    ).resolves.toMatchObject({ connectUrl: "http://127.0.0.1:3030" });
+    ).resolves.toMatchObject({ serverUrl: "http://127.0.0.1:3030" });
     await expect(
       authService.definition.handler(
         { caller: createVerifiedCaller("@workspace-apps/other", "app") },
@@ -667,7 +664,7 @@ describe("auth service pairing invite flow", () => {
       expect(inviteEnvelope.message?.error).toBeUndefined();
       expect(inviteEnvelope.message?.result).toBeDefined();
       const invite = inviteEnvelope.message!.result!;
-      expect(invite.deepLink).toContain("natstack://connect");
+      expect(invite.code).toMatch(/^[A-Za-z0-9_-]{16,}$/);
 
       const secondDevice = await postLocal<PairingCompleteResponse>(
         gatewayPort,
@@ -704,3 +701,69 @@ async function postLocal<T>(
   });
   return { status: response.status, body: (await response.json()) as T };
 }
+
+describe("createPairingRedeemer (over-the-pipe device pairing)", () => {
+  const makeStore = () =>
+    new DeviceAuthStore(
+      path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), "natstack-pair-redeem-")),
+        "auth",
+        "devices.json"
+      ),
+      () => 1234
+    );
+
+  it("redeems a fresh pairing code into a shell principal + returns the device credential", () => {
+    const store = makeStore();
+    const tokenManager = new TokenManager();
+    const code = store.createPairingCode(60_000);
+    const redeem = createPairingRedeemer({ deviceAuthStore: store, tokenManager });
+
+    const result = redeem(code, { clientLabel: "laptop", clientPlatform: "desktop" });
+    expect(result).not.toBeNull();
+    expect(result!.callerKind).toBe("shell");
+    expect(result!.deviceCredential).toBeDefined();
+    expect(result!.callerId).toBe(`shell:${result!.deviceCredential!.deviceId}`);
+    expect(result!.deviceCredential!.refreshToken.length).toBeGreaterThan(16);
+    // The shell token for this principal now validates (issued during redeem).
+    const shellToken = tokenManager.ensureToken(result!.callerId, "shell");
+    expect(tokenManager.validateToken(shellToken)?.callerKind).toBe("shell");
+  });
+
+  it("is one-shot — the same pairing code cannot be redeemed twice", () => {
+    const store = makeStore();
+    const redeem = createPairingRedeemer({
+      deviceAuthStore: store,
+      tokenManager: new TokenManager(),
+    });
+    const code = store.createPairingCode(60_000);
+    expect(redeem(code, {})).not.toBeNull();
+    expect(redeem(code, {})).toBeNull();
+  });
+
+  it("redeems a returning device's refresh credential (no new credential issued)", () => {
+    const store = makeStore();
+    const redeem = createPairingRedeemer({
+      deviceAuthStore: store,
+      tokenManager: new TokenManager(),
+    });
+    const paired = redeem(store.createPairingCode(60_000), {})!;
+    const { deviceId, refreshToken } = paired.deviceCredential!;
+
+    const back = redeem(`refresh:${deviceId}:${refreshToken}`, {});
+    expect(back).not.toBeNull();
+    expect(back!.callerId).toBe(`shell:${deviceId}`);
+    expect(back!.deviceCredential).toBeUndefined();
+  });
+
+  it("rejects a bad refresh credential, a malformed refresh token, and a non-pairing token", () => {
+    const store = makeStore();
+    const redeem = createPairingRedeemer({
+      deviceAuthStore: store,
+      tokenManager: new TokenManager(),
+    });
+    expect(redeem("refresh:dev_x:wrong-secret", {})).toBeNull();
+    expect(redeem("refresh:malformed", {})).toBeNull();
+    expect(redeem("some-random-token-that-is-neither", {})).toBeNull();
+  });
+});

@@ -16,6 +16,7 @@
   "dependencies": {
     "@babel/runtime": "^7.29.2",
     "@natstack/browser-data": "workspace:*",
+    "@natstack/mobile-webrtc": "workspace:*",
     "@natstack/rpc": "workspace:*",
     "@natstack/shared": "workspace:*",
     "@notifee/react-native": "^9.1.8",
@@ -40,8 +41,11 @@
     "react-native-safe-area-context": "^5.4.0",
     "react-native-screens": "~4.10.0",
     "react-native-svg": "^15.15.4",
+    "react-native-tcp-socket": "^6.4.1",
     "react-native-url-polyfill": "^3.0.0",
-    "react-native-webview": "^13.13.5"
+    "react-native-webview": "^13.13.5",
+    "react-native-webrtc": "^124.0.5",
+    "web-streams-polyfill": "^3.3.3"
   },
   "devDependencies": {
     "@babel/plugin-transform-export-namespace-from": "^7.25.0",

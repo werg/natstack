@@ -23,6 +23,12 @@ import {
   type RpcStreamRequest,
 } from "@natstack/rpc";
 import { createWsServerTransport, type WsServerTransportInternal } from "./wsServerTransport.js";
+import {
+  decodeControlFrame,
+  encodeControlFrame,
+  type SessionControlFrame,
+} from "@natstack/rpc/protocol/sessionNegotiation";
+import { SessionWebSocketShim, type PipeChannels } from "./webrtcSessionShim.js";
 import type { WsClientMessage, WsServerMessage } from "@natstack/shared/ws/protocol";
 import type { ToolExecutionResult } from "@natstack/shared/types";
 import { createDevLogger } from "@natstack/dev-log";
@@ -466,6 +472,23 @@ export class RpcServer {
       sessionInboxCapacity?: SessionRegistryOptions["inboxCapacity"];
       sessionTtlMs?: SessionRegistryOptions["ttlMs"];
       runtimeCoordinator?: PanelRuntimeCoordinator;
+      /**
+       * Optional: redeem a device-pairing credential presented as a session
+       * token — a QR pairing `code` (fresh device) or `refresh:<deviceId>:<token>`
+       * (returning device) — into a shell principal. This is the over-the-pipe
+       * equivalent of the loopback HTTP `/complete-pairing` + `/refresh-shell`
+       * endpoints (which a remote WebRTC client cannot reach). A freshly issued
+       * device credential is returned so the auth-result hands it back to the
+       * client to persist for reconnects. Returns null if the token is neither.
+       */
+      redeemPairingCredential?: (
+        token: string,
+        ctx: { clientLabel?: string; clientPlatform?: ClientPlatform }
+      ) => {
+        callerId: string;
+        callerKind: CallerKind;
+        deviceCredential?: { deviceId: string; refreshToken: string };
+      } | null;
     }
   ) {
     this.dispatcher = deps.dispatcher;
@@ -697,6 +720,7 @@ export class RpcServer {
 
     const grant = this.deps.connectionGrants?.redeem(token);
     let entry: { callerId: string; callerKind: CallerKind } | null;
+    let deviceCredential: { deviceId: string; refreshToken: string } | undefined;
     try {
       entry = grant
         ? {
@@ -706,6 +730,18 @@ export class RpcServer {
         : this.deps.tokenManager.validateToken(token);
     } catch {
       entry = null;
+    }
+    if (!entry) {
+      // A fresh device (pairing code) or a returning one (refresh credential)
+      // bootstraps its shell session over the pipe with no pre-issued bearer
+      // token. The refresh secret only exists at completePairing time (the store
+      // keeps just its hash), so a freshly issued device credential rides back on
+      // the auth-result for the client to persist for reconnects.
+      const paired = this.deps.redeemPairingCredential?.(token, { clientLabel, clientPlatform });
+      if (paired) {
+        entry = { callerId: paired.callerId, callerKind: paired.callerKind };
+        deviceCredential = paired.deviceCredential;
+      }
     }
     if (!entry) {
       const msg: WsServerMessage = {
@@ -817,6 +853,7 @@ export class RpcServer {
       connectionId,
       serverBootId: this.bootId,
       sessionDirty,
+      ...(deviceCredential ? { deviceCredential } : {}),
     };
     ws.send(JSON.stringify(authResult));
 
@@ -1157,7 +1194,9 @@ export class RpcServer {
                 requestId,
                 result,
               }
-            ).catch((sendErr) => this.sendRouteError(client, targetId, message, sendErr));
+            ).catch((sendErr) => {
+              this.sendRouteError(client, targetId, message, sendErr);
+            });
           },
           (err) => {
             const errorCode = getErrorCode(err);
@@ -2819,6 +2858,106 @@ export class RpcServer {
   /** Accept a pre-upgraded WebSocket from the gateway (no WSS needed on our side). */
   handleGatewayWsConnection(ws: WebSocket): void {
     this.handleConnection(ws);
+  }
+
+  /**
+   * Attach the answerer side of a WebRTC pipe (plan §1/§3). N logical panel/shell
+   * sessions multiplex over the pipe's control channel; each `open` frame stands
+   * up a per-session `SessionWebSocketShim` that drives the EXISTING per-connection
+   * machinery (handleConnection → handleAuth → per-session bridge with close-time
+   * `CONNECTION_LOST` synthesis). Streaming bodies ride the binary bulk channel.
+   * This reuses one server RPC implementation — the answerer is a translation
+   * layer, not a parallel server (fail-loud rule). Local co-located mode keeps the
+   * loopback WS via `handleGatewayWsConnection`; both feed the same dispatch.
+   */
+  attachWebRtcPipe(
+    pipe: PipeChannels & {
+      onControl(handler: (data: Uint8Array) => void): void;
+      onDown?(handler: (reason: string) => void): () => void;
+    }
+  ): void {
+    const decoder = new TextDecoder();
+    const encoder = new TextEncoder();
+    const shims = new Map<string, SessionWebSocketShim>();
+
+    pipe.onDown?.((reason) => {
+      for (const [sid, shim] of [...shims]) {
+        shims.delete(sid);
+        shim.remoteClosed(1006, reason || "WebRTC pipe down");
+      }
+    });
+
+    pipe.onControl((data) => {
+      let frame: SessionControlFrame;
+      try {
+        frame = decodeControlFrame(decoder.decode(data));
+      } catch (err) {
+        log.warn(`WebRTC pipe: dropping malformed control frame: ${(err as Error).message}`);
+        return;
+      }
+      switch (frame.t) {
+        case "ping":
+          pipe.writeControl(encoder.encode(encodeControlFrame({ t: "pong", ts: frame.ts })));
+          return;
+        case "open": {
+          // A re-sent SESSION_OPEN on reconnect means the prior pipe generation's
+          // shim is stale (its connection is gone, but the answerer pipe + this
+          // closure survive the ICE re-establish). Tear it down — firing the old
+          // connection's handleClose WITHOUT writing SESSION_CLOSED to the client
+          // (it is re-opening, not closing), and GC'ing the old shim's per-session
+          // stream maps — so the re-sent auth drives a FRESH handleConnection →
+          // handleAuth that emits a new open-result. Reusing the stale shim would
+          // route the auth into the live handleMessage, which IGNORES a duplicate
+          // ws:auth (rpcServer ~"ws:auth" case), so reopen()/ready() would hang
+          // forever and onRecovery (resubscribe / cold-recover) would never fire.
+          const stale = shims.get(frame.sid);
+          if (stale) stale.remoteClosed(4000, "superseded by re-open");
+          const shim = new SessionWebSocketShim(frame.sid, pipe, (sid) => shims.delete(sid));
+          shims.set(frame.sid, shim);
+          // Drive the full auth/session/bridge pipeline for this logical session.
+          this.handleConnection(shim as unknown as WebSocket);
+          shim.deliverInbound({
+            type: "ws:auth",
+            token: frame.token,
+            connectionId: frame.connectionId,
+            clientLabel: frame.clientLabel,
+            clientSessionId: frame.clientSessionId,
+            clientPlatform: frame.clientPlatform,
+          });
+          return;
+        }
+        case "rpc":
+          shims.get(frame.sid)?.deliverInbound({ type: "ws:rpc", envelope: frame.envelope });
+          return;
+        case "route":
+          shims.get(frame.sid)?.deliverInbound({
+            type: "ws:route",
+            envelope: frame.envelope,
+            targetConnectionId: frame.targetConnectionId,
+          });
+          return;
+        case "stream-open": {
+          const shim = shims.get(frame.sid);
+          if (!shim) return;
+          const requestId = (frame.envelope.message as { requestId?: string }).requestId;
+          if (requestId) shim.registerStream(requestId, frame.streamId);
+          shim.deliverInbound({ type: "ws:rpc", envelope: frame.envelope });
+          return;
+        }
+        case "stream-cancel":
+          shims.get(frame.sid)?.cancelStream(frame.streamId);
+          return;
+        case "close": {
+          const shim = shims.get(frame.sid);
+          shims.delete(frame.sid);
+          shim?.remoteClosed(frame.code, frame.reason);
+          return;
+        }
+        default:
+          // open-result/closed/routed/event/pong/*-error are client-bound.
+          return;
+      }
+    });
   }
 
   /** Handle an HTTP POST /rpc from the gateway (in-process dispatch). */

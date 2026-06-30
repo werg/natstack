@@ -29,8 +29,6 @@ describe("native-held mobile credentials", () => {
     nativeHost.clearCredentials.mockReset().mockResolvedValue(undefined);
     nativeHost.resetToNativeBootstrap.mockReset().mockResolvedValue({ reloading: true });
     nativeHost.pairServer.mockReset().mockResolvedValue({
-      serverUrl: "https://server.example",
-      hubUrl: "https://server.example",
       deviceId: "dev_123",
       serverId: "srv_123",
     });
@@ -38,8 +36,6 @@ describe("native-held mobile credentials", () => {
       workspaces: [{ name: "dev", lastOpened: 123, running: true }],
     });
     nativeHost.selectWorkspace.mockReset().mockResolvedValue({
-      serverUrl: "https://server.example/_workspace/dev",
-      hubUrl: "https://server.example",
       workspaceName: "dev",
       deviceId: "dev_123",
       callerId: "shell:dev_123",
@@ -48,8 +44,6 @@ describe("native-held mobile credentials", () => {
       workspaceId: "workspace_123",
     });
     nativeHost.getCredentials.mockReset().mockResolvedValue({
-      serverUrl: "https://server.example/_workspace/dev",
-      hubUrl: "https://server.example",
       workspaceName: "dev",
       deviceId: "dev_123",
       serverId: "srv_123",
@@ -79,8 +73,6 @@ describe("native-held mobile credentials", () => {
 
   it("loads only non-secret credential metadata from native storage", async () => {
     await expect(getCredentials()).resolves.toEqual({
-      serverUrl: "https://server.example/_workspace/dev",
-      hubUrl: "https://server.example",
       workspaceName: "dev",
       deviceId: "dev_123",
       serverId: "srv_123",
@@ -91,22 +83,20 @@ describe("native-held mobile credentials", () => {
   it("pairs a server inside the native host without selecting a workspace", async () => {
     await expect(pairServer("https://server.example", "pairing-code")).resolves.toMatchObject({
       deviceId: "dev_123",
-      hubUrl: "https://server.example",
+      serverId: "srv_123",
     });
     expect(nativeHost.pairServer).toHaveBeenCalledWith("https://server.example", "pairing-code");
   });
 
-  it("accepts hub-only credentials while workspace choice is pending", async () => {
+  it("accepts identity-only credentials before a workspace is selected", async () => {
     nativeHost.getCredentials.mockResolvedValueOnce({
-      serverUrl: "https://server.example",
-      hubUrl: "https://server.example",
       deviceId: "dev_123",
       serverId: "srv_123",
     });
 
     await expect(getCredentials()).resolves.toMatchObject({
-      serverUrl: "https://server.example",
-      hubUrl: "https://server.example",
+      deviceId: "dev_123",
+      serverId: "srv_123",
     });
   });
 
@@ -118,8 +108,6 @@ describe("native-held mobile credentials", () => {
 
   it("passes an explicit selected app source while selecting a workspace", async () => {
     nativeHost.selectWorkspace.mockResolvedValueOnce({
-      serverUrl: "https://server.example/_workspace/dev",
-      hubUrl: "https://server.example",
       workspaceName: "dev",
       deviceId: "dev_123",
       callerId: "shell:dev_123",
@@ -172,7 +160,6 @@ describe("native-held mobile credentials", () => {
 
   it("rejects native workspace selection responses without a mobile host principal grant", async () => {
     nativeHost.selectWorkspace.mockResolvedValueOnce({
-      serverUrl: "https://server.example/_workspace/dev",
       deviceId: "dev_123",
       callerId: "app:other-app:dev_123",
       connectionGrant: "grant_123",

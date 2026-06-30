@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
-import * as https from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -8,13 +7,10 @@ import { randomBytes } from "node:crypto";
 import type { Duplex } from "node:stream";
 import { getCentralConfigPaths } from "@natstack/shared/workspace/loader";
 import { CentralDataManager } from "@natstack/shared/centralData";
+import { getWorkspaceDir } from "@natstack/env-paths";
 import { TokenManager, constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import { resolveHostConfig } from "@natstack/shared/hostConfig";
-import {
-  createConnectDeepLink,
-  selectedWorkspaceUrl,
-  WORKSPACE_ROUTE_PREFIX,
-} from "@natstack/shared/connect";
+import { selectedWorkspaceUrl, WORKSPACE_ROUTE_PREFIX } from "@natstack/shared/connect";
 import {
   getAdminTokenPath,
   loadPersistedAdminToken,
@@ -36,15 +32,9 @@ export interface HubServerArgs {
   panelPort?: number;
   host?: string;
   bindHost?: string;
-  protocol?: "http" | "https";
-  tlsCert?: string;
-  tlsKey?: string;
   printCredentials?: boolean;
-  publicUrl?: string;
-  requirePublicUrl?: boolean;
   requireMobileReady?: boolean;
   requireElectronReady?: boolean;
-  noVpnDetect?: boolean;
   headlessHostAutospawn?: boolean;
 }
 
@@ -182,6 +172,13 @@ function listHubWorkspaces(state: HubRuntimeState): Array<Record<string, unknown
       lastOpened: entry.lastOpened,
       running: isRuntimeRunning(state, entry.name),
     }));
+  if (!state.args.ephemeral && entries.length === 0) {
+    entries.push({
+      name: "default",
+      lastOpened: 0,
+      running: isRuntimeRunning(state, "default"),
+    });
+  }
   if (state.args.ephemeral && !entries.some((entry) => entry["name"] === "dev")) {
     entries.unshift({
       name: "dev",
@@ -196,6 +193,10 @@ function listHubWorkspaces(state: HubRuntimeState): Array<Record<string, unknown
 function isRuntimeRunning(state: HubRuntimeState, name: string): boolean {
   const runtime = state.runtimes.get(name);
   return !!runtime && "child" in runtime && runtime.child.exitCode === null;
+}
+
+function workspaceConfigExists(name: string): boolean {
+  return fs.existsSync(path.join(getWorkspaceDir(name), "source", "meta/natstack.yml"));
 }
 
 function normalizeWorkspaceName(raw: unknown): string {
@@ -312,12 +313,14 @@ async function handleAuthRoute(
       const ttlMs = typeof body["ttlMs"] === "number" ? body["ttlMs"] : DEFAULT_PAIRING_CODE_TTL_MS;
       const code = state.deviceAuthStore.createPairingCode(ttlMs);
       const info = connectionInfo(state);
+      // No `deepLink`: the pairing deep link is now the WebRTC QR (room+fp+sig),
+      // minted by the answerer (TODO(webrtc-answerer)). The pairing `code` below
+      // still authorizes the principal after the DTLS pin verifies.
       sendJson(res, 200, {
         ...info,
         code,
         expiresInMs: ttlMs,
         expiresAt: Date.now() + ttlMs,
-        deepLink: createConnectDeepLink(state.connectUrl, code),
       });
       return;
     }
@@ -422,13 +425,14 @@ async function handleRpc(
       const opts = asRecord(args[0]) ?? {};
       const ttlMs = typeof opts["ttlMs"] === "number" ? opts["ttlMs"] : DEFAULT_PAIRING_CODE_TTL_MS;
       const code = state.deviceAuthStore.createPairingCode(ttlMs);
+      // No `deepLink`: pairing is the WebRTC QR (room+fp+sig) minted by the
+      // answerer (TODO(webrtc-answerer)); the `code` authorizes the principal.
       sendJson(res, 200, {
         result: {
           ...connectionInfo(state),
           code,
           expiresInMs: ttlMs,
           expiresAt: Date.now() + ttlMs,
-          deepLink: createConnectDeepLink(state.connectUrl, code),
         },
       });
       return;
@@ -624,6 +628,10 @@ async function startWorkspaceRuntime(
   advertisedName: string
 ): Promise<WorkspaceRuntime> {
   const isEphemeralDevWorkspace = state.args.ephemeral && advertisedName === "dev";
+  const shouldAutoApproveDefaultStartup =
+    advertisedName === "default" &&
+    !state.centralData.hasWorkspace("default") &&
+    !workspaceConfigExists("default");
   const childWorkspaceName = isEphemeralDevWorkspace
     ? `dev-${randomBytes(4).toString("hex")}`
     : advertisedName;
@@ -644,35 +652,43 @@ async function startWorkspaceRuntime(
     "127.0.0.1",
     "--protocol",
     "http",
-    "--public-url",
-    publicUrl,
     "--serve-panels",
     "--init",
-    "--no-vpn-detect",
   ];
   if (state.args.logLevel) childArgs.push("--log-level", state.args.logLevel);
   if (state.args.requireMobileReady) childArgs.push("--require-mobile-ready");
   if (state.args.requireElectronReady) childArgs.push("--require-electron-ready");
 
+  const childEnv: NodeJS.ProcessEnv = {
+    ...process.env,
+    NATSTACK_APP_ROOT: state.appRoot,
+    NATSTACK_HOST: "127.0.0.1",
+    NATSTACK_BIND_HOST: "127.0.0.1",
+    NATSTACK_PROTOCOL: "http",
+    NATSTACK_NO_VPN_DETECT: "1",
+    NATSTACK_WORKSPACE: childWorkspaceName,
+    NATSTACK_AUTH_STORE_PATH: state.authStorePath,
+    NATSTACK_DISABLE_STARTUP_PAIRING: "1",
+    NATSTACK_FORCE_WORKSPACE_SERVER: "1",
+    NATSTACK_HUB_URL: state.connectUrl,
+  };
+  delete childEnv["NATSTACK_GATEWAY_PORT"];
+  delete childEnv["NATSTACK_WORKSPACE_DIR"];
+  delete childEnv["NATSTACK_REQUIRE_PUBLIC_URL"];
+  if (isEphemeralDevWorkspace) {
+    childEnv["NATSTACK_WORKSPACE_EPHEMERAL"] = "1";
+  } else {
+    delete childEnv["NATSTACK_WORKSPACE_EPHEMERAL"];
+  }
+  if (shouldAutoApproveDefaultStartup) {
+    childEnv["NATSTACK_AUTO_APPROVE_STARTUP_UNITS"] = "1";
+  } else {
+    delete childEnv["NATSTACK_AUTO_APPROVE_STARTUP_UNITS"];
+  }
+
   const child = spawn(process.execPath, [...process.execArgv, ...childArgs], {
     cwd: state.appRoot,
-    env: {
-      ...process.env,
-      NATSTACK_APP_ROOT: state.appRoot,
-      NATSTACK_HOST: "127.0.0.1",
-      NATSTACK_BIND_HOST: "127.0.0.1",
-      NATSTACK_PROTOCOL: "http",
-      NATSTACK_GATEWAY_PORT: undefined,
-      NATSTACK_NO_VPN_DETECT: "1",
-      NATSTACK_REQUIRE_PUBLIC_URL: undefined,
-      NATSTACK_WORKSPACE: childWorkspaceName,
-      NATSTACK_WORKSPACE_DIR: undefined,
-      NATSTACK_AUTH_STORE_PATH: state.authStorePath,
-      NATSTACK_DISABLE_STARTUP_PAIRING: "1",
-      NATSTACK_FORCE_WORKSPACE_SERVER: "1",
-      NATSTACK_HUB_URL: state.connectUrl,
-      ...(isEphemeralDevWorkspace ? { NATSTACK_WORKSPACE_EPHEMERAL: "1" } : {}),
-    },
+    env: childEnv,
     stdio: ["ignore", "pipe", "pipe"],
   });
 
@@ -722,39 +738,6 @@ async function waitForReadyFile(
   throw new Error(`Timed out waiting for workspace runtime readiness: ${readyFile}`);
 }
 
-async function resolvePublicUrl(
-  args: HubServerArgs,
-  protocol: "http" | "https",
-  externalHost: string,
-  gatewayPort: number
-): Promise<{ publicUrl: string | null; publicUrlVerified: boolean }> {
-  const explicit = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
-  if (explicit) return { publicUrl: explicit.replace(/\/$/, ""), publicUrlVerified: true };
-  if (args.noVpnDetect || process.env["NATSTACK_NO_VPN_DETECT"] === "1") {
-    return { publicUrl: null, publicUrlVerified: false };
-  }
-  try {
-    const { detectVpnPublicUrl } = await import("./vpnDetect.js");
-    const detected = await detectVpnPublicUrl().catch(() => null);
-    if (!detected) return { publicUrl: null, publicUrlVerified: false };
-    const { probeHttpsReachable, ensureHttpsServe } = await import("./tailscaleServe.js");
-    let reachable = await probeHttpsReachable(detected.url).catch(() => ({ ok: false }));
-    if (!reachable.ok && detected.vendor === "tailscale") {
-      const provision = await ensureHttpsServe({ port: gatewayPort, hostname: detected.hostname });
-      if (provision.kind === "configured" || provision.kind === "already-configured") {
-        reachable = await probeHttpsReachable(detected.url).catch(() => ({ ok: false }));
-      }
-    }
-    return {
-      publicUrl: detected.url.replace(/\/$/, ""),
-      publicUrlVerified: reachable.ok === true,
-    };
-  } catch (error) {
-    console.warn("[Hub] VPN public URL detection failed:", error);
-    return { publicUrl: null, publicUrlVerified: false };
-  }
-}
-
 function resolveAdminToken(): { adminToken: string; tokenSource: HubRuntimeState["tokenSource"] } {
   const envToken = process.env["NATSTACK_ADMIN_TOKEN"];
   if (envToken) return { adminToken: envToken, tokenSource: "env" };
@@ -790,9 +773,6 @@ export async function runHubServer(input: { args: HubServerArgs; appRoot: string
     gatewayPort: requestedGatewayPort ?? 0,
     host: args.host,
     bindHost: args.bindHost,
-    protocol: args.protocol,
-    tlsCert: args.tlsCert,
-    tlsKey: args.tlsKey,
   });
 
   let state: HubRuntimeState | null = null;
@@ -839,16 +819,8 @@ export async function runHubServer(input: { args: HubServerArgs; appRoot: string
     });
   };
 
-  const server =
-    hostConfig.tlsCert && hostConfig.tlsKey
-      ? https.createServer(
-          {
-            cert: fs.readFileSync(hostConfig.tlsCert),
-            key: fs.readFileSync(hostConfig.tlsKey),
-          },
-          requestHandler
-        )
-      : http.createServer(requestHandler);
+  // Loopback HTTP only — the public/TLS ingress is decommissioned.
+  const server = http.createServer(requestHandler);
 
   server.on("upgrade", (req, socket, head) => {
     if (!state) {
@@ -874,17 +846,10 @@ export async function runHubServer(input: { args: HubServerArgs; appRoot: string
     });
   });
 
-  const { publicUrl, publicUrlVerified } = await resolvePublicUrl(
-    args,
-    hostConfig.protocol,
-    hostConfig.externalHost,
-    gatewayPort
-  );
-  if ((args.requirePublicUrl || process.env["NATSTACK_REQUIRE_PUBLIC_URL"] === "1") && !publicUrl) {
-    throw new Error("A public URL is required, but no VPN/public URL was detected");
-  }
+  // No public ingress: the hub is loopback HTTP only. connectUrl is the loopback
+  // gateway URL; remote reach is the per-workspace WebRTC pipe (answerer seam).
   const gatewayUrl = `${hostConfig.protocol}://${hostConfig.externalHost}:${gatewayPort}`;
-  const connectUrl = (publicUrl ?? gatewayUrl).replace(/\/$/, "");
+  const connectUrl = gatewayUrl.replace(/\/$/, "");
   state = {
     appRoot,
     args,
@@ -898,7 +863,7 @@ export async function runHubServer(input: { args: HubServerArgs; appRoot: string
     protocol: hostConfig.protocol,
     externalHost: hostConfig.externalHost,
     bindHost: hostConfig.bindHost,
-    publicUrl,
+    publicUrl: null,
     connectUrl,
     authStorePath,
     startupPairingCode,
@@ -908,23 +873,18 @@ export async function runHubServer(input: { args: HubServerArgs; appRoot: string
   };
 
   console.log("natstack-server hub ready:");
-  console.log(`  Gateway:     ${gatewayUrl}`);
-  if (publicUrl) {
-    console.log(
-      `  Public URL:  ${publicUrl} (${publicUrlVerified ? "verified reachable" : "not yet reachable"})`
-    );
-    if (publicUrlVerified) console.log(`  Mobile URL:  ${publicUrl}`);
-  }
+  console.log(`  Gateway:     ${gatewayUrl} (loopback)`);
   console.log(`  Token file:  ${getAdminTokenPath()}${tokenSource === "env" ? " (env)" : ""}`);
   console.log(`  Pairing code: ${startupPairingCode}`);
   console.log(`  QR pairing code: ${startupQrPairingCode}`);
-  console.log(`  Pair URL:     ${createConnectDeepLink(connectUrl, startupPairingCode)}`);
+  // No Pair URL: pairing is the WebRTC QR (room+fp+sig) minted by the answerer
+  // (TODO(webrtc-answerer)); the pairing codes above authorize the principal.
 
   if (args.readyFile) {
     const payload = {
       mode: "hub",
       gatewayUrl,
-      publicUrl,
+      publicUrl: null,
       connectUrl,
       adminToken,
       pairingCode: startupPairingCode,

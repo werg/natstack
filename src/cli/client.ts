@@ -5,7 +5,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { discoverNatstackServers } from "@natstack/shared/tailscaleDiscovery";
 import { appendServerPath, isSelectedWorkspaceUrl } from "@natstack/shared/connect";
 import {
   clearCliCredentials,
@@ -375,7 +374,7 @@ function scriptCommand(
 const remoteCommands: CliCommand[] = [
   scriptCommand("remote", "serve", "remote-serve.mjs", "Start a QR/deep-link pairing server", {
     aliases: ["server"],
-    usage: "natstack remote serve [--host tailscale] [--port 3030]",
+    usage: "natstack remote serve [--port 3030]",
     // The pair server's own help documents the resolved server entry.
     passthroughHelp: true,
   }),
@@ -458,24 +457,6 @@ const remoteCommands: CliCommand[] = [
       const json = jsonMode(inv.flags["json"] === true);
       clearCliCredentials();
       printResult({ loggedOut: true }, { json, human: () => console.log("logged out") });
-      return 0;
-    },
-  },
-  {
-    group: "remote",
-    name: "discover",
-    summary: "Print NatStack servers discovered on the tailnet",
-    usage: "natstack remote discover",
-    flags: [JSON_FLAG],
-    run: async (inv) => {
-      const json = jsonMode(inv.flags["json"] === true);
-      const servers = await discoverNatstackServers();
-      printResult(servers, {
-        json,
-        human: () => {
-          for (const server of servers) console.log(server.url);
-        },
-      });
       return 0;
     },
   },
@@ -637,7 +618,7 @@ async function remoteHost(inv: ParsedInvocation): Promise<number> {
 
 const mobileCommands: CliCommand[] = [
   scriptCommand("mobile", "pair", "mobile-pair.mjs", "Start the QR/deep-link pairing server", {
-    usage: "natstack mobile pair [--host tailscale] [--port 3030]",
+    usage: "natstack mobile pair [--port 3030]",
     // The pair server's own help documents the resolved server entry.
     passthroughHelp: true,
   }),

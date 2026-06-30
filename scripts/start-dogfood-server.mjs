@@ -272,19 +272,13 @@ export function createDogfoodPairHooks({ workspaceName }) {
         host,
         "--gateway-port",
         String(options.port),
-        "--protocol",
-        options.protocol,
         "--serve-panels",
         "--print-credentials",
         ...(options.appRoot ? ["--app-root", options.appRoot] : []),
-        ...(options.publicUrl ? ["--public-url", options.publicUrl] : []),
-        ...(options.requirePublicUrl || options.host === "tailscale"
-          ? ["--require-public-url"]
-          : []),
       ];
     },
     buildEnv(baseEnv, { options, selectedHost }) {
-      const dogfoodGatewayAlias = `${options.protocol}://${selectedHost.address}:${options.port}`;
+      const dogfoodGatewayAlias = `http://${selectedHost.address}:${options.port}`;
       return {
         ...baseEnv,
         NATSTACK_DOGFOOD: "1",
@@ -338,22 +332,17 @@ export function runDogfoodServer(argv = process.argv.slice(2)) {
   const config = {
     commandName: "dogfood-server",
     logPrefix: "dogfood",
-    hostEnv: ["NATSTACK_DOGFOOD_HOST", "NATSTACK_PAIR_HOST", "NATSTACK_MOBILE_HOST"],
     portEnv: ["NATSTACK_DOGFOOD_PORT", "NATSTACK_GATEWAY_PORT", "NATSTACK_PAIR_PORT"],
     devEnv: "NATSTACK_DOGFOOD_DEV",
     restartCommand: "pnpm dev:self:server",
-    usage: [
-      "pnpm dev:self:server",
-      "pnpm dev:self:server --host tailscale --port 3030",
-    ],
+    usage: ["pnpm dev:self:server", "pnpm dev:self:server --port 3030"],
     startupHint:
       "[dogfood] Self-update mirroring is unsupported under GAD VCS; workspace edits stay in the managed workspace.",
     additionalHelp:
       "Dogfood mode always uses a persistent managed workspace. Set NATSTACK_DOGFOOD_WORKSPACE to change the seeded workspace name.",
     bannerTitle: "NatStack dogfood server",
     deepLinkLabel: "Pair URL",
-    clientCommandLabel: "Client command",
-    instructions: "Scan the QR for mobile pairing, or run the client command above.",
+    instructions: "Scan the QR or open the Pair URL above to pair a client over WebRTC.",
   };
   if (argv.includes("--help")) {
     printPairHelp(config);

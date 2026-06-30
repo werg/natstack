@@ -4,27 +4,22 @@ This is the current human-facing plan for the URL-bound credential work. It
 intentionally does not revive provider manifests, default credentials, legacy
 consent, or non-interactive deployment flows.
 
-## Default mobile OAuth path: per-server public URL
+## Default mobile OAuth path: the callback relay
 
-For personal-server NatStack installations, the default mobile OAuth path is
-**direct to the server's own public URL** — no shared hosted relay required.
-The operator configures Tailscale Serve once on the server with
-`sudo tailscale serve --bg <gateway-port>`. The server then auto-detects the
-Tailscale MagicDNS hostname, verifies that HTTPS reaches the local gateway, and
-uses the resulting
-`https://<host>.<tailnet>.ts.net/_r/s/credentials/oauth/callback` as the
-redirect URI. Each user registers that URL with their own OAuth provider
-clients (in their own Google / GitHub / etc developer console).
+The server binds loopback only and remote clients reach it over WebRTC, so there
+is no per-server public URL for OAuth providers to redirect to. Provider redirect
+URIs that need a public HTTPS endpoint resolve through the **callback relay**
+(`apps/webhook-relay`, plan §7): the relay owns a stable public origin
+(`NATSTACK_RELAY_OAUTH_BASE_URL`), receives the provider's redirect, and backhauls
+the authorization code to the originating loopback server over its pipe. Each user
+registers the relay's `…/oauth/callback` URL with their own OAuth provider clients
+(in their own Google / GitHub / etc developer console).
 
-> **Prerequisite for mobile OAuth:** Tailscale Serve must be enabled on the
-> tailnet and `sudo tailscale serve --bg <gateway-port>` must have succeeded
-> on the server. If it isn't ready, `--host tailscale` fails fast instead of
-> advertising a fallback pairing URL.
-> See [mobile-vpn.md → If the readiness banner says ACTION NEEDED](./mobile-vpn.md#if-the-readiness-banner-says-action-needed).
+There is no Tailscale Serve / MagicDNS / `--host tailscale` step anymore — that
+HTTPS-ingress path was decommissioned with remote-mode public ingress.
 
 The bootstrap and registration flow is described in
-[../docs/remote-server.md](./remote-server.md#oauth-in-remote-mode) and
-[../docs/mobile-vpn.md](./mobile-vpn.md#auto-detected-tailscale-path-recommended).
+[webrtc-rpc-transport.md](./webrtc-rpc-transport.md) (§7 callback relay).
 
 The `auth.snugenv.com` shared universal-link relay below is an alternative
 path — useful only if you want one redirect URI shared across many natstack

@@ -5,15 +5,10 @@ import * as path from "node:path";
 import { createConnectDeepLink } from "@natstack/shared/connect";
 import { clearShellTokenCache } from "./rpcClient.js";
 
-const mocks = vi.hoisted(() => ({
-  discoverNatstackServers: vi.fn(
-    async (): Promise<Array<{ url: string; hostname: string; discoveryVersion: number }>> => []
-  ),
-}));
-
-vi.mock("@natstack/shared/tailscaleDiscovery", () => ({
-  discoverNatstackServers: mocks.discoverNatstackServers,
-}));
+const FP = "AA".repeat(32);
+function pairing(code: string) {
+  return { room: "room-1111-2222", fp: FP, code, sig: "wss://signal.example/" };
+}
 
 function rpcResult(result: unknown): string {
   return JSON.stringify({
@@ -50,8 +45,6 @@ describe("natstack CLI", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-cli-"));
     vi.stubEnv("HOME", tmpDir);
     clearShellTokenCache();
-    mocks.discoverNatstackServers.mockReset();
-    mocks.discoverNatstackServers.mockResolvedValue([]);
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "error").mockImplementation(() => {});
   });
@@ -63,7 +56,7 @@ describe("natstack CLI", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("pairs from a natstack link and writes a 0600 device credential file", async () => {
+  it("pairs from --url/--code and writes a 0600 device credential file", async () => {
     const bodies: unknown[] = [];
     vi.stubGlobal(
       "fetch",
@@ -77,7 +70,10 @@ describe("natstack CLI", () => {
     const code = await main([
       "remote",
       "pair",
-      createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24)),
+      "--url",
+      "https://host.tailnet.ts.net",
+      "--code",
+      "A".repeat(24),
     ]);
 
     expect(code).toBe(0);
@@ -100,6 +96,18 @@ describe("natstack CLI", () => {
     if (process.platform !== "win32") {
       expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
     }
+  });
+
+  it("rejects a natstack://connect link for CLI pairing (WebRTC links are app-only)", async () => {
+    const { main } = await import("./client.js");
+    await expect(
+      main(["remote", "pair", createConnectDeepLink(pairing("A".repeat(24)))])
+    ).resolves.toBe(1);
+    const output = vi
+      .mocked(console.error)
+      .mock.calls.map((call) => String(call[0]))
+      .join("\n");
+    expect(output).toContain("--url");
   });
 
   it("tightens an existing CLI credential file to 0600 when pairing", async () => {
@@ -139,29 +147,6 @@ describe("natstack CLI", () => {
     const { main } = await import("./client.js");
     await expect(main(["remote", "logout"])).resolves.toBe(0);
     expect(fs.existsSync(filePath)).toBe(false);
-  });
-
-  it("prints discovered NatStack server URLs", async () => {
-    mocks.discoverNatstackServers.mockResolvedValue([
-      {
-        url: "https://host.tailnet.ts.net",
-        hostname: "host.tailnet.ts.net",
-        discoveryVersion: 1,
-      },
-    ]);
-
-    const log = vi.mocked(console.log);
-    const { main } = await import("./client.js");
-    await expect(main(["remote", "discover", "--json"])).resolves.toBe(0);
-
-    const output = log.mock.calls.map((call) => String(call[0])).join("\n");
-    expect(JSON.parse(output)).toEqual([
-      {
-        url: "https://host.tailnet.ts.net",
-        hostname: "host.tailnet.ts.net",
-        discoveryVersion: 1,
-      },
-    ]);
   });
 
   it("shows the unified CLI groups in top-level help", async () => {
@@ -328,8 +313,7 @@ describe("natstack CLI", () => {
         return new Response(
           rpcResult({
             code: "A".repeat(24),
-            deepLink: createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24)),
-            connectUrl: "https://host.tailnet.ts.net",
+            deepLink: createConnectDeepLink(pairing("A".repeat(24))),
             serverUrl: "https://host.tailnet.ts.net",
             expiresAt: 123,
             expiresInMs: 60_000,
@@ -366,7 +350,7 @@ describe("natstack CLI", () => {
       .join("\n");
     expect(JSON.parse(output)).toMatchObject({
       code: "A".repeat(24),
-      deepLink: createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24)),
+      deepLink: createConnectDeepLink(pairing("A".repeat(24))),
     });
   });
 
@@ -495,8 +479,10 @@ describe("natstack CLI", () => {
     const code = await main([
       "terminal",
       "start",
-      "--pair",
-      createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24)),
+      "--url",
+      "https://host.tailnet.ts.net",
+      "--code",
+      "A".repeat(24),
       "--workspace",
       "dev",
       "--yes",
@@ -588,7 +574,10 @@ describe("natstack CLI", () => {
           return new Response(JSON.stringify({ shellToken: "shell_token" }));
         }
         return new Response(
-          rpcResult({ code: "A".repeat(24), connectUrl: "https://host.tailnet.ts.net" })
+          rpcResult({
+            code: "A".repeat(24),
+            deepLink: createConnectDeepLink(pairing("A".repeat(24))),
+          })
         );
       })
     );

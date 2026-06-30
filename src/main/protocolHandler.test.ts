@@ -16,8 +16,16 @@ const mocks = vi.hoisted(() => {
 
 vi.mock("electron", () => ({ app: mocks.app }));
 
+const FP = "AA".repeat(32);
+function pair(room: string, code: string) {
+  return { room, fp: FP, code, sig: "wss://signal.example/", v: 1, ice: "all" as const };
+}
+function expectedPairing(room: string, code: string) {
+  return { room, fp: FP, code, sig: "wss://signal.example/", v: 1, ice: "all", srv: undefined };
+}
+
 describe("protocolHandler", () => {
-  const link = createConnectDeepLink("https://host.tailnet.ts.net", "A".repeat(24));
+  const link = createConnectDeepLink(pair("room-1111-2222", "A".repeat(24)));
 
   beforeEach(() => {
     vi.resetModules();
@@ -31,10 +39,7 @@ describe("protocolHandler", () => {
     const mod = await import("./protocolHandler.js");
     mod.enqueueConnectLink(link);
 
-    expect(mod.getPendingConnectLink()).toEqual({
-      url: "https://host.tailnet.ts.net",
-      code: "A".repeat(24),
-    });
+    expect(mod.getPendingConnectLink()).toEqual(expectedPairing("room-1111-2222", "A".repeat(24)));
     expect(mod.getPendingConnectLink()).toBeNull();
   });
 
@@ -45,13 +50,10 @@ describe("protocolHandler", () => {
 
     mod.enqueueConnectLink(link);
     off();
-    mod.enqueueConnectLink(createConnectDeepLink("https://other.tailnet.ts.net", "B".repeat(24)));
+    mod.enqueueConnectLink(createConnectDeepLink(pair("room-3333-4444", "B".repeat(24))));
 
     expect(listener).toHaveBeenCalledTimes(1);
-    expect(listener).toHaveBeenCalledWith({
-      url: "https://host.tailnet.ts.net",
-      code: "A".repeat(24),
-    });
+    expect(listener).toHaveBeenCalledWith(expectedPairing("room-1111-2222", "A".repeat(24)));
   });
 
   it("captures macOS open-url and argv-borne second-instance links", async () => {
@@ -61,14 +63,11 @@ describe("protocolHandler", () => {
     const preventDefault = vi.fn();
     mocks.handlers.get("open-url")?.({ preventDefault }, link);
     expect(preventDefault).toHaveBeenCalled();
-    expect(mod.getPendingConnectLink()?.url).toBe("https://host.tailnet.ts.net");
+    expect(mod.getPendingConnectLink()?.room).toBe("room-1111-2222");
 
-    const secondLink = createConnectDeepLink("https://second.tailnet.ts.net", "C".repeat(24));
+    const secondLink = createConnectDeepLink(pair("room-5555-6666", "C".repeat(24)));
     mocks.handlers.get("second-instance")?.({}, ["--flag", secondLink]);
-    expect(mod.getPendingConnectLink()).toEqual({
-      url: "https://second.tailnet.ts.net",
-      code: "C".repeat(24),
-    });
+    expect(mod.getPendingConnectLink()).toEqual(expectedPairing("room-5555-6666", "C".repeat(24)));
   });
 
   it("registers packaged and development protocol handlers", async () => {

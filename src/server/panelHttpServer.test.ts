@@ -226,7 +226,6 @@ describe("PanelHttpServer build cache", () => {
     const server = new PanelHttpServer();
     const onBuildComplete = vi.fn();
     server.setCallbacks({
-      listPanels: vi.fn().mockReturnValue([]),
       onBuildComplete,
       getBuild: vi.fn(),
     });
@@ -240,7 +239,6 @@ describe("PanelHttpServer build cache", () => {
     server.setPort(1234);
     const getBuild = vi.fn(async () => buildResult);
     server.setCallbacks({
-      listPanels: vi.fn().mockReturnValue([]),
       onBuildComplete: vi.fn(),
       getBuild,
     });
@@ -257,7 +255,6 @@ describe("PanelHttpServer build cache", () => {
     const server = new PanelHttpServer();
     const getBuild = vi.fn(async () => buildResult);
     server.setCallbacks({
-      listPanels: vi.fn().mockReturnValue([]),
       onBuildComplete: vi.fn(),
       getBuild,
     });
@@ -277,7 +274,6 @@ describe("PanelHttpServer build cache", () => {
     server.setPort(1234);
     const getBuild = vi.fn(async () => buildResult);
     server.setCallbacks({
-      listPanels: vi.fn().mockReturnValue([]),
       onBuildComplete: vi.fn(),
       getBuild,
     });

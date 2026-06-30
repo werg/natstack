@@ -25,13 +25,13 @@
       "types": "./dist/protocol/streamCodec.d.ts",
       "default": "./dist/protocol/streamCodec.js"
     },
+    "./protocol/sessionNegotiation": {
+      "types": "./dist/protocol/sessionNegotiation.d.ts",
+      "default": "./dist/protocol/sessionNegotiation.js"
+    },
     "./transports/inProcess": {
       "types": "./dist/transports/inProcess.d.ts",
       "default": "./dist/transports/inProcess.js"
-    },
-    "./transports/compose": {
-      "types": "./dist/transports/compose.d.ts",
-      "default": "./dist/transports/compose.js"
     },
     "./transports/wsClient": {
       "types": "./dist/transports/wsClient.d.ts",
@@ -41,9 +41,37 @@
       "types": "./dist/transports/httpClient.d.ts",
       "default": "./dist/transports/httpClient.js"
     },
-    "./transports/electronIpc": {
-      "types": "./dist/transports/electronIpc.d.ts",
-      "default": "./dist/transports/electronIpc.js"
+    "./transports/webrtcClient": {
+      "types": "./dist/transports/webrtcClient.d.ts",
+      "default": "./dist/transports/webrtcClient.js"
+    },
+    "./transports/offererTransport": {
+      "types": "./dist/transports/offererTransport.d.ts",
+      "default": "./dist/transports/offererTransport.js"
+    },
+    "./transports/webrtcAnswerer": {
+      "types": "./dist/transports/webrtcAnswerer.d.ts",
+      "default": "./dist/transports/webrtcAnswerer.js"
+    },
+    "./transports/webrtcPeer": {
+      "types": "./dist/transports/webrtcPeer.d.ts",
+      "default": "./dist/transports/webrtcPeer.js"
+    },
+    "./transports/webrtcSignaling": {
+      "types": "./dist/transports/webrtcSignaling.d.ts",
+      "default": "./dist/transports/webrtcSignaling.js"
+    },
+    "./transports/webrtcSignalingClient": {
+      "types": "./dist/transports/webrtcSignalingClient.d.ts",
+      "default": "./dist/transports/webrtcSignalingClient.js"
+    },
+    "./transports/transportManager": {
+      "types": "./dist/transports/transportManager.d.ts",
+      "default": "./dist/transports/transportManager.js"
+    },
+    "./transports/serverSessionTransport": {
+      "types": "./dist/transports/serverSessionTransport.d.ts",
+      "default": "./dist/transports/serverSessionTransport.js"
     }
   },
   "files": [

@@ -137,6 +137,12 @@
       "writeFile": null
     }
   },
+  "gateway": {
+    "service": ["app", "panel", "shell"],
+    "methods": {
+      "fetch": null
+    }
+  },
   "gitInterop": {
     "service": ["app", "do", "extension", "panel", "server", "shell", "worker"],
     "methods": {

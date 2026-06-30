@@ -60,4 +60,53 @@ describe("createGatewayFetch", () => {
       expect(new URL(calls[0]!.url).origin).toBe("http://gw.test");
     });
   });
+
+  describe("panel tunnel (shell bridge)", () => {
+    function stubPanel(
+      stream = vi.fn((_envelope: unknown, _signal?: unknown) =>
+        Promise.resolve(new Response("tunneled")),
+      ),
+    ) {
+      vi.stubGlobal("__natstackShell", { stream });
+      vi.stubGlobal("__natstackEntityId", "panel:p1");
+      return stream;
+    }
+
+    it("tunnels over the bridge stream() instead of an authenticated HTTP fetch", async () => {
+      const calls = captureFetch();
+      const stream = stubPanel();
+      const gw = createGatewayFetch({ serverUrl: "http://gw.test", token: "T" });
+
+      const res = await gw("/some/route");
+
+      expect(await res.text()).toBe("tunneled");
+      // No direct HTTP request — the bearer never rides any wire.
+      expect(calls).toHaveLength(0);
+      expect(stream).toHaveBeenCalledTimes(1);
+      const envelope = stream.mock.calls[0]![0] as unknown as {
+        target: string;
+        delivery: { caller: unknown };
+        message: { type: string; method: string; args: Array<Record<string, unknown>> };
+      };
+      expect(envelope.target).toBe("main");
+      expect(envelope.delivery.caller).toEqual({ callerId: "panel:p1", callerKind: "panel" });
+      expect(envelope.message.type).toBe("stream-request");
+      expect(envelope.message.method).toBe("gateway.fetch");
+      expect(envelope.message.args[0]).toMatchObject({ path: "/some/route", method: "GET" });
+    });
+
+    it("keeps the relativeOnly guard before tunneling", async () => {
+      stubPanel();
+      const gw = createGatewayFetch({ serverUrl: "http://gw.test", token: "T", relativeOnly: true });
+      await expect(gw("https://evil.test/steal")).rejects.toThrow(/only gateway-relative/);
+    });
+
+    it("fails loud when the host has not wired stream()", async () => {
+      captureFetch();
+      vi.stubGlobal("__natstackShell", {}); // bridge present, stream() not wired
+      vi.stubGlobal("__natstackEntityId", "panel:p1");
+      const gw = createGatewayFetch({ serverUrl: "http://gw.test", token: "T" });
+      await expect(gw("/x")).rejects.toThrow(/stream\(\) is unavailable/);
+    });
+  });
 });

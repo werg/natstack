@@ -22,8 +22,6 @@ import type { AppCapability } from "@natstack/shared/unitManifest";
 import { createHash, randomBytes } from "crypto";
 import { canonicalEntityId, type EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import { createVerifiedCaller } from "@natstack/shared/serviceDispatcher";
-import { formatPairUrlLine } from "./pairingBanner.js";
-import { getPublicUrl, isPublicUrlVerified } from "./publicUrl.js";
 import { registerBuildProvider, unregisterBuildProvider } from "./buildV2/buildProviderRegistry.js";
 import { RuntimeDiagnosticsStore } from "./runtimeDiagnosticsStore.js";
 import { assertPresent, deleteDynamicProperty } from "../lintHelpers";
@@ -211,15 +209,9 @@ interface CliArgs {
   init?: boolean;
   host?: string;
   bindHost?: string;
-  protocol?: "http" | "https";
-  tlsCert?: string;
-  tlsKey?: string;
   printCredentials?: boolean;
-  publicUrl?: string;
-  requirePublicUrl?: boolean;
   requireMobileReady?: boolean;
   requireElectronReady?: boolean;
-  noVpnDetect?: boolean;
   headlessHostAutospawn?: boolean;
   help?: boolean;
 }
@@ -239,46 +231,24 @@ Options:
   --ephemeral              Use a disposable dev workspace (deleted on shutdown)
   --host <hostname>        External hostname (also sets bind to 0.0.0.0)
   --bind-host <addr>       Explicit bind address (default: 127.0.0.1, or 0.0.0.0 with --host)
-  --protocol <http|https>  Protocol for panel-facing URLs (default: http)
-  --tls-cert <path>        TLS certificate file (PEM). Enables HTTPS when used with --tls-key.
-  --tls-key <path>         TLS private key file (PEM). Required when --tls-cert is provided.
   --serve-panels           Enable panel HTTP serving
   --gateway-port <port>    Port for the gateway HTTP/WS ingress (default: auto-assigned)
   --panel-port <port>      Port for panel HTTP (default: auto-assigned)
   --log-level <level>      Log verbosity
   --print-credentials      Print NATSTACK_ADMIN_TOKEN and NATSTACK_PAIRING_CODE for scripting
-  --public-url <url>       Externally-reachable base URL (e.g. https://server.lan:3000).
-                           Used for OAuth redirect URIs, webhooks, and any route that
-                           needs to be reached from the user's browser. Falls back to
-                           constructing a URL from --protocol/--host/<gatewayPort>.
-                           When set, OAuth flows default to redirecting through this
-                           URL — register <public-url>/_r/s/credentials/oauth/callback
-                           with each OAuth provider as the allowed redirect URI.
-  --require-public-url     Fail startup unless the advertised public URL is verified reachable.
   --require-mobile-ready   Fail startup unless the workspace React Native app can be
                            built and served to native mobile clients.
   --require-electron-ready Fail startup unless the workspace Electron shell app can be
                            built and served to desktop clients.
-  --no-vpn-detect          Skip auto-detection and auto-configuration of the VPN-based
-                           public URL (Tailscale today). Useful if you manage
-                           tailscale serve yourself or use --public-url.
   --help                   Show this help message and exit
 
 Environment variables:
   NATSTACK_ADMIN_TOKEN     Use a stable admin token instead of generating a random one
   NATSTACK_HOST            External hostname (same as --host)
   NATSTACK_BIND_HOST       Explicit bind address (same as --bind-host)
-  NATSTACK_PROTOCOL        Protocol for panel URLs (same as --protocol)
   NATSTACK_GATEWAY_PORT    Gateway ingress port (same as --gateway-port)
   NATSTACK_APP_ROOT        Application root (same as --app-root)
   NATSTACK_LOG_LEVEL       Log verbosity (same as --log-level)
-  NATSTACK_PUBLIC_URL      External base URL (same as --public-url)
-
-Remote Electron connection:
-  Remote clients pair with the server hub, choose a workspace, then launch
-  against the selected workspace URL:
-    NATSTACK_REMOTE_URL=https://<host>:<gateway-port>/_workspace/<name>
-    NATSTACK_REMOTE_TOKEN=<admin-token>
 `);
 }
 
@@ -309,27 +279,6 @@ function printReadinessActionBlock(title: string, lines: string[]): void {
   console.log(`${divider}\n`);
 }
 
-async function waitForPublicUrlReachable(
-  probe: (url: string) => Promise<{ ok: boolean; reason?: string }>,
-  url: string,
-  timeoutMs = 12_000,
-  intervalMs = 1_000
-): Promise<{ ok: boolean; reason?: string }> {
-  const deadline = Date.now() + timeoutMs;
-  let lastResult: { ok: boolean; reason?: string } = { ok: false, reason: "not checked yet" };
-  while (true) {
-    lastResult = await probe(url).catch((error) => ({
-      ok: false,
-      reason: error instanceof Error ? error.message : String(error),
-    }));
-    if (lastResult.ok) return lastResult;
-    if (Date.now() >= deadline) return lastResult;
-    await new Promise((resolve) =>
-      setTimeout(resolve, Math.min(intervalMs, Math.max(0, deadline - Date.now())))
-    );
-  }
-}
-
 function parseArgs(argv: string[]): CliArgs {
   const args: CliArgs = {};
   const known = new Set([
@@ -345,15 +294,9 @@ function parseArgs(argv: string[]): CliArgs {
     "init",
     "host",
     "bind-host",
-    "protocol",
-    "tls-cert",
-    "tls-key",
     "print-credentials",
-    "public-url",
-    "require-public-url",
     "require-mobile-ready",
     "require-electron-ready",
-    "no-vpn-detect",
     "headless-host-autospawn",
     "help",
   ]);
@@ -363,10 +306,8 @@ function parseArgs(argv: string[]): CliArgs {
     "ephemeral",
     "init",
     "print-credentials",
-    "require-public-url",
     "require-mobile-ready",
     "require-electron-ready",
-    "no-vpn-detect",
     "headless-host-autospawn",
     "help",
   ]);
@@ -443,27 +384,8 @@ function parseArgs(argv: string[]): CliArgs {
       case "bind-host":
         args.bindHost = value;
         break;
-      case "protocol":
-        if (value !== "http" && value !== "https") {
-          console.error("--protocol must be http or https");
-          process.exit(1);
-        }
-        args.protocol = value;
-        break;
-      case "tls-cert":
-        args.tlsCert = value;
-        break;
-      case "tls-key":
-        args.tlsKey = value;
-        break;
       case "print-credentials":
         args.printCredentials = true;
-        break;
-      case "public-url":
-        args.publicUrl = value;
-        break;
-      case "require-public-url":
-        args.requirePublicUrl = true;
         break;
       case "require-mobile-ready":
         args.requireMobileReady = true;
@@ -473,9 +395,6 @@ function parseArgs(argv: string[]): CliArgs {
         break;
       case "require-electron-ready":
         args.requireElectronReady = true;
-        break;
-      case "no-vpn-detect":
-        args.noVpnDetect = true;
         break;
       case "help":
         args.help = true;
@@ -494,14 +413,6 @@ if (!ipcChannel) {
   if (args.help) {
     printHelp();
     process.exit(0);
-  }
-  if (args.tlsCert && !args.tlsKey) {
-    console.error("--tls-cert requires --tls-key");
-    process.exit(1);
-  }
-  if (args.tlsKey && !args.tlsCert) {
-    console.error("--tls-key requires --tls-cert");
-    process.exit(1);
   }
   process.env["NATSTACK_APP_ROOT"] =
     args.appRoot ?? process.env["NATSTACK_APP_ROOT"] ?? process.cwd();
@@ -717,6 +628,7 @@ async function main() {
   const unitApprovalCoordinator = new ServerUnitApprovalCoordinator({
     approvalQueue,
     delayMs: 250,
+    autoApproveStartupUnits: process.env["NATSTACK_AUTO_APPROVE_STARTUP_UNITS"] === "1",
   });
   const requireMobileReady =
     args.requireMobileReady || process.env["NATSTACK_REQUIRE_MOBILE_READY"] === "1";
@@ -799,9 +711,7 @@ async function main() {
     );
   }
   const requestedGatewayPort = args.gatewayPort ?? parseEnvPort("NATSTACK_GATEWAY_PORT");
-  const configuredProtocol = (process.env["NATSTACK_PROTOCOL"] ?? args.protocol ?? "http") as
-    | "http"
-    | "https";
+  const configuredProtocol = "http" as const;
   let extensionHostForGateway: import("@natstack/extension-host").ExtensionHost | null = null;
   let appHostForGateway: import("./appHost.js").AppHost | null = null;
   type TrustedUnitHostInstance =
@@ -1809,7 +1719,9 @@ async function main() {
           relaySigningSecret: process.env["NATSTACK_RELAY_SIGNING_SECRET"],
           relayPublicBaseUrl:
             process.env["NATSTACK_WEBHOOK_PUBLIC_URL"] ?? "https://hooks.snugenv.com",
-          directPublicBaseUrl: getConfiguredPublicUrl(),
+          // No public ingress: direct-mode webhooks only resolve co-located (loopback).
+          // Remote webhooks ride the multi-tenant callback relay (relayPublicBaseUrl).
+          directPublicBaseUrl: getLocalGatewayUrl("webhook direct base URL"),
           rpc: {
             call: (targetId, method, ...args) =>
               rpcServer.server.callTarget(targetId, method, ...args),
@@ -1877,8 +1789,10 @@ async function main() {
     }
     return gatewayPortResolved;
   }
-  function gatewayProtocol(): "http" | "https" {
-    return hostConfig.tlsCert && hostConfig.tlsKey ? "https" : "http";
+  // Public TLS ingress is decommissioned — the gateway is loopback HTTP only.
+  // Remote reach is the WebRTC pipe (DTLS-encrypted); there is no public URL.
+  function gatewayProtocol(): "http" {
+    return "http";
   }
   function getLocalGatewayUrl(context: string): string {
     return `${gatewayProtocol()}://127.0.0.1:${getResolvedGatewayPort(context)}`;
@@ -1886,15 +1800,11 @@ async function main() {
   function getExternalGatewayUrl(context: string): string {
     return `${gatewayProtocol()}://${hostConfig.externalHost}:${getResolvedGatewayPort(context)}`;
   }
-  function getConfiguredPublicUrl(): string | null {
-    const explicitPublicUrl = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
-    if (explicitPublicUrl) return explicitPublicUrl;
-    return isPublicUrlVerified() ? getPublicUrl() : null;
-  }
-  // Single advertised origin for QR/deep-link pairing, auth connection info, and
-  // native React Native bundle bootstrap. Keep these in lockstep.
+  // Single advertised loopback origin for auth connection info and native React
+  // Native bundle bootstrap. (The public/QR pairing origin is gone — pairing is
+  // the WebRTC room+fp link minted by the answerer; see the seam below.)
   function getConnectUrl(context: string): string {
-    return getConfiguredPublicUrl() ?? getExternalGatewayUrl(context);
+    return getExternalGatewayUrl(context);
   }
   const { PanelRuntimeCoordinator } = await import("./panelRuntimeCoordinator.js");
   const panelRuntimeCoordinator = new PanelRuntimeCoordinator({ eventService });
@@ -1910,6 +1820,7 @@ async function main() {
       const fsService = assertPresent(
         resolve<import("@natstack/shared/fsService").FsService>("fsService")
       );
+      const { createPairingRedeemer } = await import("./services/authService.js");
       const server = new RpcServer({
         tokenManager,
         dispatcher,
@@ -1919,6 +1830,10 @@ async function main() {
         entityCache,
         connectionGrants,
         runtimeCoordinator: panelRuntimeCoordinator,
+        // Let a fresh/returning device authenticate its shell session over the
+        // WebRTC pipe by redeeming a QR pairing code / refresh credential (the
+        // loopback HTTP /complete-pairing + /refresh-shell are unreachable remotely).
+        redeemPairingCredential: createPairingRedeemer({ deviceAuthStore, tokenManager }),
         resolveExtensionInvocation: (extensionName, invocationToken) =>
           extensionHostForGateway?.resolveActiveInvocation(extensionName, invocationToken) ?? null,
       });
@@ -2540,9 +2455,6 @@ async function main() {
     gatewayPort: requestedGatewayPort ?? 0,
     host: args.host,
     bindHost: args.bindHost,
-    protocol: args.protocol,
-    tlsCert: args.tlsCert,
-    tlsKey: args.tlsKey,
   });
 
   const { registerPanelServices } = await import("./panelRuntimeRegistration.js");
@@ -3081,6 +2993,26 @@ async function main() {
     container.registerRpc(createSettingsServiceStandalone({ dispatcher }));
   }
 
+  // ── Panel-asset loopback bridge (remote shells) ──
+  // A remote shell has no local gateway, so its panel-asset façade calls this to
+  // loopback-fetch panel HTML/bundles from the server's own gateway over the
+  // pipe. The gateway port is finalized only after gateway.start() below, so we
+  // thread it lazily via getResolvedGatewayPort.
+  {
+    const { createGatewayFetchService } = await import("./services/gatewayFetchService.js");
+    container.registerRpc(
+      createGatewayFetchService({
+        getGatewayPort: () => getResolvedGatewayPort("gateway.fetch"),
+      })
+    );
+  }
+
+  // WebRTC pairing material (room/fp/sig) — populated when the answerer starts
+  // (the "Remote ingress" block below); captured by auth.getConnectionInfo (so
+  // pairing invites mint a real deep link) and written to the ready file. Stays
+  // null when the answerer is off (loopback co-located mode) ⇒ no deep link.
+  let webrtcPairing: { room: string; fp: string; sig: string } | null = null;
+
   // ── Per-workspace content-addressable blobstore ──
   {
     const { createBlobstoreService } = await import("./services/blobstoreService.js");
@@ -3099,10 +3031,12 @@ async function main() {
             const hubUrl = process.env["NATSTACK_HUB_URL"];
             return {
               serverUrl: hubUrl ?? getExternalGatewayUrl("auth connection info"),
-              publicUrl: hubUrl ?? getConfiguredPublicUrl(),
               protocol,
               externalHost: hostConfig.externalHost,
               gatewayPort,
+              // Lets createPairingInvite mint a real natstack://connect deep link
+              // (room/fp/sig); null when the answerer is off ⇒ deepLink stays null.
+              pairing: webrtcPairing ?? undefined,
             };
           },
           connectionGrants,
@@ -3135,7 +3069,6 @@ async function main() {
   // attached dynamically as container services start.
   const { Gateway } = await import("./gateway.js");
   const startedAt = Date.now();
-  const isTlsInitial = !!(hostConfig.tlsCert && hostConfig.tlsKey);
   const gateway = new Gateway({
     getRpcHandler: () => rpcServerForGateway,
     getPanelHttpHandler: () => {
@@ -3150,8 +3083,6 @@ async function main() {
     getWorkerHost: () => workerdManagerForGateway,
     externalHost: hostConfig.externalHost,
     bindHost: hostConfig.bindHost,
-    tlsCert: hostConfig.tlsCert,
-    tlsKey: hostConfig.tlsKey,
     adminToken,
     workerdGatewayToken,
     getWorkerdDispatchSecret: () => workerdManagerForGateway?.getDispatchSecret() ?? null,
@@ -3159,19 +3090,12 @@ async function main() {
     connectionGrants,
     entityCache,
     routeRegistry,
-    getPublicUrl: () => {
-      try {
-        return getPublicUrl();
-      } catch {
-        return null;
-      }
-    },
     healthProvider: (detailed) => {
       const base: Record<string, unknown> = {
         ok: true,
         product: "natstack",
         discoveryVersion: 1,
-        protocol: isTlsInitial ? "https" : "http",
+        protocol: "http",
         serverId: deviceAuthStore.getServerId(),
         serverBootId,
         workspaceId: workspace.config.id,
@@ -3189,92 +3113,16 @@ async function main() {
   const gatewayPort = await gateway.start(requestedGatewayPort ?? 0);
   gatewayPortResolved = gatewayPort;
 
-  // ── Public URL: explicit input now, auto-detection in parallel below ──
-  // The explicit --public-url path runs synchronously; auto-detection runs
-  // concurrently with service startup so we don't block on it.
-  interface VpnSetupResult {
-    detectedVpn: import("./vpnDetect.js").DetectedVpnPublicUrl | null;
-    serveProvision: import("./tailscaleServe.js").ServeProvisionResult | null;
-    publicUrlVerified: boolean;
-    publicUrlReachabilityReason?: string;
-  }
-  const explicitOverride = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
-  const skipVpnDetect =
-    args.noVpnDetect || process.env["NATSTACK_NO_VPN_DETECT"] === "1" || !!explicitOverride;
-  const { configurePublicUrl, markPublicUrlVerified } = await import("./publicUrl.js");
-  configurePublicUrl({
-    override: explicitOverride,
-    protocol: isTlsInitial ? "https" : "http",
-    externalHost: hostConfig.externalHost,
-    gatewayPort,
-  });
-  // Explicit URLs are trusted up-front. Auto-detected URLs (if any) get
-  // verified in the parallel block below and update this state then.
-  markPublicUrlVerified(!!explicitOverride);
-
-  const vpnSetupPromise: Promise<VpnSetupResult> = skipVpnDetect
-    ? Promise.resolve({ detectedVpn: null, serveProvision: null, publicUrlVerified: false })
-    : (async (): Promise<VpnSetupResult> => {
-        const { detectVpnPublicUrl } = await import("./vpnDetect.js");
-        let detectedVpn = await detectVpnPublicUrl().catch(() => null);
-        if (!detectedVpn) {
-          const { detectHttpsServePublicUrl } = await import("./tailscaleServe.js");
-          const serveUrl = await detectHttpsServePublicUrl({ port: gatewayPort }).catch(() => null);
-          if (serveUrl) {
-            detectedVpn = {
-              vendor: "tailscale",
-              hostname: serveUrl.hostname,
-              url: serveUrl.url,
-              raw: { source: "tailscale-serve-status" },
-            };
-          }
-        }
-        if (!detectedVpn) {
-          return { detectedVpn: null, serveProvision: null, publicUrlVerified: false };
-        }
-        const { probeHttpsReachable, ensureHttpsServe } = await import("./tailscaleServe.js");
-        let reachability = await probeHttpsReachable(detectedVpn.url).catch((error) => ({
-          ok: false,
-          reason: error instanceof Error ? error.message : String(error),
-        }));
-        let publicUrlVerified = reachability.ok;
-        let serveProvision: import("./tailscaleServe.js").ServeProvisionResult | null = null;
-        if (!publicUrlVerified && detectedVpn.vendor === "tailscale") {
-          serveProvision = await ensureHttpsServe({
-            port: gatewayPort,
-            hostname: detectedVpn.hostname,
-          }).catch(
-            (err) =>
-              ({
-                kind: "error",
-                message: err instanceof Error ? err.message : String(err),
-              }) as import("./tailscaleServe.js").ServeProvisionResult
-          );
-          if (
-            serveProvision.kind === "configured" ||
-            serveProvision.kind === "already-configured"
-          ) {
-            reachability = await waitForPublicUrlReachable(
-              (url) => probeHttpsReachable(url),
-              detectedVpn.url
-            );
-            publicUrlVerified = reachability.ok;
-          }
-        }
-        configurePublicUrl({
-          override: detectedVpn.url,
-          protocol: isTlsInitial ? "https" : "http",
-          externalHost: hostConfig.externalHost,
-          gatewayPort,
-        });
-        markPublicUrlVerified(publicUrlVerified);
-        return {
-          detectedVpn,
-          serveProvision,
-          publicUrlVerified,
-          publicUrlReachabilityReason: reachability.ok ? undefined : reachability.reason,
-        };
-      })();
+  // ── Remote ingress: WebRTC pipe ──
+  // The public TLS endpoint, public-URL advertisement, and Tailscale/VPN
+  // auto-provisioning are decommissioned. Remote clients no longer dial an HTTPS
+  // origin; they pair by QR (signaling room + DTLS fingerprint) and the server
+  // accepts ONE peer-to-peer WebRTC pipe. The loopback HTTP gateway above is the
+  // only socket (co-located mode stays on loopback WS).
+  //
+  // The answerer is started AFTER `container.startAll()` below — it needs the
+  // live `rpcServerForGateway`, which only exists once the RpcServer service has
+  // started. (Starting it here would no-op silently: rpcServerForGateway is null.)
 
   // ── Workerd inspector bridge + service (userland profiling of workers/DOs) ──
   {
@@ -3371,65 +3219,57 @@ async function main() {
 
   // ── Start all services in dependency order ──
   await container.startAll();
-  // Settle VPN setup before printing the readiness banner (so the operator
-  // sees the auto-detected Mobile URL line if one is available).
-  const { detectedVpn, serveProvision, publicUrlVerified, publicUrlReachabilityReason } =
-    await vpnSetupPromise;
-  const requirePublicUrl =
-    args.requirePublicUrl || process.env["NATSTACK_REQUIRE_PUBLIC_URL"] === "1";
-  let requiredPublicUrlVerified = publicUrlVerified;
-  let requiredPublicUrlReachabilityReason = publicUrlReachabilityReason;
-  if (requirePublicUrl && explicitOverride) {
-    if (!explicitOverride.startsWith("https://")) {
-      requiredPublicUrlVerified = false;
-      requiredPublicUrlReachabilityReason = "required public URL must use https://";
-    } else {
-      const { probeHttpsReachable } = await import("./tailscaleServe.js");
-      const reachability = await probeHttpsReachable(explicitOverride).catch((error) => ({
-        ok: false,
-        reason: error instanceof Error ? error.message : String(error),
-      }));
-      requiredPublicUrlVerified = reachability.ok;
-      requiredPublicUrlReachabilityReason = reachability.ok ? undefined : reachability.reason;
-      markPublicUrlVerified(reachability.ok);
+
+  // ── WebRTC answerer (now that rpcServerForGateway is live) ──
+  // Activated when NATSTACK_WEBRTC_SIGNAL_URL is set (off by default ⇒ loopback
+  // co-located mode is unaffected). The server picks a room, presents a
+  // persistent DTLS cert (stable QR `fp`), joins the signaling room, and attaches
+  // the pipe to the live RpcServer; a paired client reaches us over WebRTC with
+  // no public endpoint. See docs/webrtc-local-e2e.md.
+  const webrtcSignalUrl = process.env["NATSTACK_WEBRTC_SIGNAL_URL"];
+  if (webrtcSignalUrl && rpcServerForGateway) {
+    try {
+      const { startWebRtcAnswerer } = await import("./webrtcAnswererBootstrap.js");
+      const { ensurePersistentCert, ensurePersistentRoom } = await import("../main/webrtc/cert.js");
+      const pathMod = await import("node:path");
+      const certDir = pathMod.join(appRoot, ".natstack", "webrtc");
+      const cert = ensurePersistentCert({
+        certificatePemFile:
+          process.env["NATSTACK_WEBRTC_CERT"] ?? pathMod.join(certDir, "server.pem"),
+        keyPemFile: process.env["NATSTACK_WEBRTC_KEY"] ?? pathMod.join(certDir, "server.key"),
+      });
+      // The advertised pairing code MUST be one the deviceAuthStore can redeem
+      // (`completePairing`). Use the registered startup code; mint a fresh
+      // registered one only if startup pairing was disabled. NATSTACK_PAIRING_CODE
+      // is NOT used — an unregistered code fails `hasPendingPairingCode`.
+      const pairingCode =
+        startupPairingCode ?? deviceAuthStore.createPairingCode(DEFAULT_PAIRING_CODE_TTL_MS);
+      // Persist the room (next to the DTLS cert) so paired devices can re-dial the
+      // SAME room after a server restart; a fresh per-start UUID would strand them.
+      // An explicit env override still wins for ops/multi-instance setups.
+      const room =
+        process.env["NATSTACK_WEBRTC_ROOM"] ?? ensurePersistentRoom(pathMod.join(certDir, "room"));
+      const handle = await startWebRtcAnswerer({
+        rpcServer: rpcServerForGateway,
+        signalUrl: webrtcSignalUrl,
+        room,
+        certificatePemFile: cert.certificatePemFile,
+        keyPemFile: cert.keyPemFile,
+        pairingCode,
+        iceTransportPolicy: process.env["NATSTACK_WEBRTC_ICE"] === "relay" ? "relay" : "all",
+        srv: process.env["NATSTACK_WORKSPACE"] ?? undefined,
+      });
+      // Expose the pairing material (room + DTLS fingerprint + signaling) to
+      // auth.getConnectionInfo (pairing deep links) and the ready-file writer.
+      webrtcPairing = { room, fp: handle.fingerprint, sig: webrtcSignalUrl };
+      void handle; // pipe lifetime follows the process; closed on exit
+    } catch (error) {
+      // Fail loud (the operator asked for WebRTC ingress) but do not abort the
+      // loopback gateway — local co-located clients still work.
+      console.error(
+        `[webrtc-answerer] failed to start: ${error instanceof Error ? error.message : String(error)}`
+      );
     }
-  }
-  if (requirePublicUrl && !requiredPublicUrlVerified) {
-    const publicUrl = explicitOverride ?? detectedVpn?.url;
-    const lines = [
-      "This server was started with a required public pairing URL, but NatStack",
-      "could not verify one. Refusing to continue so clients do not pair against",
-      "a fallback URL by mistake.",
-      "",
-      publicUrl ? `Public URL: ${publicUrl}` : "Public URL: not detected",
-      requiredPublicUrlReachabilityReason
-        ? `Last check: ${requiredPublicUrlReachabilityReason}`
-        : "",
-      explicitOverride
-        ? "Use a reachable https:// public URL, or remove --require-public-url."
-        : "",
-      serveProvision?.kind === "permission-denied"
-        ? "Tailscale denied Serve configuration. Run:"
-        : "",
-      serveProvision?.kind === "permission-denied" ? "  sudo tailscale set --operator=$USER" : "",
-      serveProvision?.kind === "permission-denied"
-        ? `  sudo tailscale serve --bg ${gatewayPort}`
-        : "",
-      serveProvision?.kind === "serve-feature-disabled"
-        ? "Enable Tailscale Serve, then restart this command."
-        : "",
-      serveProvision?.kind === "https-feature-disabled"
-        ? "Enable Tailscale HTTPS certificates, then restart this command."
-        : "",
-      serveProvision?.kind === "skipped-conflict"
-        ? `Existing Serve config conflicts: ${serveProvision.reason}`
-        : "",
-      serveProvision?.kind === "error" ? `Tailscale error: ${serveProvision.message}` : "",
-      "",
-      "After fixing Tailscale Serve, restart the pair command.",
-    ].filter((line) => line !== "");
-    printReadinessActionBlock("Required public URL is not ready", lines);
-    process.exit(1);
   }
 
   const workerdManager =
@@ -3652,14 +3492,11 @@ async function main() {
       console.warn("[Server] Failed to write admin token file:", err);
     }
 
-    const isTls = !!(hostConfig.tlsCert && hostConfig.tlsKey);
-    const proto = isTls ? "https" : "http";
-    const wsProto = isTls ? "wss" : "ws";
-    const explicitPublicUrl = args.publicUrl ?? process.env["NATSTACK_PUBLIC_URL"];
-    const pairingTargetUrl = getConnectUrl("readiness pairing URL");
+    const proto = "http";
+    const wsProto = "ws";
     console.log("natstack-server ready:");
     console.log(`  Workspace:   ${workspaceName}${workspaceIsEphemeral ? " (ephemeral dev)" : ""}`);
-    console.log(`  Gateway:     ${proto}://${hostConfig.externalHost}:${gatewayPort}`);
+    console.log(`  Gateway:     ${proto}://${hostConfig.externalHost}:${gatewayPort} (loopback)`);
     console.log(`  Workerd:     (via gateway /_w/)`);
     console.log(`  RPC:         ${wsProto}://${hostConfig.externalHost}:${gatewayPort}/rpc`);
     const sourceLabel =
@@ -3672,145 +3509,10 @@ async function main() {
     if (tokenSource !== "env") {
       console.log(`  Persisted:   ${getAdminTokenPath()}`);
     }
-    {
-      const publicUrlForBanner = explicitPublicUrl ?? detectedVpn?.url;
-      if (publicUrlForBanner) {
-        const publicUrlLabel = explicitPublicUrl
-          ? "(--public-url)"
-          : detectedVpn
-            ? `(auto-detected ${detectedVpn.vendor})`
-            : "";
-        const reachabilityLabel = publicUrlVerified
-          ? "verified reachable"
-          : "not yet reachable — see note below";
-        console.log(
-          `  Public URL:  ${publicUrlForBanner} ${publicUrlLabel} (${reachabilityLabel})`
-        );
-        if (publicUrlVerified) {
-          // Single canonical URL for QR pairing, panel chrome, and OAuth.
-          // mobile-pair prefers this line over Gateway: when present.
-          console.log(`  Mobile URL:  ${publicUrlForBanner}`);
-        }
-        console.log(`  OAuth callback (register with each provider):`);
-        console.log(`    ${publicUrlForBanner}/_r/s/credentials/oauth/callback`);
-        if (serveProvision?.kind === "configured") {
-          if (publicUrlVerified) {
-            console.log(
-              `  Tailscale: configured \`tailscale serve\` to forward https://${detectedVpn?.hostname}/ → 127.0.0.1:${gatewayPort}.`
-            );
-            console.log(
-              `             Persistent across reboots; remove with \`tailscale serve reset\`.`
-            );
-          } else {
-            printReadinessActionBlock("Tailscale Serve is configured but not reachable", [
-              "Tailscale accepted the Serve configuration, but the HTTPS URL",
-              "did not return NatStack's health check.",
-              "",
-              `Public URL: https://${detectedVpn?.hostname}`,
-              publicUrlReachabilityReason ? `Last check: ${publicUrlReachabilityReason}` : "",
-              "",
-              "This can be a short Tailscale startup delay, a stale Serve target,",
-              "or a local gateway that is not listening on the configured port.",
-              "",
-              "First try rerunning:",
-              `  natstack mobile pair --host tailscale --port ${gatewayPort}`,
-              "",
-              "If it still falls back to HTTP, check both:",
-              "  tailscale serve status",
-              `  curl http://127.0.0.1:${gatewayPort}/healthz`,
-            ]);
-          }
-        } else if (serveProvision?.kind === "permission-denied") {
-          printReadinessActionBlock("Tailscale Serve needs permission", [
-            "NatStack found your Tailscale HTTPS name:",
-            `  https://${detectedVpn?.hostname}`,
-            "",
-            "That URL will only work after Tailscale is told to forward HTTPS",
-            `traffic to this NatStack server on local port ${gatewayPort}. NatStack tried`,
-            "to configure that automatically, but Tailscale denied permission.",
-            "",
-            "Recommended one-time fix:",
-            "  sudo tailscale set --operator=$USER",
-            "Then restart your terminal/session if Tailscale asks, and run:",
-            `  natstack mobile pair --host tailscale --port ${gatewayPort}`,
-            "",
-            "Manual alternative for this port only:",
-            `  sudo tailscale serve --bg ${gatewayPort}`,
-            "Then run:",
-            `  natstack mobile pair --host tailscale --port ${gatewayPort}`,
-            "",
-            "Until this is fixed, the QR below uses a Tailscale HTTP fallback.",
-            "Basic pairing may work, but mobile OAuth/browser redirects need HTTPS.",
-          ]);
-        } else if (serveProvision?.kind === "https-feature-disabled") {
-          printReadinessActionBlock("Tailscale HTTPS certificates are not enabled", [
-            "NatStack found your Tailscale name, but this tailnet is not allowed",
-            "to issue HTTPS certificates for MagicDNS names yet.",
-            "",
-            "Enable HTTPS Certificates here:",
-            "  https://login.tailscale.com/admin/dns",
-            "Then run:",
-            `  natstack mobile pair --host tailscale --port ${gatewayPort}`,
-            "",
-            "Until this is fixed, the QR below uses a Tailscale HTTP fallback.",
-            "Basic pairing may work, but mobile OAuth/browser redirects need HTTPS.",
-          ]);
-        } else if (serveProvision?.kind === "serve-feature-disabled") {
-          printReadinessActionBlock("Tailscale Serve is not enabled", [
-            "NatStack found your Tailscale HTTPS name, but Tailscale Serve is",
-            "not enabled for this tailnet. Serve is the Tailscale feature that",
-            "forwards that HTTPS name to this NatStack server.",
-            "",
-            "Enable Tailscale Serve:",
-            serveProvision.activationUrl
-              ? `  ${serveProvision.activationUrl}`
-              : "  Open the Tailscale admin console -> Settings -> Serve.",
-            "",
-            "Then run:",
-            `  natstack mobile pair --host tailscale --port ${gatewayPort}`,
-            "",
-            "Until this is fixed, the QR below uses a Tailscale HTTP fallback.",
-            "Basic pairing may work, but mobile OAuth/browser redirects need HTTPS.",
-          ]);
-        } else if (serveProvision?.kind === "skipped-conflict") {
-          printReadinessActionBlock("Existing Tailscale Serve config conflicts", [
-            "Tailscale Serve is already configured for something else, and",
-            "NatStack will not overwrite that automatically.",
-            "",
-            serveProvision.reason,
-            "",
-            "If you want NatStack to manage this hostname, run:",
-            "  tailscale serve reset",
-            "",
-            "Then run:",
-            `  natstack mobile pair --host tailscale --port ${gatewayPort}`,
-          ]);
-        } else if (serveProvision?.kind === "error") {
-          printReadinessActionBlock("Tailscale Serve setup failed", [
-            "NatStack found a Tailscale HTTPS name, but could not configure",
-            "Tailscale Serve for it.",
-            "",
-            `Tailscale error: ${serveProvision.message}`,
-            "",
-            "The QR below will use the HTTP fallback.",
-            "Basic pairing may work, but mobile OAuth/browser redirects need HTTPS.",
-            "",
-            "Fix Tailscale Serve, then run:",
-            `  natstack mobile pair --host tailscale --port ${gatewayPort}`,
-          ]);
-        } else if (!publicUrlVerified && !explicitPublicUrl && detectedVpn?.setupHint) {
-          printReadinessActionBlock("HTTPS mobile URL is not ready", [
-            "NatStack found a likely mobile HTTPS URL, but it is not reachable yet.",
-            publicUrlReachabilityReason ? `Last check: ${publicUrlReachabilityReason}` : "",
-            "",
-            detectedVpn.setupHint,
-            "",
-            "The QR below will use the HTTP fallback.",
-            "Basic pairing may work, but mobile OAuth/browser redirects need HTTPS.",
-          ]);
-        }
-      }
-    }
+    // Remote pairing is the WebRTC QR link (signaling room + DTLS fingerprint)
+    // minted by the answerer (see the TODO(webrtc-answerer) seam above); there
+    // is no public OAuth/QR URL to print. The device pairing code below still
+    // authorizes the principal after the DTLS pin verifies.
     if (startupPairingCode) {
       console.log(`  Pairing code: ${startupPairingCode}`);
       if (startupQrPairingCode) {
@@ -3819,7 +3521,6 @@ async function main() {
       console.log(
         `  Pairing TTL:  ${Math.round(DEFAULT_PAIRING_CODE_TTL_MS / 60_000)} minutes (server exits if unused)`
       );
-      console.log(formatPairUrlLine(pairingTargetUrl, startupPairingCode));
     }
 
     if (args.readyFile) {
@@ -3831,9 +3532,10 @@ async function main() {
         gatewayUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}`,
         rpcUrl: `${wsProto}://${hostConfig.externalHost}:${gatewayPort}/rpc`,
         workerdUrl: `${proto}://${hostConfig.externalHost}:${gatewayPort}/_w/`,
-        publicUrl: explicitPublicUrl ?? detectedVpn?.url ?? null,
-        connectUrl: pairingTargetUrl,
         adminToken,
+        // The WebRTC pairing material (present only when the answerer is active);
+        // remote clients pair from this, not from a connect/public URL.
+        pairing: webrtcPairing,
         pairingCode: startupPairingCode,
         qrPairingCode: startupQrPairingCode,
         pairingCodes: {

@@ -44,6 +44,12 @@ export interface WsAuthResultMessage {
   connectionId?: string;
   serverBootId?: string;
   sessionDirty?: boolean;
+  /**
+   * Present only when this session authenticated by redeeming a one-time pairing
+   * code: the freshly issued device credential the client must persist to
+   * reconnect (the server keeps only its hash, so this is the one delivery).
+   */
+  deviceCredential?: { deviceId: string; refreshToken: string };
   error?: string;
 }
 

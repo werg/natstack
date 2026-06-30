@@ -13,6 +13,8 @@ import type {
 } from "@natstack/shared/hostTargets";
 import type { AppHost, ReactNativeHostReadiness } from "./appHost.js";
 
+const BEGIN_LAUNCH_REFRESH_GRACE_MS = 250;
+
 type UnitReconcileTrigger = "startup" | "meta-change";
 
 interface ApprovalQueueLike {
@@ -82,7 +84,7 @@ export class HostTargetLaunchCoordinator {
     const existing = [...this.sessions.values()].find(
       (session) => session.target === target && !session.settled
     );
-    if (existing) return await this.refreshSession(existing.sessionId, { emit: true });
+    if (existing) return await this.refreshSessionForBegin(existing.sessionId);
 
     const now = Date.now();
     const session: HostTargetLaunchSessionSnapshot = {
@@ -100,7 +102,7 @@ export class HostTargetLaunchCoordinator {
       settled: false,
     };
     this.sessions.set(session.sessionId, session);
-    return await this.refreshSession(session.sessionId, { emit: true });
+    return await this.refreshSessionForBegin(session.sessionId);
   }
 
   getLaunchSession(sessionId: string): HostTargetLaunchSessionSnapshot | null {
@@ -268,6 +270,34 @@ export class HostTargetLaunchCoordinator {
     for (const session of sessions) {
       await this.refreshSession(session.sessionId, { emit: true }).catch(() => {});
     }
+  }
+
+  private async refreshSessionForBegin(
+    sessionId: string
+  ): Promise<HostTargetLaunchSessionSnapshot> {
+    const refresh = this.refreshSession(sessionId, { emit: true }).catch((error: unknown) =>
+      this.failSession(sessionId, error)
+    );
+    const delayed = new Promise<null>((resolve) =>
+      setTimeout(resolve, BEGIN_LAUNCH_REFRESH_GRACE_MS)
+    );
+    const refreshed = await Promise.race([refresh, delayed]);
+    return refreshed ?? this.requireSession(sessionId);
+  }
+
+  private failSession(sessionId: string, error: unknown): HostTargetLaunchSessionSnapshot {
+    const previous = this.requireSession(sessionId);
+    const message = error instanceof Error ? error.message : String(error);
+    const next = this.snapshotFromLaunch(previous, {
+      status: "unavailable",
+      launched: false,
+      target: previous.target,
+      reason: message || `${targetLabel(previous.target)} launch failed.`,
+      details: [],
+    });
+    this.sessions.set(sessionId, next);
+    if (sessionChanged(previous, next)) this.emitSession(next);
+    return next;
   }
 
   private async refreshSession(

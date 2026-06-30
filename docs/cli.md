@@ -90,11 +90,10 @@ natstack mobile install --launch
 pnpm cli mobile install --launch
 ```
 
-Start the phone pairing server over Tailscale:
+Start the phone pairing server (pairing is over WebRTC — no Tailscale/HTTPS setup):
 
 ```sh
-sudo tailscale serve --bg 3030
-natstack mobile pair --host tailscale --port 3030
+natstack mobile pair --port 3030
 ```
 
 Run the local Android dev loop:
@@ -118,5 +117,5 @@ Useful flags:
 - `--dev` on `natstack mobile pair` offers a disposable template workspace named
   `dev` after pairing.
 
-See [remote-server.md](./remote-server.md) for deployment details and
-[mobile-vpn.md](./mobile-vpn.md) for Tailscale/mobile notes.
+Remote reach is WebRTC (pair by QR - signaling room + DTLS fingerprint); see
+[webrtc-rpc-transport.md](./webrtc-rpc-transport.md) and [webrtc-local-e2e.md](./webrtc-local-e2e.md).

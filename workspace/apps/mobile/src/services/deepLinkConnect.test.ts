@@ -1,29 +1,39 @@
-import { isTrustedCleartextHost, parseConnectDeepLink } from "./deepLinkConnect";
+import { parseConnectDeepLink } from "./deepLinkConnect";
+
+const FP = "AA".repeat(32);
+const CODE = "a".repeat(24);
+function makeLink(sig = "wss://signal.example/"): string {
+  return `natstack://connect?room=room-1111-2222&fp=${FP}&code=${CODE}&sig=${encodeURIComponent(sig)}`;
+}
 
 describe("deepLinkConnect", () => {
-  it("allows trusted cleartext hosts used by internal phone pairing", () => {
-    expect(isTrustedCleartextHost("localhost")).toBe(true);
-    expect(isTrustedCleartextHost("192.168.1.20")).toBe(true);
-    expect(isTrustedCleartextHost("100.73.236.5")).toBe(true);
-    expect(isTrustedCleartextHost("server.tailnet.ts.net")).toBe(true);
-    expect(isTrustedCleartextHost("pop-os")).toBe(true);
-    expect(isTrustedCleartextHost("pop-os.local")).toBe(true);
-  });
-
-  it("rejects cleartext public hostnames", () => {
-    expect(isTrustedCleartextHost("example.com")).toBe(false);
-    expect(isTrustedCleartextHost("natstack.example.com")).toBe(false);
-  });
-
-  it("parses a connect link with a single-label local hostname", () => {
-    const result = parseConnectDeepLink(
-      "natstack://connect?url=http%3A%2F%2Fpop-os%3A3030&code=abc123abc123abc123",
-    );
-
-    expect(result).toEqual({
+  it("parses a WebRTC pairing link into room/fp/code/sig", () => {
+    expect(parseConnectDeepLink(makeLink())).toEqual({
       kind: "ok",
-      serverUrl: "http://pop-os:3030",
-      pairingCode: "abc123abc123abc123",
+      room: "room-1111-2222",
+      fp: FP,
+      code: CODE,
+      sig: "wss://signal.example/",
+      v: 1,
+      ice: "all",
+      srv: undefined,
     });
+  });
+
+  it("rejects a link missing required pairing params", () => {
+    expect(parseConnectDeepLink("natstack://connect?room=room-1111-2222").kind).toBe("error");
+  });
+
+  it("rejects a fingerprint that is not a SHA-256", () => {
+    const link = `natstack://connect?room=room-1111-2222&fp=DE:AD:BE:EF&code=${CODE}&sig=${encodeURIComponent("wss://signal.example/")}`;
+    expect(parseConnectDeepLink(link).kind).toBe("error");
+  });
+
+  it("rejects a cleartext signaling endpoint on a public host", () => {
+    expect(parseConnectDeepLink(makeLink("ws://signal.example/")).kind).toBe("error");
+  });
+
+  it("allows a loopback cleartext signaling endpoint for dev", () => {
+    expect(parseConnectDeepLink(makeLink("ws://127.0.0.1:8787/")).kind).toBe("ok");
   });
 });

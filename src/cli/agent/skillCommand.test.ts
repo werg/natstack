@@ -3,10 +3,6 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-vi.mock("@natstack/shared/tailscaleDiscovery", () => ({
-  discoverNatstackServers: vi.fn(async () => []),
-}));
-
 function jsonOutput(): unknown {
   const lines = vi.mocked(console.log).mock.calls.map((call) => String(call[0]));
   return JSON.parse(lines[lines.length - 1]!);

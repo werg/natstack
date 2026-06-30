@@ -126,12 +126,11 @@ describe("runtimeSurface manifests", () => {
       __natstackInitialTheme: "light",
       __natstackEnv: {},
       __natstackGatewayConfig: { serverUrl: "http://server.test", token: "tok" },
-      // Minimal transport bridge so createPanelTransport() doesn't throw on import.
-      __natstackTransport: {
-        onMessage: () => () => {},
-        onAnyMessage: () => () => {},
-        send: async () => {},
-        onRecovery: () => {},
+      // Minimal shell bridge so createPanelTransport() doesn't throw on import.
+      __natstackShell: {
+        postEnvelope: async () => {},
+        onEnvelope: () => () => {},
+        onRecovery: () => () => {},
       },
     };
 

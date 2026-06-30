@@ -1,27 +1,38 @@
 /**
- * NatStack webhook relay (Cloudflare Worker).
+ * NatStack callback relay (Cloudflare Worker) — SHARED two-profile relay.
  *
- * This worker is intentionally a thin edge forwarder. Provider-specific
- * verification, subscription ownership, and delivery all live in the NatStack
- * server's webhook ingress service.
+ * Plan §7: one public edge serving two profiles on one backhaul.
+ *
+ *   - WEBHOOK (stateful):  POST /i/<subscriptionId>      -> RelayRegistry DO
+ *   - OAUTH landing:       GET  /oauth/callback/...       -> RelayRegistry DO
+ *   - Universal-link host: GET  /.well-known/apple-app-site-association
+ *                          GET  /.well-known/assetlinks.json
+ *   - Backhaul:            WS   /backhaul                 -> RelayRegistry DO
+ *
+ * This entry is a thin router: all multi-tenant state (backhaul sockets,
+ * first-writer-wins registration, durable webhook buffer, ephemeral OAuth map)
+ * lives in the single global RelayRegistry Durable Object. The well-known
+ * universal-link documents are stateless (env-derived) so they are served here.
  */
 
-import { sha256Hex, signRelayEnvelope } from "./envelope";
+import { RelayRegistry, type Env } from "./registry";
+import {
+  buildAppleAppSiteAssociation,
+  buildAssetlinks,
+  universalLinkConfigFromEnv,
+} from "./oauthLanding";
 
-interface Env {
-  ENVIRONMENT?: string;
-  NATSTACK_SERVER_BASE_URL?: string;
-  NATSTACK_RELAY_SIGNING_SECRET?: string;
-}
+export { RelayRegistry };
+export type { Env };
 
 function json(data: unknown, init?: ResponseInit): Response {
   return new Response(JSON.stringify(data), {
+    status: init?.status ?? 200,
     headers: {
       "content-type": "application/json; charset=utf-8",
       "cache-control": "no-store",
       ...(init?.headers ?? {}),
     },
-    ...init,
   });
 }
 
@@ -29,87 +40,57 @@ function notFound(): Response {
   return json({ error: "not found" }, { status: 404 });
 }
 
+function relayStub(env: Env): DurableObjectStub {
+  // One global registry: every server backhauls into the same instance so
+  // first-writer-wins and subscriptionId routing are globally consistent.
+  return env.RELAY_REGISTRY.get(env.RELAY_REGISTRY.idFromName("global"));
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
-    const segments = url.pathname.split("/").filter(Boolean);
 
     if (request.method === "GET" && (url.pathname === "/healthz" || url.pathname === "/health")) {
       return json({ ok: true });
     }
 
-    if (
-      request.method === "POST" &&
-      segments.length === 2 &&
-      segments[0] === "i"
-    ) {
-      const [, subscriptionId] = segments;
-      return forwardSignedIngress(env, request, subscriptionId!);
+    // Universal-link host — anchors the relay's own origin so the mobile OS
+    // deep-links /oauth/callback/* into the app. Fails loud when unconfigured
+    // rather than serving a broken association.
+    if (request.method === "GET" && url.pathname === "/.well-known/apple-app-site-association") {
+      const doc = buildAppleAppSiteAssociation(universalLinkConfigFromEnv(env));
+      if (!doc) return json({ error: "universal-link host not configured" }, { status: 503 });
+      return wellKnownJson(doc);
+    }
+    if (request.method === "GET" && url.pathname === "/.well-known/assetlinks.json") {
+      const doc = buildAssetlinks(universalLinkConfigFromEnv(env));
+      if (!doc) return json({ error: "universal-link host not configured" }, { status: 503 });
+      return wellKnownJson(doc);
+    }
+
+    // Everything stateful is owned by the global RelayRegistry DO.
+    if (url.pathname === "/backhaul" && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+      return relayStub(env).fetch(request);
+    }
+    if (request.method === "POST" && url.pathname.startsWith("/i/")) {
+      return relayStub(env).fetch(request);
+    }
+    if (request.method === "GET" && url.pathname.startsWith("/oauth/callback")) {
+      return relayStub(env).fetch(request);
     }
 
     return notFound();
   },
 };
 
-async function forwardSignedIngress(
-  env: Env,
-  request: Request,
-  subscriptionId: string,
-): Promise<Response> {
-  const baseUrl = normalizeBaseUrl(env.NATSTACK_SERVER_BASE_URL);
-  if (!baseUrl) {
-    return json({ error: "NATSTACK_SERVER_BASE_URL is not configured", subscriptionId }, { status: 500 });
-  }
-  if (!env.NATSTACK_RELAY_SIGNING_SECRET) {
-    return json({ error: "NATSTACK_RELAY_SIGNING_SECRET is not configured", subscriptionId }, { status: 500 });
-  }
-
-  const url = new URL(request.url);
-  const rawBody = await request.arrayBuffer();
-  const bodySha256 = await sha256Hex(rawBody);
-  const timestamp = Date.now().toString();
-  const publicPath = url.pathname;
-  const publicQuery = url.search.startsWith("?") ? url.search.slice(1) : url.search;
-  const signature = await signRelayEnvelope(env.NATSTACK_RELAY_SIGNING_SECRET, {
-    method: request.method,
-    path: publicPath,
-    query: publicQuery,
-    timestamp,
-    bodySha256,
-  });
-
-  const headers = new Headers(request.headers);
-  headers.delete("host");
-  headers.delete("cookie");
-  headers.set("X-NatStack-Relay-Timestamp", timestamp);
-  headers.set("X-NatStack-Relay-Body-SHA256", bodySha256);
-  headers.set("X-NatStack-Relay-Method", request.method.toUpperCase());
-  headers.set("X-NatStack-Relay-Path", publicPath);
-  headers.set("X-NatStack-Relay-Query", publicQuery);
-  headers.set("X-NatStack-Relay-Signature", signature);
-
-  const response = await fetch(`${baseUrl}/_r/s/webhookIngress/${encodeURIComponent(subscriptionId)}`, {
-    method: "POST",
-    headers,
-    body: rawBody,
-  });
-  return copyResponse(response);
-}
-
-async function copyResponse(response: Response): Promise<Response> {
-  const body = await response.text();
-  return new Response(body, {
-    status: response.status,
+function wellKnownJson(doc: unknown): Response {
+  // Apple rejects anything but application/json (silently). nosniff for parity
+  // with the dedicated well-known site.
+  return new Response(JSON.stringify(doc), {
     headers: {
-      "content-type": response.headers.get("content-type") ?? "application/json; charset=utf-8",
-      "cache-control": "no-store",
+      "content-type": "application/json",
+      "cache-control": "public, max-age=3600",
+      "x-content-type-options": "nosniff",
     },
   });
-}
-
-function normalizeBaseUrl(value: string | undefined): string | null {
-  if (!value) {
-    return null;
-  }
-  return value.endsWith("/") ? value.slice(0, -1) : value;
 }

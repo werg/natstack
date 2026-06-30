@@ -1,4 +1,4 @@
-import type { RpcCaller } from "@natstack/rpc";
+import { type RpcCaller, bytesToBase64, base64ToBytes } from "@natstack/rpc";
 import type { ClientConfigStatus, ConfigureClientRequest, ConnectCredentialRequest, CredentialAccessGrantSummary, CredentialAccessSubjectSummary, CredentialBinding, CredentialBindingUse, CredentialGrantResourceHint, CredentialInjection, DeleteClientConfigRequest, GetClientConfigStatusRequest, GrantUrlBoundCredentialRequest, ManagedCredentialSummary, ProxyGitHttpRequest, ProxyGitHttpResponse, RequestCredentialInputRequest, ResolveUrlBoundCredentialRequest, StoredCredentialSummary, StoreUrlBoundCredentialRequest, UrlAudience, } from "@natstack/shared/credentials/types";
 export type { ClientConfigStatus, ConfigureClientRequest, ConnectCredentialRequest, CredentialAccessGrantSummary, CredentialAccessSubjectSummary, CredentialBinding, CredentialBindingUse, CredentialGrantResourceHint, CredentialInjection, DeleteClientConfigRequest, GetClientConfigStatusRequest, GrantUrlBoundCredentialRequest, ManagedCredentialSummary, ProxyGitHttpRequest, ProxyGitHttpResponse, RequestCredentialInputRequest, ResolveUrlBoundCredentialRequest, StoredCredentialSummary, StoreUrlBoundCredentialRequest, UrlAudience, } from "@natstack/shared/credentials/types";
 export interface CredentialClient {
@@ -263,19 +263,4 @@ async function encodeRequestBody(body: BodyInit | null | undefined): Promise<{
         return { bodyBase64: bytesToBase64(new Uint8Array(await body.arrayBuffer())) };
     }
     throw new Error("credentials.fetch supports string, URLSearchParams, ArrayBuffer, typed-array, and Blob request bodies");
-}
-function bytesToBase64(bytes: Uint8Array): string {
-    let binary = "";
-    for (const byte of bytes) {
-        binary += String.fromCharCode(byte);
-    }
-    return btoa(binary);
-}
-function base64ToBytes(value: string): Uint8Array {
-    const binary = atob(value);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-        bytes[index] = binary.charCodeAt(index);
-    }
-    return bytes;
 }

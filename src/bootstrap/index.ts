@@ -34,42 +34,18 @@ type ShellTransportBridge = {
 
 type BootstrapBridge = {
   getState: () => Promise<unknown>;
-  launchLocalWorkspace: (workspaceName?: string) => Promise<unknown>;
+  launchLocalWorkspace: (workspaceName: string) => Promise<unknown>;
   launchEphemeralWorkspace: () => Promise<unknown>;
-  connectSelectedRemoteWorkspace: () => Promise<unknown>;
-  listRemoteWorkspaces: () => Promise<unknown>;
-  connectRemoteWorkspace: (workspaceName: string) => Promise<unknown>;
-  pairRemote: (payload: {
-    url: string;
-    code: string;
-    caPath?: string;
-    fingerprint?: string;
-    label?: string;
-  }) => Promise<unknown>;
-};
-
-type BootstrapSavedRemote = {
-  url: string;
-  hubUrl?: string;
-  workspaceName?: string;
-  bootstrap: "device" | "admin-token" | "hybrid";
-  deviceId?: string;
-  tokenPreview?: string;
-};
-
-type RemoteWorkspaceEntry = {
-  name: string;
-  lastOpened: number;
-  running?: boolean;
-  ephemeral?: boolean;
+  pairRemote: (payload: { link: string; label?: string }) => Promise<unknown>;
 };
 
 type BootstrapConnectionState = {
   mode: "choose-connection" | "starting" | "connected";
   localWorkspaces: Array<{ name: string; lastOpened: number }>;
   lastLocalWorkspaceName: string | null;
-  savedRemote: BootstrapSavedRemote | null;
   isDev?: boolean;
+  /** The natstack://connect deep link the app was opened with (auto-pair). */
+  pendingPairLink?: string | null;
 };
 
 const globals = globalThis as unknown as {
@@ -419,11 +395,11 @@ let connectionState: BootstrapConnectionState | null = null;
 let connectionBusyAction: string | null = null;
 let connectionHandoff: { title: string; detail: string } | null = null;
 let connectionError: string | null = null;
-let pairServerValue = "";
-let pairCodeValue = "";
+let pairLinkValue = "";
 let localWorkspaceValue = "";
-let remoteWorkspaces: RemoteWorkspaceEntry[] | null = null;
-let remoteWorkspacesLoading = false;
+// Guards the one-shot auto-pair when the app was opened with a natstack://connect
+// deep link — we pair automatically instead of waiting for a paste + click.
+let autoPairTriggered = false;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
@@ -497,10 +473,10 @@ function connectionHandoffFor(actionId: string): { title: string; detail: string
       detail: "Preparing the selected workspace and startup approval gate...",
     };
   }
-  if (actionId === "saved" || actionId.startsWith("remote:")) {
+  if (actionId === "pair") {
     return {
-      title: "Connecting to workspace",
-      detail: "Opening the selected server workspace and startup approval gate...",
+      title: "Pairing server",
+      detail: "Redeeming the pairing link over WebRTC and connecting...",
     };
   }
   return null;
@@ -523,11 +499,6 @@ function renderConnectionHandoff(): void {
   }
 }
 
-function isRemoteWorkspaceEntry(value: unknown): value is RemoteWorkspaceEntry {
-  if (!isRecord(value) || typeof value["name"] !== "string") return false;
-  return true;
-}
-
 async function runConnectionAction(actionId: string, action: () => Promise<void>): Promise<void> {
   if (connectionBusyAction) return;
   connectionBusyAction = actionId;
@@ -540,27 +511,17 @@ async function runConnectionAction(actionId: string, action: () => Promise<void>
   }
   try {
     await action();
+    // No relaunch: the host resolves the choice and connects in THIS process and
+    // window. Show the starting state and poll the bootstrap state until the
+    // launch gate is ready (waitForConnectedBootstrapState drives the handoff).
+    renderStartingWorkspace();
+    waitForConnectedBootstrapState();
   } catch (err) {
     connectionError = err instanceof Error ? err.message : String(err);
     connectionBusyAction = null;
     connectionHandoff = null;
     if (connectionState) renderConnectionChooser(connectionState);
   }
-}
-
-async function loadRemoteWorkspaces(): Promise<void> {
-  if (!bootstrapApi) throw new Error("Bootstrap connection controls are unavailable");
-  remoteWorkspacesLoading = true;
-  if (connectionState) renderConnectionChooser(connectionState);
-  try {
-    const result = await bootstrapApi.listRemoteWorkspaces();
-    const records =
-      isRecord(result) && Array.isArray(result["workspaces"]) ? result["workspaces"] : [];
-    remoteWorkspaces = records.filter(isRemoteWorkspaceEntry);
-  } finally {
-    remoteWorkspacesLoading = false;
-  }
-  if (connectionState) renderConnectionChooser(connectionState);
 }
 
 function appendConnectionStatus(parent: HTMLElement): void {
@@ -571,178 +532,44 @@ function appendConnectionStatus(parent: HTMLElement): void {
   parent.append(status);
 }
 
-function appendSavedRemote(parent: HTMLElement, savedRemote: BootstrapSavedRemote | null): void {
-  const card = document.createElement("article");
-  card.className = "connection-option";
-  const title = document.createElement("div");
-  title.className = "title";
-  title.textContent = "Saved server";
-  const meta = document.createElement("div");
-  meta.className = "meta";
-  if (savedRemote) {
-    meta.textContent = [
-      savedRemote.workspaceName
-        ? `${savedRemote.workspaceName} on ${savedRemote.hubUrl ?? savedRemote.url}`
-        : (savedRemote.hubUrl ?? savedRemote.url),
-      savedRemote.deviceId ? `device ${savedRemote.deviceId}` : savedRemote.bootstrap,
-      savedRemote.tokenPreview ? `token ${savedRemote.tokenPreview}` : null,
-    ]
-      .filter(Boolean)
-      .join(" · ");
-  } else {
-    meta.textContent = "No saved server is configured yet.";
-  }
-  const actions = document.createElement("div");
-  actions.className = "toolbar";
-  if (savedRemote && bootstrapApi) {
-    if (savedRemote.workspaceName) {
-      actions.append(
-        connectionButton("Connect", "saved", async () => {
-          await bootstrapApi.connectSelectedRemoteWorkspace();
-        })
-      );
-    }
-    actions.append(
-      connectionButton(
-        savedRemote.workspaceName ? "Change workspace" : "Choose workspace",
-        "remote:list",
-        async () => {
-          await loadRemoteWorkspaces();
-        }
-      )
-    );
-  }
-  card.append(title, meta, actions);
-  parent.append(card);
-}
-
-function appendRemoteWorkspaces(parent: HTMLElement): void {
-  if (!remoteWorkspaces && !remoteWorkspacesLoading) return;
-  const card = document.createElement("article");
-  card.className = "connection-option";
-  const title = document.createElement("div");
-  title.className = "title";
-  title.textContent = "Remote workspace";
-  card.append(title);
-
-  if (remoteWorkspacesLoading) {
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = "Loading workspaces...";
-    card.append(meta);
-  } else if (!remoteWorkspaces || remoteWorkspaces.length === 0) {
-    const meta = document.createElement("div");
-    meta.className = "meta";
-    meta.textContent = "No remote workspaces are available.";
-    card.append(meta);
-  } else {
-    const list = document.createElement("div");
-    list.className = "workspace-list";
-    for (const workspace of remoteWorkspaces) {
-      const row = document.createElement("div");
-      row.className = "workspace-row";
-      const text = document.createElement("div");
-      const name = document.createElement("div");
-      name.className = "workspace-name";
-      name.textContent = workspace.name;
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      meta.textContent = [
-        workspace.ephemeral ? "Temporary workspace" : formatLastOpened(workspace.lastOpened),
-        workspace.running ? "running" : null,
-      ]
-        .filter(Boolean)
-        .join(" · ");
-      text.append(name, meta);
-      row.append(
-        text,
-        connectionButton("Open", `remote:${workspace.name}`, async () => {
-          if (!bootstrapApi) throw new Error("Bootstrap connection controls are unavailable");
-          await bootstrapApi.connectRemoteWorkspace(workspace.name);
-        })
-      );
-      list.append(row);
-    }
-    card.append(list);
-  }
-  parent.append(card);
-}
-
-function parsePairFields(
-  serverValue: string,
-  codeValue: string
-): {
-  url: string;
-  code: string;
-} {
-  const rawServer = serverValue.trim();
-  const rawCode = codeValue.trim();
-  for (const candidate of [rawServer, rawCode]) {
-    if (!candidate) continue;
-    try {
-      const parsed = new URL(candidate);
-      if (parsed.protocol !== "natstack:") continue;
-      const url = parsed.searchParams.get("url") ?? "";
-      const code = parsed.searchParams.get("code") ?? "";
-      if (url && code) {
-        // Pairing codes are case-sensitive base64url (randomBytes(24).toString("base64url"));
-        // they must be passed to the server verbatim. URLSearchParams already decodes the value.
-        return { url, code };
-      }
-    } catch {
-      /* not a URL */
-    }
-  }
-  return { url: rawServer, code: rawCode };
-}
-
 function appendPairRemote(parent: HTMLElement): void {
   const form = document.createElement("form");
   form.className = "connection-option connection-form";
   const title = document.createElement("div");
   title.className = "title";
   title.textContent = "Pair a server";
+  const meta = document.createElement("div");
+  meta.className = "meta";
+  meta.textContent =
+    "Paste the natstack:// pairing link from the server. Pairing connects over WebRTC and opens the remote workspace in this window.";
   const fields = document.createElement("div");
   fields.className = "field-grid";
 
-  const serverLabel = document.createElement("label");
-  serverLabel.textContent = "Server URL";
-  const serverInput = document.createElement("input");
-  serverInput.name = "server";
-  serverInput.type = "text";
-  serverInput.inputMode = "url";
-  serverInput.placeholder = "http://100.x.y.z:3030";
-  serverInput.value = pairServerValue;
-  serverInput.autocomplete = "off";
-  serverInput.oninput = () => {
-    pairServerValue = serverInput.value;
+  const linkLabel = document.createElement("label");
+  linkLabel.textContent = "Pairing link";
+  const linkInput = document.createElement("input");
+  linkInput.name = "link";
+  linkInput.type = "text";
+  linkInput.placeholder = "natstack://connect?room=...";
+  linkInput.value = pairLinkValue;
+  linkInput.autocomplete = "off";
+  linkInput.oninput = () => {
+    pairLinkValue = linkInput.value;
   };
-  serverLabel.append(serverInput);
+  linkLabel.append(linkInput);
 
-  const codeLabel = document.createElement("label");
-  codeLabel.textContent = "Pairing code or link";
-  const codeInput = document.createElement("input");
-  codeInput.name = "code";
-  codeInput.type = "text";
-  codeInput.placeholder = "Paste code";
-  codeInput.value = pairCodeValue;
-  codeInput.autocomplete = "one-time-code";
-  codeInput.oninput = () => {
-    pairCodeValue = codeInput.value;
-  };
-  codeLabel.append(codeInput);
-
-  fields.append(serverLabel, codeLabel);
+  fields.append(linkLabel);
 
   const actions = document.createElement("div");
   actions.className = "toolbar";
   actions.append(
     connectionButton("Pair server", "pair", async () => {
       if (!bootstrapApi) throw new Error("Bootstrap connection controls are unavailable");
-      const { url, code } = parsePairFields(pairServerValue, pairCodeValue);
-      if (!url) throw new Error("Enter a server URL");
-      if (!code) throw new Error("Enter a pairing code");
-      const result = await bootstrapApi.pairRemote({ url, code });
+      const link = pairLinkValue.trim();
+      if (!link) throw new Error("Paste a natstack:// pairing link");
+      const result = await bootstrapApi.pairRemote({ link });
+      // On success the host accepts the pairing and connects in this process;
+      // only a failed parse returns an { ok: false } result for us to surface.
       if (isRecord(result) && result["ok"] === false) {
         throw new Error(
           typeof result["message"] === "string"
@@ -752,7 +579,6 @@ function appendPairRemote(parent: HTMLElement): void {
               : "Pairing failed"
         );
       }
-      await loadRemoteWorkspaces();
     })
   );
   form.onsubmit = (event) => {
@@ -760,7 +586,7 @@ function appendPairRemote(parent: HTMLElement): void {
     const button = actions.querySelector("button");
     button?.click();
   };
-  form.append(title, fields, actions);
+  form.append(title, meta, fields, actions);
   parent.append(form);
 }
 
@@ -857,10 +683,29 @@ function renderConnectionChooser(state: BootstrapConnectionState): void {
   approvalsContainer.className = "connection-grid";
   approvalsContainer.replaceChildren();
   appendConnectionStatus(approvalsContainer);
-  appendSavedRemote(approvalsContainer, state.savedRemote);
-  appendRemoteWorkspaces(approvalsContainer);
   appendPairRemote(approvalsContainer);
   appendLocalWorkspaces(approvalsContainer, state);
+  // Opened via a natstack://connect deep link ⇒ pair automatically (one-shot).
+  // The user already expressed intent by opening the link; on success the host
+  // connects in this process and the launch gate proceeds in this window.
+  if (state.pendingPairLink && !autoPairTriggered && !connectionBusyAction) {
+    autoPairTriggered = true;
+    const link = state.pendingPairLink;
+    pairLinkValue = link;
+    void runConnectionAction("pair", async () => {
+      if (!bootstrapApi) throw new Error("Bootstrap connection controls are unavailable");
+      const result = await bootstrapApi.pairRemote({ link });
+      if (isRecord(result) && result["ok"] === false) {
+        throw new Error(
+          typeof result["message"] === "string"
+            ? result["message"]
+            : typeof result["error"] === "string"
+              ? result["error"]
+              : "Pairing failed"
+        );
+      }
+    });
+  }
 }
 
 function renderStartingWorkspace(): void {

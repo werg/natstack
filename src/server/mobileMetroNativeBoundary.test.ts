@@ -71,6 +71,15 @@ describe("mobile Metro native capability boundary", () => {
     ).not.toThrow();
   });
 
+  it("permits the shared WebRTC transport package to persist the shell credential", () => {
+    expect(() =>
+      boundary.guardNativeModuleImport(
+        "@react-native-async-storage/async-storage",
+        path.resolve("packages/mobile-webrtc/src/connect.ts")
+      )
+    ).not.toThrow();
+  });
+
   it("does not affect normal JavaScript package resolution", () => {
     expect(() =>
       boundary.guardNativeModuleImport("@natstack/shared", path.join(workspaceAppRoot, "App.tsx"))

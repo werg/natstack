@@ -287,8 +287,7 @@ Without this, the Gmail agent polls via the history API (default 5 min).
 With it, Gmail pushes new-mail notifications to the natstack server and syncs
 arrive in seconds; polling drops to a 30-minute safety net.
 
-Requirements: a GCP project, a Pub/Sub topic, and a publicly reachable
-natstack server URL (`NATSTACK_PUBLIC_URL`).
+Requirements: a GCP project, a Pub/Sub topic, and natstack server reachable by Google Pub/Sub via the callback relay (see docs/webrtc-rpc-transport.md §7).
 
 1. Create the topic and grant Gmail publish rights:
    ```bash

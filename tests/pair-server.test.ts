@@ -37,13 +37,13 @@ afterEach(() => {
 });
 
 describe("pair-server runner", () => {
-  it("prints the pairing banner from the structured ready file", async () => {
+  it("prints the WebRTC pairing banner from the structured ready file", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const child = new FakeChild();
     let readyFile = "";
 
-    runPairServer(config, ["--host", "127.0.0.1", "--port", "3456"], {
+    runPairServer(config, ["--port", "3456"], {
       spawnServer({ serverArgs }: { serverArgs: string[] }) {
         const readyIndex = serverArgs.indexOf("--ready-file");
         readyFile = serverArgs[readyIndex + 1] ?? "";
@@ -51,7 +51,11 @@ describe("pair-server runner", () => {
           fs.writeFileSync(
             readyFile,
             JSON.stringify({
-              connectUrl: "http://127.0.0.1:3456",
+              pairing: {
+                room: "room-ready-7f3a9c2b",
+                fp: "4f8b2a1c9d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a",
+                sig: "wss://signal.natstack.dev",
+              },
               pairingCode: "PAIRING_READY_CODE_123",
               qrPairingCode: "PAIRING_QR_CODE_123",
             })
@@ -65,61 +69,26 @@ describe("pair-server runner", () => {
     await waitFor(() => logText(logSpy).includes("PAIRING_READY_CODE_123"));
     const output = logText(logSpy);
     expect(output).toContain("Pair Test");
-    expect(output).toContain("Gateway:    http://127.0.0.1:3456");
-    expect(output).toContain("Pair code:  PAIRING_READY_CODE_123");
-    expect(output).toContain("QR code:    PAIRING_QR_CODE_123");
+    expect(output).toContain("Room:");
+    expect(output).toContain("room-ready-7f3a9c2b");
+    expect(output).toContain("Fingerprint:");
     expect(output).toContain(
-      "natstack://connect?url=http%3A%2F%2F127.0.0.1%3A3456&code=PAIRING_READY_CODE_123"
+      "4f8b2a1c9d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a"
+    );
+    expect(output).toContain("Signaling:");
+    expect(output).toContain("wss://signal.natstack.dev");
+    expect(output).toMatch(/Pair code:\s+PAIRING_READY_CODE_123/);
+    expect(output).toMatch(/QR code:\s+PAIRING_QR_CODE_123/);
+    expect(output).toContain(
+      "natstack://connect?room=room-ready-7f3a9c2b&fp=4f8b2a1c9d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a&code=PAIRING_READY_CODE_123&sig=wss%3A%2F%2Fsignal.natstack.dev&v=1&ice=all"
     );
     expect(output).toContain(
-      "natstack://connect?url=http%3A%2F%2F127.0.0.1%3A3456&code=PAIRING_QR_CODE_123"
+      "natstack://connect?room=room-ready-7f3a9c2b&fp=4f8b2a1c9d7e6f5a4b3c2d1e0f9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d3e2f1a&code=PAIRING_QR_CODE_123&sig=wss%3A%2F%2Fsignal.natstack.dev&v=1&ice=all"
     );
+    expect(output).toContain("Pair from test.");
 
     child.emit("exit", 0, null);
     expect(fs.existsSync(path.dirname(readyFile))).toBe(false);
-  });
-
-  it("prints a desktop client command when configured", async () => {
-    const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
-    vi.spyOn(console, "error").mockImplementation(() => undefined);
-    const child = new FakeChild();
-
-    runPairServer(
-      {
-        ...config,
-        clientCommandLabel: "Desktop command",
-        instructions: "Run the desktop command.",
-      },
-      ["--host", "127.0.0.1", "--port", "3456"],
-      {
-        spawnServer({ serverArgs }: { serverArgs: string[] }) {
-          const readyIndex = serverArgs.indexOf("--ready-file");
-          const readyFile = serverArgs[readyIndex + 1] ?? "";
-          setTimeout(() => {
-            fs.writeFileSync(
-              readyFile,
-              JSON.stringify({
-                connectUrl: "https://host.tailnet.ts.net",
-                pairingCode: "PAIRING_DESKTOP_CODE_123",
-                qrPairingCode: "PAIRING_QR_CODE_123",
-              })
-            );
-          }, 10);
-          return child;
-        },
-        onChildExit: () => true,
-      }
-    );
-
-    await waitFor(() => logText(logSpy).includes("PAIRING_DESKTOP_CODE_123"));
-    const output = logText(logSpy);
-    expect(output).toContain("Desktop command:");
-    expect(output).toContain(
-      "natstack remote pair 'natstack://connect?url=https%3A%2F%2Fhost.tailnet.ts.net&code=PAIRING_DESKTOP_CODE_123'"
-    );
-    expect(output).toContain("Run the desktop command.");
-
-    child.emit("exit", 0, null);
   });
 
   it("polls a custom server --ready-file instead of an unused generated file", async () => {
@@ -129,7 +98,7 @@ describe("pair-server runner", () => {
     const readyDir = fs.mkdtempSync(path.join(os.tmpdir(), "natstack-pair-custom-"));
     const readyFile = path.join(readyDir, "server-ready.json");
     try {
-      runPairServer(config, ["--host", "127.0.0.1", "--port", "3456"], {
+      runPairServer(config, ["--port", "3456"], {
         buildServerArgs() {
           return ["dist/server.mjs", "--ready-file", readyFile];
         },
@@ -139,7 +108,11 @@ describe("pair-server runner", () => {
             fs.writeFileSync(
               readyFile,
               JSON.stringify({
-                connectUrl: "http://127.0.0.1:3456",
+                pairing: {
+                  room: "room-custom-1a2b3c4d",
+                  fp: "aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66",
+                  sig: "ws://127.0.0.1:8787",
+                },
                 pairingCode: "PAIRING_CUSTOM_CODE_123",
               })
             );
@@ -150,6 +123,11 @@ describe("pair-server runner", () => {
       });
 
       await waitFor(() => logText(logSpy).includes("PAIRING_CUSTOM_CODE_123"));
+      const output = logText(logSpy);
+      expect(output).toMatch(/Pair code:\s+PAIRING_CUSTOM_CODE_123/);
+      expect(output).toContain(
+        "natstack://connect?room=room-custom-1a2b3c4d&fp=aa11bb22cc33dd44ee55ff66aa77bb88cc99dd00ee11ff22aa33bb44cc55dd66&code=PAIRING_CUSTOM_CODE_123&sig=ws%3A%2F%2F127.0.0.1%3A8787&v=1&ice=all"
+      );
       child.emit("exit", 0, null);
       expect(fs.existsSync(readyDir)).toBe(true);
     } finally {
@@ -157,7 +135,7 @@ describe("pair-server runner", () => {
     }
   });
 
-  it("passes remote-serve readiness gates through to the server and prints connectUrl", async () => {
+  it("passes remote-serve readiness gates through to the server and prints the pairing banner", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const child = new FakeChild();
@@ -170,7 +148,7 @@ describe("pair-server runner", () => {
         requireMobileReady: true,
         requireElectronReady: true,
       },
-      ["--host", "127.0.0.1", "--port", "3456"],
+      ["--port", "3456"],
       {
         spawnServer({ serverArgs }: { serverArgs: string[] }) {
           expect(serverArgs).toContain("--require-mobile-ready");
@@ -181,8 +159,11 @@ describe("pair-server runner", () => {
             fs.writeFileSync(
               readyFile,
               JSON.stringify({
-                gatewayUrl: "http://127.0.0.1:3456",
-                connectUrl: "https://host.tailnet.ts.net",
+                pairing: {
+                  room: "room-remote-9z8y7x6w",
+                  fp: "11aa22bb33cc44dd55ee66ff77001122334455667788990011223344556677ab",
+                  sig: "wss://signal.example.org",
+                },
                 pairingCode: "PAIRING_REMOTE_CODE_123",
                 qrPairingCode: "PAIRING_REMOTE_QR_123",
               })
@@ -196,12 +177,14 @@ describe("pair-server runner", () => {
 
     await waitFor(() => logText(logSpy).includes("PAIRING_REMOTE_CODE_123"));
     const output = logText(logSpy);
-    expect(output).toContain("Gateway:    https://host.tailnet.ts.net");
+    expect(output).toContain("Signaling:");
+    expect(output).toContain("wss://signal.example.org");
+    expect(output).toMatch(/Pair code:\s+PAIRING_REMOTE_CODE_123/);
     expect(output).toContain(
-      "natstack://connect?url=https%3A%2F%2Fhost.tailnet.ts.net&code=PAIRING_REMOTE_CODE_123"
+      "natstack://connect?room=room-remote-9z8y7x6w&fp=11aa22bb33cc44dd55ee66ff77001122334455667788990011223344556677ab&code=PAIRING_REMOTE_CODE_123&sig=wss%3A%2F%2Fsignal.example.org&v=1&ice=all"
     );
     expect(output).toContain(
-      "natstack://connect?url=https%3A%2F%2Fhost.tailnet.ts.net&code=PAIRING_REMOTE_QR_123"
+      "natstack://connect?room=room-remote-9z8y7x6w&fp=11aa22bb33cc44dd55ee66ff77001122334455667788990011223344556677ab&code=PAIRING_REMOTE_QR_123&sig=wss%3A%2F%2Fsignal.example.org&v=1&ice=all"
     );
 
     child.emit("exit", 0, null);
@@ -209,7 +192,7 @@ describe("pair-server runner", () => {
 
   it("rejects raw server flag forwarding", () => {
     expect(() =>
-      runPairServer(config, ["--host", "127.0.0.1", "--", "--workspace", "dev"], {
+      runPairServer(config, ["--", "--workspace", "dev"], {
         spawnServer() {
           throw new Error("should not spawn");
         },
@@ -217,18 +200,25 @@ describe("pair-server runner", () => {
     ).toThrow(/Forwarding raw server flags is no longer supported/);
   });
 
-  it("waits briefly for a QR-specific pairing code when reading stdout", async () => {
+  it("reads pairing material and a distinct QR pairing code from stdout", async () => {
     const logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     vi.spyOn(process.stdout, "write").mockImplementation(() => true);
     const child = new FakeChild();
 
-    runPairServer(config, ["--host", "127.0.0.1", "--port", "3456"], {
+    runPairServer(config, ["--port", "3456"], {
       spawnServer() {
         setTimeout(() => {
-          child.stdout.write("Mobile URL: http://127.0.0.1:3456\n");
-          child.stdout.write("Pairing code: PAIRING_STDOUT_CODE_123\n");
+          child.stdout.write("NATSTACK_PAIRING_ROOM=room-stdout-5q6r7s8t\n");
+          child.stdout.write(
+            "NATSTACK_PAIRING_FP=deadbeef00112233445566778899aabbccddeeff00112233445566778899aabb\n"
+          );
+          child.stdout.write("NATSTACK_PAIRING_SIG=wss://signal.stdout.test\n");
+          // The QR-specific code arrives before the primary code; the banner only
+          // prints once room/fp/sig + a pairing code are all present, so by then
+          // both deep links carry their respective codes.
           child.stdout.write("QR pairing code: PAIRING_STDOUT_QR_123\n");
+          child.stdout.write("Pairing code: PAIRING_STDOUT_CODE_123\n");
         }, 10);
         return child;
       },
@@ -238,10 +228,10 @@ describe("pair-server runner", () => {
     await waitFor(() => logText(logSpy).includes("PAIRING_STDOUT_QR_123"));
     const output = logText(logSpy);
     expect(output).toContain(
-      "natstack://connect?url=http%3A%2F%2F127.0.0.1%3A3456&code=PAIRING_STDOUT_CODE_123"
+      "natstack://connect?room=room-stdout-5q6r7s8t&fp=deadbeef00112233445566778899aabbccddeeff00112233445566778899aabb&code=PAIRING_STDOUT_CODE_123&sig=wss%3A%2F%2Fsignal.stdout.test&v=1&ice=all"
     );
     expect(output).toContain(
-      "natstack://connect?url=http%3A%2F%2F127.0.0.1%3A3456&code=PAIRING_STDOUT_QR_123"
+      "natstack://connect?room=room-stdout-5q6r7s8t&fp=deadbeef00112233445566778899aabbccddeeff00112233445566778899aabb&code=PAIRING_STDOUT_QR_123&sig=wss%3A%2F%2Fsignal.stdout.test&v=1&ice=all"
     );
 
     child.emit("exit", 0, null);
@@ -253,7 +243,7 @@ describe("pair-server runner", () => {
     vi.spyOn(console, "error").mockImplementation(() => undefined);
     const child = new FakeChild();
 
-    runPairServer(config, ["--host", "127.0.0.1", "--port", "3456"], {
+    runPairServer(config, ["--port", "3456"], {
       spawnServer({
         serverArgs,
         invocation,
@@ -276,6 +266,36 @@ describe("pair-server runner", () => {
 
     await waitFor(() => child.listenerCount("exit") > 0);
     child.emit("exit", 0, null);
+  });
+
+  it("rejects --host as no longer supported (loopback-only WebRTC cutover)", () => {
+    expect(() =>
+      runPairServer(config, ["--host", "127.0.0.1"], {
+        spawnServer() {
+          throw new Error("should not spawn");
+        },
+      })
+    ).toThrow(/--host is no longer supported; remote reach is WebRTC and the server binds loopback only/);
+  });
+
+  it("rejects --protocol as no longer supported (loopback-only WebRTC cutover)", () => {
+    expect(() =>
+      runPairServer(config, ["--protocol", "https"], {
+        spawnServer() {
+          throw new Error("should not spawn");
+        },
+      })
+    ).toThrow(/--protocol is no longer supported; remote reach is WebRTC and the server binds loopback only/);
+  });
+
+  it("rejects --public-url as no longer supported (loopback-only WebRTC cutover)", () => {
+    expect(() =>
+      runPairServer(config, ["--public-url", "https://example.org"], {
+        spawnServer() {
+          throw new Error("should not spawn");
+        },
+      })
+    ).toThrow(/--public-url is no longer supported; remote reach is WebRTC and the server binds loopback only/);
   });
 });
 

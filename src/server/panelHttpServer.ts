@@ -9,7 +9,6 @@ import * as fs from "fs";
 import * as path from "path";
 import { WebSocketServer } from "ws";
 import { createDevLogger } from "@natstack/dev-log";
-import { constantTimeStringEqual } from "@natstack/shared/tokenManager";
 import type {
   BuildArtifactManifestEntry,
   BuildResult,
@@ -21,11 +20,6 @@ import { assertPresent } from "../lintHelpers";
 
 const log = createDevLogger("PanelHttpServer");
 
-/**
- * Hard cap on inbound POST bodies on the management API (audit #31). The
- * management API has no large-payload endpoints today.
- */
-const MANAGEMENT_MAX_BODY_BYTES = 4 * 1024 * 1024;
 declare const __dirname: string | undefined;
 
 // ---------------------------------------------------------------------------
@@ -70,15 +64,6 @@ const DEFAULT_FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 
  * The HTTP server receives all panel data via these callbacks — no per-panel state stored.
  */
 export interface PanelHttpCallbacks {
-  /** Management API: list all panels */
-  listPanels?(): Array<{
-    panelId: string;
-    title: string;
-    source: string;
-    parentId: string | null;
-    contextId: string;
-  }>;
-
   /** Build-complete notification (source-level) */
   onBuildComplete?(source: string, error?: string): void;
 
@@ -154,10 +139,6 @@ export class PanelHttpServer {
   private buildRevisionCounter = 0;
 
   private port: number | null = null;
-  private host: string;
-  private managementToken: string | null;
-  private externalHost: string;
-  private protocol: "http" | "https";
 
   /**
    * Source registry populated at startup from the package graph.
@@ -174,32 +155,11 @@ export class PanelHttpServer {
     | import("./workerdInspectorBridge.js").WorkerdInspectorBridge
     | null = null;
 
-  constructor(
-    host = "127.0.0.1",
-    managementToken?: string,
-    externalHost = "localhost",
-    protocol: "http" | "https" = "http"
-  ) {
-    this.host = host;
-    this.managementToken = managementToken ?? null;
-    this.externalHost = externalHost;
-    this.protocol = protocol;
-
-    // Default-deny startup warning (audit #25). If the server is reachable
-    // from non-loopback (the host binds 0.0.0.0 / a public IP / a hostname)
-    // and no management token is configured, the management API would be
-    // open if we kept the old default-allow behavior. We have already
-    // flipped `validateManagementAuth` to default-deny; this surfaces the
-    // misconfiguration loudly so the operator knows the API is unreachable
-    // until they configure a token.
-    const looksRemote = host !== "127.0.0.1" && host !== "localhost" && host !== "::1";
-    if (looksRemote && !this.managementToken) {
-      log.warn(
-        `PanelHttpServer bound to non-loopback host (${host}) without a management token: ` +
-          `management API will be unreachable (default-deny). Configure a management token to enable it.`
-      );
-    }
-  }
+  // The panel asset façade is loopback-only and serves non-secret assets
+  // exclusively (HTML / bundles / __loader.js / __transport.js / css / wasm).
+  // It carries no management surface and no per-request token: the grant token
+  // reaches the panel out-of-band via the shell bridge, and panel RPC rides
+  // that bridge, never a loopback socket. The gateway binds 127.0.0.1 only.
 
   // =========================================================================
   // Configuration
@@ -374,12 +334,6 @@ export class PanelHttpServer {
 
     // ── Static runtime helpers ────────────────────────────────────────────
     if (this.serveRuntimeHelper(pathname, res)) {
-      return;
-    }
-
-    // ── Management API ────────────────────────────────────────────────────
-    if (pathname.startsWith("/api/")) {
-      this.handleManagementApiRequest(req, res, url, pathname);
       return;
     }
 
@@ -577,95 +531,6 @@ export class PanelHttpServer {
   }
 
   // =========================================================================
-  // Management API (bare host, Bearer token auth)
-  // =========================================================================
-
-  private handleManagementApiRequest(
-    req: import("http").IncomingMessage,
-    res: import("http").ServerResponse,
-    _url: URL,
-    pathname: string
-  ): void {
-    // CORS
-    res.setHeader("Access-Control-Allow-Origin", "*");
-    res.setHeader("Access-Control-Allow-Headers", "Authorization, Content-Type");
-    res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
-
-    if (req.method === "OPTIONS") {
-      res.writeHead(204);
-      res.end();
-      return;
-    }
-
-    // Reject oversized bodies up-front (audit #31). The management API has
-    // no large-payload endpoints today; any oversized POST is malicious or
-    // misconfigured. Even GETs with a body are rejected.
-    const contentLength = req.headers["content-length"];
-    if (contentLength) {
-      const len = parseInt(
-        Array.isArray(contentLength) ? assertPresent(contentLength[0]) : contentLength,
-        10
-      );
-      if (Number.isFinite(len) && len > MANAGEMENT_MAX_BODY_BYTES) {
-        res.writeHead(413, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Payload too large" }));
-        return;
-      }
-    }
-
-    // Bearer token auth (default-deny — see validateManagementAuth).
-    if (!this.validateManagementAuth(req)) {
-      res.writeHead(401, { "Content-Type": "application/json" });
-      res.end(
-        JSON.stringify({
-          error: "Unauthorized — provide management token via Authorization: Bearer <token>",
-        })
-      );
-      return;
-    }
-
-    switch (pathname) {
-      case "/api/panels":
-        this.serveApiPanels(res);
-        break;
-      default:
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Not found" }));
-    }
-  }
-
-  /**
-   * Validate the inbound `Authorization: Bearer <token>` against the
-   * configured management token.
-   *
-   * Default-deny semantics (audit finding #25): when no `managementToken`
-   * is configured, every request is rejected. The previous default-allow
-   * behaviour meant a remote-bound server with an empty token published
-   * its panel list to anyone who could reach the port.
-   *
-   * Comparison is constant-time (audit #33).
-   */
-  private validateManagementAuth(req: import("http").IncomingMessage): boolean {
-    if (!this.managementToken) return false;
-    const auth = req.headers.authorization;
-    if (!auth) return false;
-    const match = auth.match(/^Bearer\s+(.+)$/i);
-    const presented = match?.[1];
-    if (!presented) return false;
-    return constantTimeStringEqual(presented, this.managementToken);
-  }
-
-  private serveApiPanels(res: import("http").ServerResponse): void {
-    const panels = (this.callbacks?.listPanels?.() ?? []).map((p) => ({
-      ...p,
-      url: `${this.protocol}://${this.externalHost}:${this.port}/${p.source}/?contextId=${encodeURIComponent(p.contextId)}`,
-    }));
-
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ panels }));
-  }
-
-  // =========================================================================
   // Building / error pages
   // =========================================================================
 
@@ -728,7 +593,7 @@ export class PanelHttpServer {
   <h1>Build Failed</h1>
   <p>The panel <code>${escapeHtml(source)}</code> failed to build:</p>
   <pre>${escapeHtml(error)}</pre>
-  <p><a href="${this.protocol}://${this.externalHost}:${this.port}/">View active panels</a></p>
+  <p><a href="http://127.0.0.1:${this.port}/">View active panels</a></p>
 </body>
 </html>`;
 
@@ -810,32 +675,14 @@ export class PanelHttpServer {
   // =========================================================================
 
   private serveIndex(res: import("http").ServerResponse): void {
-    // Use callbacks for running panels
-    const runningPanels = this.callbacks?.listPanels?.() ?? [];
-    const runningSources = new Set(runningPanels.map((p) => p.source));
-
-    // Active panels: currently running with direct links
-    const activeEntries = runningPanels.map((p) => {
-      const url = `${this.protocol}://${this.externalHost}:${this.port}/${p.source}/?contextId=${encodeURIComponent(p.contextId)}`;
+    const origin = `http://127.0.0.1:${this.port}`;
+    // Launchable panels: from the source registry (loopback asset façade).
+    const allEntries = Array.from(this.sourceRegistry.entries()).map(([source, { name }]) => {
       return `<li>
-  <a href="${url}">${escapeHtml(p.title)}</a>
-  <span class="badge running">running</span>
-  <small class="sub">${escapeHtml(p.contextId)} · ${escapeHtml(this.externalHost)}/${escapeHtml(p.source)}</small>
+  <a href="${origin}/${escapeHtml(source)}/">${escapeHtml(name)}</a>
+  <small class="sub">${escapeHtml(source)}</small>
 </li>`;
     });
-
-    // Available panels: from source registry, not currently running
-    const availableEntries = Array.from(this.sourceRegistry.entries())
-      .filter(([source]) => !runningSources.has(source))
-      .map(([source, { name }]) => {
-        const origin = `${this.protocol}://${this.externalHost}:${this.port}`;
-        return `<li>
-  <a href="${origin}/${escapeHtml(source)}/">${escapeHtml(name)}</a>
-  <small class="sub">${escapeHtml(this.externalHost)}/${escapeHtml(source)}</small>
-</li>`;
-      });
-
-    const allEntries = [...activeEntries, ...availableEntries];
 
     const html = `<!DOCTYPE html>
 <html lang="en">

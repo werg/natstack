@@ -7,7 +7,6 @@
 
 import { NativeModules } from "react-native";
 import type { AppCapability } from "@natstack/shared/unitManifest";
-import { isSelectedWorkspaceUrl } from "@natstack/shared/connect";
 
 export class StoredCredentialsNeedRepairError extends Error {
   constructor(
@@ -18,9 +17,11 @@ export class StoredCredentialsNeedRepairError extends Error {
   }
 }
 
+// Non-secret connection metadata held by the native host. The server URL is
+// gone — remote reach is an encrypted WebRTC pipe pinned to the server's DTLS
+// fingerprint (held natively), so JS only sees identity metadata + one-time
+// connection grants.
 export interface Credentials {
-  serverUrl: string;
-  hubUrl?: string;
   workspaceName?: string;
   deviceId: string;
   serverId: string;
@@ -28,8 +29,6 @@ export interface Credentials {
 }
 
 export interface ServerPairingResponse {
-  serverUrl: string;
-  hubUrl: string;
   deviceId: string;
   serverId: string;
 }
@@ -128,26 +127,11 @@ export async function getCredentials(): Promise<Credentials | null> {
     const credentials = await nativeHost().getCredentials();
     if (!credentials) return null;
     if (
-      typeof credentials.serverUrl !== "string" ||
       typeof credentials.deviceId !== "string" ||
+      credentials.deviceId.length === 0 ||
       typeof credentials.serverId !== "string" ||
       credentials.serverId.length === 0
     ) {
-      await clearCredentials().catch(() => {});
-      throw new StoredCredentialsNeedRepairError(
-        "Stored mobile credentials are incomplete. Scan a new pairing QR code to reconnect."
-      );
-    }
-    const hasWorkspaceId =
-      typeof credentials.workspaceId === "string" && credentials.workspaceId.length > 0;
-    const hasHubUrl = typeof credentials.hubUrl === "string" && credentials.hubUrl.length > 0;
-    if (hasWorkspaceId && !isSelectedWorkspaceUrl(credentials.serverUrl)) {
-      await clearCredentials().catch(() => {});
-      throw new StoredCredentialsNeedRepairError(
-        "Stored mobile credentials are not scoped to a workspace. Scan a new pairing QR code to reconnect."
-      );
-    }
-    if (!hasWorkspaceId && !hasHubUrl) {
       await clearCredentials().catch(() => {});
       throw new StoredCredentialsNeedRepairError(
         "Stored mobile credentials are incomplete. Scan a new pairing QR code to reconnect."
@@ -177,12 +161,7 @@ export async function resetToNativeBootstrap(): Promise<ResetToNativeBootstrapRe
 
 export async function pairServer(serverUrl: string, code: string): Promise<ServerPairingResponse> {
   const response = await nativeHost().pairServer(serverUrl, code);
-  if (
-    typeof response.serverUrl !== "string" ||
-    typeof response.hubUrl !== "string" ||
-    typeof response.deviceId !== "string" ||
-    typeof response.serverId !== "string"
-  ) {
+  if (typeof response.deviceId !== "string" || typeof response.serverId !== "string") {
     throw new Error("Native host returned an invalid server pairing response");
   }
   return response;

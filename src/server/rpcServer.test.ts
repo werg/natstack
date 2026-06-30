@@ -9,6 +9,7 @@ import { EntityCache } from "@natstack/shared/runtime/entityCache";
 import type { EntityKind, EntityRecord } from "@natstack/shared/runtime/entitySpec";
 import { ConnectionGrantService } from "@natstack/shared/connectionGrants";
 import { envelopeFromMessage, type RpcEnvelope, type RpcMessage } from "@natstack/rpc";
+import { encodeControlFrame } from "@natstack/rpc/protocol/sessionNegotiation";
 
 function makeRecord(
   id: string,
@@ -48,6 +49,7 @@ type TestRpcServer = {
     { promise: Promise<void>; resolve: () => void; reject: (err: Error) => void }
   >;
   handleAuth(ws: unknown, token: string | null, connectionId: string): void;
+  handleConnection(ws: unknown): void;
   handleRoute(
     client: WsClientState,
     targetId: string,
@@ -232,6 +234,49 @@ function registerClient(server: RpcServer, client: WsClientState): void {
 }
 
 describe("RpcServer relay behavior", () => {
+  it("closes all WebRTC logical sessions when the underlying pipe goes down", () => {
+    const { server } = createServer();
+    const closeArgs: unknown[][] = [];
+    testServer(server).handleConnection = vi.fn((ws: unknown) => {
+      (ws as { on(event: string, handler: (...args: unknown[]) => void): unknown }).on(
+        "close",
+        (...args) => closeArgs.push(args)
+      );
+    });
+
+    let controlHandler: ((data: Uint8Array) => void) | null = null;
+    let downHandler: ((reason: string) => void) | null = null;
+    server.attachWebRtcPipe({
+      writeControl: vi.fn(),
+      writeBulk: vi.fn(),
+      controlBufferedAmount: () => 0,
+      onControl: (handler) => {
+        controlHandler = handler;
+      },
+      onDown: (handler) => {
+        downHandler = handler;
+        return () => {
+          if (downHandler === handler) downHandler = null;
+        };
+      },
+    });
+
+    controlHandler!(
+      new TextEncoder().encode(
+        encodeControlFrame({ t: "open", sid: "s1", token: "grant", connectionId: "c1" })
+      )
+    );
+    expect(testServer(server).handleConnection).toHaveBeenCalledTimes(1);
+
+    downHandler!("ICE failed");
+    expect(closeArgs).toHaveLength(1);
+    expect(closeArgs[0]![0]).toBe(1006);
+    expect((closeArgs[0]![1] as Buffer).toString()).toBe("ICE failed");
+
+    downHandler!("late duplicate");
+    expect(closeArgs).toHaveLength(1);
+  });
+
   it("allows authenticated panels to relay to panel, DO, and worker targets", () => {
     const { server } = createServer();
 

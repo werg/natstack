@@ -8,41 +8,61 @@ import {
 import { createRecoveryCoordinator } from "@natstack/shared/shell/recoveryCoordinator";
 import type { RecoveryCoordinator, RecoveryKind } from "@natstack/shared/shell/recoveryCoordinator";
 
-type NatstackTransportBridge = {
-  send: (envelope: RpcEnvelope) => void | Promise<void>;
-  onMessage: (handler: (envelope: RpcEnvelope) => void) => () => void;
+/**
+ * The host bridge a panel reaches its server through. A panel lives in a webview
+ * and cannot touch the host's WebRTC `RTCPeerConnection` directly, so its RPC
+ * crosses the webview boundary over the **shell bridge** — Electron
+ * `contextBridge` IPC (`__natstackShell`) on desktop, the React-Native
+ * `postMessage` bridge injected by `PanelWebView` on mobile. The host forwards
+ * each panel's envelopes onto its single control channel as that panel's own
+ * logical session (per-panel principal, lease, and recovery preserved exactly)
+ * and delivers the demuxed inbound envelopes back via `onEnvelope`. There is no
+ * panel-side socket and no direct `ws://…/rpc` connection.
+ */
+type NatstackShellBridge = {
+  /** Post one RPC envelope to the host (→ this panel's logical session on the pipe). */
+  postEnvelope: (envelope: RpcEnvelope) => void | Promise<void>;
+  /** Subscribe to inbound envelopes the host demuxes for this panel's session. */
+  onEnvelope: (handler: (envelope: RpcEnvelope) => void) => () => void;
+  /** Optional recovery signals (resubscribe / cold-recover) raised by the host. */
   onRecovery?: (kind: RecoveryKind, handler: () => void | Promise<void>) => () => void;
+  /**
+   * Optional first-class streaming: the host physically streams the response
+   * body over the **bulk channel** and returns a `Response`. When absent, the
+   * RPC client transparently falls back to the duplex stream-request /
+   * stream-frame envelope path over `postEnvelope`/`onEnvelope`.
+   */
+  stream?: (envelope: RpcEnvelope, signal?: AbortSignal | null) => Promise<Response>;
+  /** Electron-only: IPC dispatch for electron-local services (kept as-is). */
+  serviceCall?: (method: string, ...args: unknown[]) => Promise<unknown>;
 };
 
 export const recoveryCoordinator: RecoveryCoordinator = createRecoveryCoordinator();
 
-function getTransportBridge(): NatstackTransportBridge {
-  const bridge = (globalThis as any).__natstackTransport as NatstackTransportBridge | undefined;
-  if (!bridge?.send || !bridge?.onMessage) {
-    throw new Error("NatStack transport bridge is not available (missing __natstackTransport)");
+function getShellBridge(): NatstackShellBridge {
+  const shell = ((globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron) as
+    | NatstackShellBridge
+    | undefined;
+  if (
+    !shell ||
+    typeof shell.postEnvelope !== "function" ||
+    typeof shell.onEnvelope !== "function"
+  ) {
+    throw new Error(
+      "NatStack shell bridge is not available (missing __natstackShell.postEnvelope/onEnvelope)"
+    );
   }
-  return bridge;
+  return shell;
 }
 
 /**
  * Services that panels should call through Electron main. `events` is local
- * for the shell, but panel event subscriptions must stay on the panel WS
- * connection so EventService has a delivery session for that caller.
+ * for the shell, but panel event subscriptions must stay on the panel's logical
+ * session so EventService has a delivery session for that caller.
  */
 const electronLocalServices: ReadonlySet<string> = new Set(
   ELECTRON_LOCAL_SERVICE_NAMES.filter((service) => service !== "events")
 );
-
-/**
- * Resolve the Electron shell bridge's serviceCall method, if available.
- * Returns undefined when running outside Electron (mobile, headless).
- */
-function getElectronServiceCall():
-  | ((method: string, ...args: unknown[]) => Promise<unknown>)
-  | undefined {
-  const shell = (globalThis as any).__natstackShell ?? (globalThis as any).__natstackElectron;
-  return typeof shell?.serviceCall === "function" ? shell.serviceCall : undefined;
-}
 
 function isRpcEnvelope(value: unknown): value is RpcEnvelope {
   const envelope = value as Partial<RpcEnvelope> | null;
@@ -59,26 +79,29 @@ function isRpcEnvelope(value: unknown): value is RpcEnvelope {
 }
 
 export function createPanelTransport(): EnvelopeRpcTransport {
-  const bridge = getTransportBridge();
-  const electronServiceCall = getElectronServiceCall();
+  const shell = getShellBridge();
+  const electronServiceCall =
+    typeof shell.serviceCall === "function" ? shell.serviceCall.bind(shell) : undefined;
   const listeners = new Set<(envelope: RpcEnvelope) => void>();
 
   const deliver = (envelope: RpcEnvelope): void => {
     for (const listener of listeners) listener(envelope);
   };
 
-  bridge.onRecovery?.("resubscribe", () => recoveryCoordinator.run("resubscribe"));
-  bridge.onRecovery?.("cold-recover", () => recoveryCoordinator.run("cold-recover"));
+  shell.onRecovery?.("resubscribe", () => recoveryCoordinator.run("resubscribe"));
+  shell.onRecovery?.("cold-recover", () => recoveryCoordinator.run("cold-recover"));
 
-  bridge.onMessage((envelope) => {
+  shell.onEnvelope((envelope) => {
     if (isRpcEnvelope(envelope)) deliver(envelope);
   });
 
-  return {
+  const transport: EnvelopeRpcTransport = {
     async send(envelope: RpcEnvelope): Promise<void> {
       // Route RPC requests to "main": Electron-local services go via IPC
-      // through __natstackShell.serviceCall. Everything else goes to the
-      // server so userland/workerd services do not need static routing edits.
+      // through __natstackShell.serviceCall. Everything else rides the shell
+      // bridge to the host, which muxes it onto the panel's logical session on
+      // the control channel — so userland/workerd services need no static
+      // routing edits and no panel-side socket exists.
       if (envelope.target === "main" && envelope.message.type === "request") {
         const request = envelope.message as RpcRequest;
         const dotIdx = request.method.indexOf(".");
@@ -140,7 +163,7 @@ export function createPanelTransport(): EnvelopeRpcTransport {
         }
       }
 
-      await bridge.send(envelope);
+      await shell.postEnvelope(envelope);
     },
 
     onMessage(handler: (envelope: RpcEnvelope) => void): () => void {
@@ -148,4 +171,13 @@ export function createPanelTransport(): EnvelopeRpcTransport {
       return () => listeners.delete(handler);
     },
   };
+
+  // First-class streaming rides the bulk channel when the host exposes it.
+  // Otherwise the RPC client falls back to the duplex envelope path above.
+  if (typeof shell.stream === "function") {
+    const streamFn = shell.stream.bind(shell);
+    transport.stream = (envelope, signal) => streamFn(envelope, signal ?? null);
+  }
+
+  return transport;
 }
