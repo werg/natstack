@@ -82,28 +82,47 @@ NatStack is built as a hierarchical, tree-based browser where every "tab" is a s
 
 ## Installation
 
+Requires **Node.js 20+**. Both packages update via npm (re-run with `@latest`).
+
+### Desktop app (macOS, Linux; Windows soon)
+
+Installs the GUI and the bundled server:
+
 ```bash
-pnpm install
+npm install -g @natstack/app
+natstack             # launch the desktop app
+natstack --help      # CLI subcommands: remote, pair, mobile, fs, vcs, agent, eval, …
 ```
 
-During development, run the CLI live from TypeScript:
+On macOS this runs cert-free for now (npm-delivered, non-quarantined); signed
+DMG/AppImage/deb installers are published to GitHub Releases as they become available.
+
+### Headless server (remote/home server; clients connect to it)
 
 ```bash
-pnpm cli --help
-pnpm cli remote serve --port 3030
+npm install -g @natstack/server
+export NATSTACK_WEBRTC_SIGNAL_URL=wss://natstack-signaling.<account>.workers.dev
+natstack remote serve --port 3030
+# quick one-off (no global install):
+npx -p @natstack/server natstack remote serve --signal-url wss://natstack-signaling.<account>.workers.dev --port 3030
+```
+
+The server installs with no compiler (workerd/esbuild ship prebuilt binaries) and
+builds panels/workers on demand. Remote clients pair over WebRTC; the signaling
+endpoint is only used to rendezvous, not to carry workspace data. See
+[docs/webrtc-deployment.md](docs/webrtc-deployment.md) and [docs/cli.md](docs/cli.md).
+
+### Develop (contributors)
+
+```bash
+pnpm install
+pnpm dev             # build + start Electron with DevTools
+pnpm cli --help      # run the CLI live from TypeScript
 pnpm server:live --help
 ```
 
-For a stable `natstack` command on your PATH:
-
-```bash
-pnpm build
-pnpm link --global
-```
-
-The linked command runs built files from `dist/`; re-run `pnpm build` after
-server, Electron, shared runtime, or built CLI changes. `pnpm cli ...` runs the
-CLI and standalone server live from TypeScript. See [docs/cli.md](docs/cli.md).
+See [docs/cli.md](docs/cli.md). (The published npm packages above replace the old
+`pnpm link --global` flow; `pnpm dev` / `pnpm cli` remain the dev workflow.)
 
 ## Scripts
 
@@ -177,22 +196,28 @@ HTTP.
 ### Prerequisites
 
 ```bash
-pnpm install
-pnpm build
+npm install -g @natstack/server
 ```
+
+For development from a source checkout instead: `pnpm install && pnpm build`.
 
 ### Running
 
 ```bash
-node dist/server.mjs --host 0.0.0.0 --gateway-port 3030
+export NATSTACK_WEBRTC_SIGNAL_URL=wss://natstack-signaling.<account>.workers.dev
+natstack remote serve --port 3030
+# from a source checkout:
+pnpm cli remote serve --signal-url wss://natstack-signaling.<account>.workers.dev --port 3030
 ```
 
-On startup the server prints connection details:
+The installed launcher pins the app root to the package, so it works from any
+directory. On startup the pairing server prints a QR/deep-link:
 
 ```
-natstack-server ready:
-  Gateway:     http://127.0.0.1:3030
-  Pairing code: abc123...
+Pair a NatStack device
+  Room:        ...
+  Fingerprint: ...
+  Pair URL:    natstack://connect?room=...&fp=...&code=...&sig=...
 ```
 
 ### CLI Flags

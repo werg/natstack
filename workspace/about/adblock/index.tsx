@@ -21,7 +21,7 @@ import {
 import { Cross2Icon, PlusIcon, LockClosedIcon } from "@radix-ui/react-icons";
 import { rpc } from "@workspace/runtime";
 import { useIsMobile } from "@workspace/react";
-import { mountAboutPanel, AboutPage, Section } from "@workspace/about-shared/ui";
+import { AboutThemeRoot, AboutPage, Section } from "@workspace/about-shared/ui";
 
 interface AdBlockListConfig {
   ads: boolean;
@@ -448,4 +448,10 @@ function AdBlockSettingsPage() {
   );
 }
 
-mountAboutPanel(AdBlockSettingsPage);
+export default function AboutPanelRoot() {
+  return (
+    <AboutThemeRoot>
+      <AdBlockSettingsPage />
+    </AboutThemeRoot>
+  );
+}

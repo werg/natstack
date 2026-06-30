@@ -14,7 +14,7 @@ Guide new users through understanding NatStack and getting their workspace set u
 | [OVERVIEW.md](OVERVIEW.md)                           | What NatStack is, key concepts, architecture at a glance                                                       |
 | [WORKSPACE_STRUCTURE.md](WORKSPACE_STRUCTURE.md)     | Workspace directory layout, meta/, context folders, template vs live                                           |
 | [EXTERNAL_GIT_PROJECTS.md](EXTERNAL_GIT_PROJECTS.md) | External Git project declarations, import APIs, branch config, startup auto-import, private repo retries       |
-| [GETTING_STARTED.md](GETTING_STARTED.md)             | First-time setup: API provider integrations, browser import, workspace setup, first panel                      |
+| [GETTING_STARTED.md](GETTING_STARTED.md)             | First-time setup: API provider integrations, incremental browser import/open tabs, workspace setup, first panel |
 | [REMOTE_SERVER.md](REMOTE_SERVER.md)                 | Running the state server on a different machine (home server, VPS) and connecting desktop/mobile clients to it |
 | [ActionBar.tsx](ActionBar.tsx)                       | Pinned first-run action bar loaded by the onboarding chat panel                                                |
 

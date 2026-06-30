@@ -16,6 +16,7 @@ Import and manage browser data (cookies, passwords, bookmarks, history) from ins
 | [COOKIES.md](COOKIES.md) | Cookie management — browse, search, delete, sync to session |
 | [PASSWORDS.md](PASSWORDS.md) | Password vault — browse, search, reveal, copy |
 | [BOOKMARKS.md](BOOKMARKS.md) | Bookmark browser — folder tree, search, open, export |
+| [HISTORY.md](HISTORY.md) | Unified imported/local browser history, address-bar autocomplete, open tabs |
 | [WORKFLOWS.md](WORKFLOWS.md) | End-to-end recipes — import-sync-verify, cross-browser merge |
 
 ## Interaction Patterns
@@ -25,6 +26,12 @@ See the sandbox skill's [INTERACTION_PATTERNS.md](../sandbox/INTERACTION_PATTERN
 ## Architecture
 
 All browser data operations go through `@workspace/panel-browser`, which wraps RPC calls to `@workspace-extensions/browser-data` through `extensions.invoke`. The extension reads browser profile databases directly (SQLite for Chrome/Firefox, plist for Safari) and stores imported data in `BrowserDataDO`.
+
+History is unified: imported Chrome/Firefox/Safari visits and NatStack browser-panel navigations both write visit events into `BrowserDataDO`. The address bar autocomplete reads the materialized `history` summary alongside open panels, bookmarks, and search engines. See [HISTORY.md](HISTORY.md).
+
+Data imports are incremental for a given browser/profile: source-keyed records
+upsert, aggregate source counts such as autofill do not inflate on repeat runs,
+and only the import audit log appends every run.
 
 ```
 Sandbox code (eval / inline_ui / feedback_custom)
@@ -44,15 +51,26 @@ import { browserData } from "@workspace/panel-browser";
 | Method | What it does |
 |--------|-------------|
 | `browserData.detectBrowsers()` | Find installed browsers + profiles → `DetectedBrowser[]` |
-| `browserData.startImport({ browser, profile, dataTypes })` | Import data from a browser profile → `ImportResult[]` (use `profile: detectedProfile` from detectBrowsers) |
-| `browserData.getImportHistory()` | Past import results |
-| `browserData.getCookies(domain?)` | Browse stored cookies |
-| `browserData.getPasswords()` | Get all stored passwords |
-| `browserData.getPasswordForSite(url)` | Find password for a URL |
-| `browserData.getBookmarks(folder?)` | Browse bookmarks by folder |
-| `browserData.searchBookmarks(query)` | Full-text bookmark search |
-| `browserData.getHistory(query)` | Browse/search history |
-| `browserData.exportAll()` | Export everything as JSON |
+| `browserData.startImport({ browser, profile, dataTypes })` | Incrementally import data from a browser profile → `ImportResult[]` (use `profile: detectedProfile` from detectBrowsers) |
+| `browserData.previewImport({ browser, profile, dataTypes })` | **Dry run** — read + diff against the store without writing → per-type `{ scanned, added, changed, unchanged, skipped, samples }` |
+| `browserData.getProfileImportState({ browser, profilePath })` | Last run + run history (scorecard inputs) for a profile |
+| `browserData.getOpenTabs({ browser, profile })` | Preview currently open Firefox/Chrome-family tabs |
+| `browserData.openTabsAsPanels({ browser, profile, selection? })` | Open current HTTP(S) tabs as child panels (`selection`: subset by `{windowIndex,tabIndex}`) |
+| `browserData.getImportHistory()` | Past import runs (with per-type summaries) |
+| `browserData.getCookieDomains()` / `getHistoryDomains()` / `getPasswordOrigins()` / `getAutofillFieldNames()` | **Ungated** secret-free aggregates (domains/origins/counts, no values) |
+| `browserData.getDomainReadiness(domain)` | Booleans/counts: cookies + password + permissions + recent history present? (no values) |
+| `browserData.getCookies(domain?)` / `getPasswords()` / `getHistory(query)` / `exportAll()` | **Approval-gated** — reveal raw values; prompts the caller once, then remembered |
+| `browserData.getAutocompleteDebug(query)` | Ranked address-bar suggestions with reasons (approval-gated; returns URLs) |
+| `browserData.getBookmarks(folder?)` / `searchBookmarks(query)` / `getSearchEngines()` / `getPermissions()` | Ungated reads |
+
+**UI:** the `browser-import-inspector` panel (title "Browser Migration & State") is
+the human-facing dashboard over these APIs — Migrate / Inspect / Debug tabs. This
+skill remains the agent/headless path.
+
+**Access model:** sensitive value reads, exports, and all modifying effects
+(imports, writes, deletes, opening panels) are approval-gated for userland callers
+(panel/worker/eval) — the first call prompts and the grant is remembered. The
+desktop shell (history recorder, address bar) is trusted and never prompts.
 
 ## Data Types
 
@@ -168,14 +186,25 @@ Manual cookie session sync is host-owned and is not exposed through the server
 `@workspace-extensions/browser-data`. In Electron, imported cookies are synced automatically by
 the main-process host adapter after a successful cookie import.
 
+## Incremental Re-Import Contract
+
+Re-running `startImport` for the same browser/profile is expected to be safe:
+
+- Bookmarks, search engines, history visits, cookies, passwords, autofill values, permissions, and favicons update existing source records and add newly discovered records.
+- Autofill `times_used` is treated as a source aggregate, not a delta, so repeat imports do not inflate counts.
+- Password rows avoid rewriting encrypted secrets when the imported plaintext is unchanged.
+- `getImportHistory()` is an audit log and appends one row per import attempt.
+- `openTabsAsPanels()` is an action, not an import. Running it again opens another set of panels.
+
 ## Typical Agent Workflow
 
 1. **Discover**: `eval` → `detectBrowsers()` → get `DetectedBrowser[]` with profiles
 2. **Ask user**: `feedback_form` or `inline_ui` → which browser/profile/data types
 3. **Import**: `eval` → `startImport({ browser, profile, dataTypes })` → returns `ImportResult[]` (cookies auto-synced to browser session)
-4. **Show results**: `inline_ui` → interactive data managers (cookie table, password vault, etc.)
-5. **Verify**: `eval` → open browser panel, check authentication state
-6. **Offer API provider setup when relevant**: After a successful import, ask whether the user also wants direct API access for Gmail, GitHub, Slack, etc. Make clear this is optional and independent of browser import. Load the `api-integrations` skill for the provider setup guide.
+4. **Open tabs**: optional `openTabsAsPanels({ browser, profile })` → current HTTP(S) tabs become child browser panels of the caller
+5. **Show results**: `inline_ui` → interactive data managers (cookie table, password vault, etc.)
+6. **Verify**: `eval` → open browser panel, check authentication state
+7. **Offer API provider setup when relevant**: After a successful import, ask whether the user also wants direct API access for Gmail, GitHub, Slack, etc. Make clear this is optional and independent of browser import. Load the `api-integrations` skill for the provider setup guide.
 
 **Step 6 is optional.** Browser import is useful for local browser state, while API provider integrations use OAuth/credentials and can be set up with or without imported browser data. If the user seems to want automation against provider APIs, offer the next step:
 

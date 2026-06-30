@@ -35,10 +35,8 @@ export interface PanelAccessRequester {
 
 export interface PanelAccessTarget {
   id: string;
-  /** Preferred privilege flag copied from PanelSnapshot. */
+  /** Privilege flag copied from PanelSnapshot (derived from about/ location or an explicit opt-in). */
   privileged?: boolean;
-  /** Compatibility with manifest/snapshot data that still names this shell. */
-  shell?: boolean;
 }
 
 /**
@@ -58,5 +56,5 @@ export function isOpenPanelOperation(op: PanelAccessOperation): boolean {
 }
 
 export function panelAccessSeverityForTarget(target: PanelAccessTarget): PanelAccessSeverity {
-  return target.privileged === true || target.shell === true ? "severe" : "standard";
+  return target.privileged === true ? "severe" : "standard";
 }

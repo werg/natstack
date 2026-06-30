@@ -37,7 +37,7 @@ import {
   type CredentialAccessSubjectSummary,
   type ManagedCredentialSummary,
 } from "@workspace/runtime";
-import { mountAboutPanel, AboutPage, Section } from "@workspace/about-shared/ui";
+import { AboutThemeRoot, AboutPage, Section } from "@workspace/about-shared/ui";
 
 type CredentialStatus = {
   label: string;
@@ -639,4 +639,10 @@ function CredentialsPage() {
   );
 }
 
-mountAboutPanel(CredentialsPage);
+export default function AboutPanelRoot() {
+  return (
+    <AboutThemeRoot>
+      <CredentialsPage />
+    </AboutThemeRoot>
+  );
+}

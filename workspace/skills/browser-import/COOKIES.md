@@ -4,6 +4,13 @@ Browse, search, delete, and export imported cookies.
 
 > **Note:** Imported cookies are automatically synced to the shared Electron browser session after `startImport`. Browser panels get them immediately.
 
+## Re-Import Behavior
+
+Cookie imports are incremental for a browser/profile. Cookies upsert by
+`name + domain + path`; identical cookies are left alone, and changed cookies
+update in place. Re-running an import pulls in new/changed browser cookies
+without duplicating existing stored cookies.
+
 ## Interactive Cookie Manager (Inline UI)
 
 Persistent widget — stays in chat for ongoing cookie management.

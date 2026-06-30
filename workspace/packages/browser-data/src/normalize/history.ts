@@ -35,9 +35,13 @@ export function deduplicateHistory(entries: ImportedHistoryEntry[]): ImportedHis
     } else {
       existing.visitCount += entry.visitCount;
       existing.typedCount = (existing.typedCount || 0) + (entry.typedCount || 0);
+      if (entry.visits?.length) {
+        existing.visits = [...(existing.visits ?? []), ...entry.visits];
+      }
       if (entry.lastVisitTime > existing.lastVisitTime) {
         existing.lastVisitTime = entry.lastVisitTime;
         existing.title = entry.title || existing.title;
+        existing.transition = entry.transition ?? existing.transition;
       }
       if (entry.firstVisitTime) {
         existing.firstVisitTime = existing.firstVisitTime

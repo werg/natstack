@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import nodePty from "node-pty";
+import { nodeSetInterval, nodeSetTimeout } from "./nodeTimers.js";
 import { createDetectionState, scanChunk, type DetectionState } from "./portDetector.js";
 import type { OpenRequest, ScrollCursor, SessionInfo, SessionInfoEvent } from "./types.js";
 
@@ -68,12 +69,12 @@ const FLOW_CONTROL_LOW_WATERMARK_CHARS = 5000;
 type Watcher = {
   ownerCallerId: string;
   controller: ReadableStreamDefaultController<Uint8Array>;
-  heartbeat?: ReturnType<typeof setTimeout>;
+  heartbeat?: NodeJS.Timeout;
 };
 
 type PendingSnapshot = {
   session: Session;
-  timer: ReturnType<typeof setTimeout>;
+  timer: NodeJS.Timeout;
 };
 
 function cursorFrom(value: ScrollCursor | undefined): number | null {
@@ -88,14 +89,14 @@ export class SessionManager {
   private lastSnapshotAt = new Map<string, number>();
   private pendingSnapshots = new Map<string, PendingSnapshot>();
   private readonly pty = nodePty as { spawn: (file: string, args: string[], opts: unknown) => PtyProcess };
-  private janitor: ReturnType<typeof setInterval>;
+  private janitor: NodeJS.Timeout;
   private exitedSessionTtlMs: number;
   private watchAllHeartbeatMs: number;
 
   constructor(private readonly hooks: SessionManagerHooks = {}, opts: SessionManagerOptions = {}) {
     this.exitedSessionTtlMs = opts.exitedSessionTtlMs ?? EXITED_SESSION_TTL_MS;
     this.watchAllHeartbeatMs = opts.watchAllHeartbeatMs ?? WATCH_ALL_HEARTBEAT_MS;
-    this.janitor = setInterval(() => this.sweepExitedSessions(), opts.janitorIntervalMs ?? JANITOR_INTERVAL_MS);
+    this.janitor = nodeSetInterval(() => this.sweepExitedSessions(), opts.janitorIntervalMs ?? JANITOR_INTERVAL_MS);
     this.janitor.unref?.();
   }
 
@@ -327,12 +328,12 @@ export class SessionManager {
 
   watchInfo(session: Session): Response {
     const encoder = new TextEncoder();
-    let timer: ReturnType<typeof setInterval> | null = null;
+    let timer: NodeJS.Timeout | null = null;
     const stream = new ReadableStream<Uint8Array>({
       start: (controller) => {
         const send = () => controller.enqueue(encoder.encode(`${JSON.stringify(this.info(session))}\n`));
         send();
-        timer = setInterval(send, 1000);
+        timer = nodeSetInterval(send, 1000);
       },
       cancel: () => {
         if (timer) clearInterval(timer);
@@ -485,7 +486,7 @@ export class SessionManager {
       return;
     }
     if (this.pendingSnapshots.has(session.id)) return;
-    const timer = setTimeout(() => {
+    const timer = nodeSetTimeout(() => {
       this.pendingSnapshots.delete(session.id);
       if (this.sessions.has(session.id)) this.emitSnapshotNow(session);
     }, 1000 - elapsed);
@@ -520,7 +521,7 @@ export class SessionManager {
   private sendToWatcher(watcher: Watcher, event: SessionInfoEvent): void {
     watcher.controller.enqueue(new TextEncoder().encode(`${JSON.stringify(event)}\n`));
     if (watcher.heartbeat) clearTimeout(watcher.heartbeat);
-    watcher.heartbeat = setTimeout(() => {
+    watcher.heartbeat = nodeSetTimeout(() => {
       try {
         this.sendToWatcher(watcher, { type: "heartbeat", at: Date.now() });
       } catch {

@@ -57,8 +57,6 @@ export interface PackageManifest {
   stateArgs?: StateArgsSchema;
   /** Inject the host theme CSS variables into the panel iframe. */
   injectHostThemeVariables?: boolean;
-  /** True for system "shell" panels (about pages); grants shell service access. */
-  shell?: boolean;
   /** Hide this panel from the launcher UI. */
   hiddenInLauncher?: boolean;
   /** Auto-archive a panel when it has no children at startup. */

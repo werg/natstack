@@ -110,8 +110,10 @@ concise plain-text list:
 1. **Connect API providers** — set up Gmail, GitHub, Slack, or other provider
    integrations through OAuth/credentials. This is available immediately and
    does not require importing browser data.
-2. **Import browser data** — bring in cookies, bookmarks, passwords, or history
-   from Chrome/Firefox/etc. when they want local browser state in NatStack.
+2. **Import browser data** — bring in cookies, bookmarks, passwords, history,
+   and optionally current open tabs from Chrome/Firefox/etc. when they want
+   local browser state in NatStack. Repeat imports are incremental for the same
+   browser/profile.
 3. **Build something** — scaffold and launch a panel app.
 4. **Organize workspaces** — create, fork, or switch workspaces.
 5. **Explore capabilities** — inspect runtime APIs and live examples.

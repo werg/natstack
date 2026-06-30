@@ -4,7 +4,9 @@ CREATE TABLE IF NOT EXISTS favicons (
   url TEXT NOT NULL UNIQUE,
   data BLOB,
   mime_type TEXT DEFAULT 'image/png',
-  last_updated INTEGER
+  last_updated INTEGER,
+  source_browser TEXT,
+  source_profile_path TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS bookmarks (
@@ -17,6 +19,8 @@ CREATE TABLE IF NOT EXISTS bookmarks (
   favicon_id INTEGER REFERENCES favicons(id),
   position INTEGER NOT NULL DEFAULT 0,
   source_browser TEXT,
+  source_profile_path TEXT NOT NULL DEFAULT '',
+  import_key TEXT UNIQUE,
   tags TEXT,
   keyword TEXT
 );
@@ -41,8 +45,17 @@ CREATE TABLE IF NOT EXISTS history_visits (
   history_id INTEGER NOT NULL REFERENCES history(id) ON DELETE CASCADE,
   visit_time INTEGER NOT NULL,
   transition TEXT DEFAULT 'link',
-  from_visit_id INTEGER REFERENCES history_visits(id)
+  from_visit_id INTEGER REFERENCES history_visits(id),
+  source TEXT NOT NULL DEFAULT 'natstack',
+  source_browser TEXT NOT NULL DEFAULT '',
+  source_profile_path TEXT NOT NULL DEFAULT '',
+  panel_id TEXT NOT NULL DEFAULT '',
+  title TEXT,
+  typed INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(history_id, visit_time, source, source_browser, source_profile_path, panel_id, transition)
 );
+CREATE INDEX IF NOT EXISTS idx_history_visits_history_id ON history_visits(history_id);
+CREATE INDEX IF NOT EXISTS idx_history_visits_source ON history_visits(source, source_browser, source_profile_path);
 
 CREATE VIRTUAL TABLE IF NOT EXISTS history_fts USING fts5(url, title, content=history, content_rowid=id);
 
@@ -69,6 +82,8 @@ CREATE TABLE IF NOT EXISTS passwords (
   date_last_used INTEGER,
   date_password_changed INTEGER,
   times_used INTEGER DEFAULT 0,
+  source_browser TEXT,
+  source_profile_path TEXT NOT NULL DEFAULT '',
   UNIQUE(origin_url, username_hash, action_url, realm)
 );
 
@@ -105,6 +120,8 @@ CREATE TABLE IF NOT EXISTS autofill (
   date_created INTEGER,
   date_last_used INTEGER,
   times_used INTEGER NOT NULL DEFAULT 1,
+  source_browser TEXT,
+  source_profile_path TEXT NOT NULL DEFAULT '',
   UNIQUE(field_name, value)
 );
 CREATE INDEX IF NOT EXISTS idx_autofill_field ON autofill(field_name);
@@ -116,7 +133,10 @@ CREATE TABLE IF NOT EXISTS search_engines (
   search_url TEXT NOT NULL,
   suggest_url TEXT,
   favicon_url TEXT,
-  is_default INTEGER NOT NULL DEFAULT 0
+  is_default INTEGER NOT NULL DEFAULT 0,
+  source_browser TEXT NOT NULL DEFAULT '',
+  source_profile_path TEXT NOT NULL DEFAULT '',
+  import_key TEXT UNIQUE
 );
 
 CREATE TABLE IF NOT EXISTS permissions (
@@ -125,17 +145,34 @@ CREATE TABLE IF NOT EXISTS permissions (
   permission TEXT NOT NULL,
   setting TEXT NOT NULL DEFAULT 'ask',
   date_set INTEGER,
+  source_browser TEXT,
+  source_profile_path TEXT NOT NULL DEFAULT '',
   UNIQUE(origin, permission)
 );
 
-CREATE TABLE IF NOT EXISTS import_log (
+CREATE TABLE IF NOT EXISTS import_runs (
   id INTEGER PRIMARY KEY,
   browser TEXT NOT NULL,
   profile_path TEXT NOT NULL,
-  data_type TEXT NOT NULL,
-  items_imported INTEGER NOT NULL,
-  items_skipped INTEGER NOT NULL,
-  imported_at INTEGER NOT NULL,
+  mode TEXT NOT NULL DEFAULT 'import',
+  status TEXT NOT NULL DEFAULT 'success',
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER NOT NULL,
+  data_types TEXT NOT NULL DEFAULT '[]',
   warnings TEXT
 );
+CREATE INDEX IF NOT EXISTS idx_import_runs_finished ON import_runs(finished_at);
+
+CREATE TABLE IF NOT EXISTS import_run_summaries (
+  id INTEGER PRIMARY KEY,
+  run_id INTEGER NOT NULL REFERENCES import_runs(id) ON DELETE CASCADE,
+  data_type TEXT NOT NULL,
+  scanned INTEGER NOT NULL DEFAULT 0,
+  added INTEGER NOT NULL DEFAULT 0,
+  changed INTEGER NOT NULL DEFAULT 0,
+  unchanged INTEGER NOT NULL DEFAULT 0,
+  skipped INTEGER NOT NULL DEFAULT 0,
+  errors INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_import_run_summaries_run ON import_run_summaries(run_id);
 `;

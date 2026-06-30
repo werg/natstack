@@ -27,21 +27,23 @@ after Electron or local-child-server changes.
 
 ## Install
 
-For a stable command on your PATH, build and link the package bin:
+For a stable command on your PATH, install from npm:
 
 ```sh
-pnpm build
-pnpm link --global
+npm install -g @natstack/app        # GUI + the `natstack` CLI dispatcher
+# headless server box (CLI + daemon, no Electron):
+npm install -g @natstack/server
 ```
 
-That installs `natstack` and `natstack-server` from `package.json`. The global
-link continues to point at this checkout, but it runs built files from `dist/`;
-re-run `pnpm build` after source changes.
+`@natstack/app` provides `natstack` (bare invocation launches the GUI; subcommands
+run the CLI) and `natstack-server`. `@natstack/server` provides `natstack-server`
+plus the `natstack` CLI for pairing/remote management on a headless box. Update
+with `@latest`.
 
-If you do not want a global link, use the built file directly:
+From a source checkout, run the built CLI directly without a global install:
 
 ```sh
-node dist/cli/client.mjs --help
+node dist/cli/client.mjs --help     # or: pnpm cli --help
 ```
 
 ## Remote

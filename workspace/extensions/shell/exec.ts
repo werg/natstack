@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { nodeSetTimeout } from "./nodeTimers.js";
 import type { ExecRequest, ExecResult } from "./types.js";
 
 function appendCapped(current: Buffer[], chunk: Buffer, maxBytes: number): { truncated: boolean } {
@@ -33,10 +34,10 @@ export function runExec(req: Omit<ExecRequest, "cwd" | "env"> & { cwd: string; e
         stdio: ["pipe", "pipe", "pipe"],
       });
 
-    const timeout = setTimeout(() => {
+    const timeout = nodeSetTimeout(() => {
       timedOut = true;
       child.kill("SIGTERM");
-      setTimeout(() => {
+      nodeSetTimeout(() => {
         if (!child.killed) child.kill("SIGKILL");
       }, 2000).unref();
     }, req.timeoutMs);

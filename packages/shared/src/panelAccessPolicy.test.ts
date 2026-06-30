@@ -33,15 +33,12 @@ describe("panelAccessPolicy", () => {
     }
   });
 
-  it("escalates privileged and shell targets to severe severity", () => {
+  it("escalates privileged targets to severe severity", () => {
     expect(panelAccessSeverityForTarget({ id: "about", privileged: true })).toBe("severe");
-    expect(panelAccessSeverityForTarget({ id: "about", shell: true })).toBe("severe");
   });
 
   it("keeps ordinary targets at standard severity", () => {
     expect(panelAccessSeverityForTarget({ id: "panel-b" })).toBe("standard");
-    expect(panelAccessSeverityForTarget({ id: "panel-b", privileged: false, shell: false })).toBe(
-      "standard"
-    );
+    expect(panelAccessSeverityForTarget({ id: "panel-b", privileged: false })).toBe("standard");
   });
 });

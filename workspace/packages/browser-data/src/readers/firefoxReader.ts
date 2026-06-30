@@ -14,6 +14,7 @@ import type {
   ImportedPermission,
   ImportedSettings,
   ImportedFavicon,
+  HistoryTransition,
   SameSiteValue,
 } from "../types.js";
 import { BrowserDataError } from "../errors.js";
@@ -30,6 +31,23 @@ import { extractFirefoxSettings } from "../normalize/settings.js";
 // Firefox root bookmark folder IDs
 const FIREFOX_ROOT_IDS = new Set([1, 2, 3, 4, 5]);
 // 1=root, 2=menu, 3=toolbar, 4=tags, 5=other/unsorted
+
+const FIREFOX_TRANSITION_MAP: Record<number, HistoryTransition> = {
+  1: "link",
+  2: "typed",
+  3: "auto_bookmark",
+  4: "auto_subframe",
+  5: "redirect_permanent",
+  6: "redirect_temporary",
+  7: "link",
+  8: "manual_subframe",
+  9: "reload",
+};
+
+function firefoxTransitionType(raw: number | null): HistoryTransition | undefined {
+  if (raw == null) return undefined;
+  return FIREFOX_TRANSITION_MAP[raw] ?? "link";
+}
 
 /**
  * Parse Firefox prefs.js content into a Map of key->value.
@@ -249,6 +267,7 @@ export class FirefoxReader implements BrowserDataReader {
             : undefined,
           folder,
           keyword,
+          sourceId: String(row.id),
         });
       }
 
@@ -264,31 +283,60 @@ export class FirefoxReader implements BrowserDataReader {
     try {
       const rows = db.prepare(`
         SELECT p.url, p.title, p.visit_count, p.typed,
-               MAX(v.visit_date) as last_visit,
-               MIN(v.visit_date) as first_visit
+               v.visit_date, v.visit_type
         FROM moz_places p
         JOIN moz_historyvisits v ON p.id = v.place_id
         WHERE p.url IS NOT NULL
           AND p.url NOT LIKE 'place:%'
-        GROUP BY p.id
-        ORDER BY last_visit DESC
+        ORDER BY v.visit_date DESC
       `).all() as Array<{
         url: string;
         title: string | null;
         visit_count: number;
         typed: number;
-        last_visit: number;
-        first_visit: number;
+        visit_date: number;
+        visit_type: number | null;
       }>;
 
-      return rows.map((row) => ({
-        url: row.url,
-        title: row.title || "",
-        visitCount: row.visit_count,
-        lastVisitTime: firefoxTimestampToMs(row.last_visit),
-        firstVisitTime: firefoxTimestampToMs(row.first_visit),
-        typedCount: row.typed || undefined,
-      }));
+      const byUrl = new Map<string, ImportedHistoryEntry>();
+      for (const row of rows) {
+        const visitTime = firefoxTimestampToMs(row.visit_date);
+        const transition = firefoxTransitionType(row.visit_type);
+        const existing = byUrl.get(row.url);
+        if (!existing) {
+          byUrl.set(row.url, {
+            url: row.url,
+            title: row.title || "",
+            visitCount: row.visit_count,
+            lastVisitTime: visitTime,
+            firstVisitTime: visitTime,
+            typedCount: row.typed || undefined,
+            transition,
+            visits: [{
+              visitTime,
+              transition,
+              typed: transition === "typed",
+            }],
+          });
+          continue;
+        }
+        existing.visits ??= [];
+        existing.visits.push({
+          visitTime,
+          transition,
+          typed: transition === "typed",
+        });
+        if (visitTime > existing.lastVisitTime) {
+          existing.lastVisitTime = visitTime;
+          if (row.title) existing.title = row.title;
+          existing.transition = transition;
+        }
+        if (!existing.firstVisitTime || visitTime < existing.firstVisitTime) {
+          existing.firstVisitTime = visitTime;
+        }
+      }
+
+      return Array.from(byUrl.values());
     } finally {
       db.close();
       cleanupTempCopy(tempPath);
@@ -429,6 +477,7 @@ export class FirefoxReader implements BrowserDataReader {
       const jsonStr = decompressed.toString("utf-8");
       const data = JSON.parse(jsonStr) as {
         engines?: Array<{
+          _id?: string;
           _name: string;
           _urls?: Array<{
             template: string;
@@ -478,6 +527,7 @@ export class FirefoxReader implements BrowserDataReader {
               : undefined,
             faviconUrl: engine._iconURL || undefined,
             isDefault: engine._name === defaultName || engine._isDefault === true,
+            sourceId: engine._id,
           };
         });
     } catch (err: unknown) {

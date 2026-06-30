@@ -4,8 +4,7 @@
  * Provides the common theme root, mount helper, and page layout used by all
  * shell about pages so individual panels only describe their content.
  */
-import type { ComponentType, ReactNode } from "react";
-import { createRoot } from "react-dom/client";
+import type { ReactNode } from "react";
 import "@radix-ui/themes/styles.css";
 import "@workspace/ui/tokens.css";
 import { Theme, Flex, Box, Heading, Text, Card } from "@radix-ui/themes";
@@ -24,18 +23,6 @@ export function AboutThemeRoot({ children }: { children: ReactNode }) {
       {children}
     </Theme>
   );
-}
-
-/** Mount an about panel into #root with the shared theme applied. */
-export function mountAboutPanel(App: ComponentType): void {
-  const root = document.getElementById("root");
-  if (root) {
-    createRoot(root).render(
-      <AboutThemeRoot>
-        <App />
-      </AboutThemeRoot>
-    );
-  }
 }
 
 /** The NatStack "N" mark on the brand gradient. */

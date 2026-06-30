@@ -13,7 +13,7 @@ import {
 } from "@radix-ui/react-icons";
 import { buildPanelLink, panel, workspace } from "@workspace/runtime";
 import { useIsMobile } from "@workspace/react";
-import { mountAboutPanel, AboutPage, Section } from "@workspace/about-shared/ui";
+import { AboutThemeRoot, AboutPage, Section } from "@workspace/about-shared/ui";
 import type { WorkspaceTree, WorkspaceNode } from "@workspace/runtime";
 
 /** Flatten a workspace tree into a list of visible launchable panels. */
@@ -177,4 +177,10 @@ function NewPanelPage() {
   );
 }
 
-mountAboutPanel(NewPanelPage);
+export default function AboutPanelRoot() {
+  return (
+    <AboutThemeRoot>
+      <NewPanelPage />
+    </AboutThemeRoot>
+  );
+}

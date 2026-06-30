@@ -5,13 +5,13 @@
   "natstack": {
     "title": "About NatStack",
     "description": "Version info and credits",
-    "shell": true,
     "hiddenInLauncher": false,
     "autoArchiveWhenEmpty": true
   },
   "dependencies": {
     "@workspace/about-shared": "workspace:*",
-    "@workspace/react": "*",
-    "@workspace/runtime": "*"
-  }
+    "@workspace/react": "workspace:*",
+    "@workspace/runtime": "workspace:*"
+  },
+  "type": "module"
 }

@@ -5,13 +5,13 @@
   "natstack": {
     "title": "Keyboard Shortcuts",
     "description": "View keyboard shortcuts",
-    "shell": true,
     "hiddenInLauncher": false,
     "autoArchiveWhenEmpty": true
   },
   "dependencies": {
-    "@workspace/react": "*",
+    "@workspace/react": "workspace:*",
     "@workspace/about-shared": "workspace:*",
-    "@workspace/runtime": "*"
-  }
+    "@workspace/runtime": "workspace:*"
+  },
+  "type": "module"
 }

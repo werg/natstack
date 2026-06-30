@@ -4,13 +4,13 @@
   "private": true,
   "natstack": {
     "title": "New Panel",
-    "shell": true,
     "hiddenInLauncher": true,
     "autoArchiveWhenEmpty": true
   },
   "dependencies": {
-    "@workspace/react": "*",
-    "@workspace/runtime": "*",
+    "@workspace/react": "workspace:*",
+    "@workspace/runtime": "workspace:*",
     "@workspace/about-shared": "workspace:*"
-  }
+  },
+  "type": "module"
 }

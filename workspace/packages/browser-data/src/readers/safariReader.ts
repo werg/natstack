@@ -357,7 +357,7 @@ export class SafariReader implements BrowserDataReader {
           visit_time: number;
         }>;
 
-        // Group by URL, take latest visit time
+        // Group by URL while preserving the visits Safari exposes.
         const byUrl = new Map<string, ImportedHistoryEntry>();
         for (const row of rows) {
           const visitTimeMs = macTimestampToMs(row.visit_time);
@@ -369,8 +369,11 @@ export class SafariReader implements BrowserDataReader {
               visitCount: row.visit_count,
               lastVisitTime: visitTimeMs,
               firstVisitTime: visitTimeMs,
+              visits: [{ visitTime: visitTimeMs }],
             });
           } else {
+            existing.visits ??= [];
+            existing.visits.push({ visitTime: visitTimeMs });
             if (visitTimeMs > existing.lastVisitTime) {
               existing.lastVisitTime = visitTimeMs;
               if (row.title) existing.title = row.title;

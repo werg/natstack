@@ -502,13 +502,15 @@ Available methods:
 | Method                                               | Description                                                  |
 | ---------------------------------------------------- | ------------------------------------------------------------ |
 | `browserData.detectBrowsers()`                       | Detect all installed browsers and their profiles             |
-| `browserData.startImport(request)`                   | Import data from a browser profile                           |
+| `browserData.startImport(request)`                   | Incrementally import data from a browser profile             |
+| `browserData.getOpenTabs(request)`                   | Preview current Firefox/Chrome-family tabs                   |
+| `browserData.openTabsAsPanels(request)`              | Open current HTTP(S) tabs as NatStack browser panels         |
 | `browserData.getImportHistory()`                     | Get log of past imports                                      |
 | `browserData.getBookmarks(folderPath?)`              | Get bookmarks in a folder                                    |
 | `browserData.searchBookmarks(query)`                 | Search bookmarks by title/URL                                |
 | `browserData.addBookmark(bookmark)`                  | Add a bookmark                                               |
 | `browserData.deleteBookmark(id)`                     | Delete a bookmark                                            |
-| `browserData.getHistory(query)`                      | Query browsing history (search, time range, limit)           |
+| `browserData.getHistory(query)`                      | Query unified imported + NatStack browser-panel history      |
 | `browserData.searchHistory(query, limit?)`           | Full-text search history                                     |
 | `browserData.clearAllHistory()`                      | Clear all history                                            |
 | `browserData.getPasswords()`                         | Get all stored passwords                                     |
@@ -525,6 +527,12 @@ Available methods:
 | `browserData.exportPasswords(format)`                | Export passwords (`"csv-chrome"`, `"csv-firefox"`, `"json"`) |
 | `browserData.exportCookies(format)`                  | Export cookies (`"json"`, `"netscape-txt"`)                  |
 | `browserData.exportAll()`                            | Full JSON export of all data                                 |
+
+`startImport` is source-keyed and incremental for the same browser/profile.
+Repeat imports update changed records and add new records without duplicating
+bookmarks, history visits, cookies, passwords, autofill values, search engines,
+permissions, or favicons. `openTabsAsPanels` is an action and creates panels on
+each call.
 
 #### Detect and import
 

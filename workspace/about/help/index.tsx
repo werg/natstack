@@ -12,7 +12,7 @@ import {
   QuestionMarkCircledIcon,
 } from "@radix-ui/react-icons";
 import { useIsMobile } from "@workspace/react";
-import { mountAboutPanel, AboutPage, BRAND_GRADIENT } from "@workspace/about-shared/ui";
+import { AboutThemeRoot, AboutPage, BRAND_GRADIENT } from "@workspace/about-shared/ui";
 
 interface HelpSection {
   title: string;
@@ -116,4 +116,10 @@ function HelpPage() {
   );
 }
 
-mountAboutPanel(HelpPage);
+export default function AboutPanelRoot() {
+  return (
+    <AboutThemeRoot>
+      <HelpPage />
+    </AboutThemeRoot>
+  );
+}

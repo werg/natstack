@@ -1,12 +1,15 @@
 export { BROWSER_DATA_SCHEMA } from "./schema.js";
 export type {
-  ImportLogEntry,
+  ImportRunInput,
+  ImportRunSummaryInput,
   StoredAutofill,
   StoredBookmark,
   StoredCookie,
   StoredFavicon,
   StoredHistory,
-  StoredImportLog,
+  StoredImportRun,
+  StoredImportRunSummary,
+  StoredImportRunWithSummaries,
   StoredPassword,
   StoredPermission,
   StoredSearchEngine,

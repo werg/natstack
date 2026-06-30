@@ -45,10 +45,24 @@ export function getPhysicalPathForAsarPath(filePath: string): string {
 
 export function getExistingAppNodeModulesRoots(appRoot: string): string[] {
   const layout = createRuntimeLayout(appRoot);
-  return dedupePaths([
+  const candidates = [
     path.join(layout.appUnpackedRoot, "node_modules"),
     path.join(layout.appRoot, "node_modules"),
-  ]).filter((p) => fs.existsSync(p));
+  ];
+  // When installed via npm (e.g. <prefix>/node_modules/@natstack/app), the
+  // package's own dependencies are hoisted to an ancestor node_modules rather
+  // than nested under the package directory. Walk ancestors and include every
+  // node_modules dir — mirroring Node's own module resolution — so runtime
+  // panel/worker builds resolve host-provided deps wherever npm hoisted them.
+  // (Harmless for the dev monorepo, where appRoot already owns node_modules.)
+  let dir = layout.appRoot;
+  for (let depth = 0; depth < 12; depth++) {
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    candidates.push(path.join(parent, "node_modules"));
+    dir = parent;
+  }
+  return dedupePaths(candidates).filter((p) => fs.existsSync(p));
 }
 
 export function getWorkspaceTemplateCandidates(appRoot: string): string[] {

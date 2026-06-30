@@ -674,7 +674,7 @@ describe("internal storage DOs under workerd", () => {
     ]);
 
     const ref = { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO", objectKey: "global" };
-    await harness.callDurableObject(ref, "addHistoryBatch", [
+    const historyBatch = [
       {
         url: "https://example.com/docs/storage",
         title: "Durable storage guide",
@@ -682,13 +682,52 @@ describe("internal storage DOs under workerd", () => {
         typedCount: 1,
         firstVisitTime: 100,
         lastVisitTime: 200,
+        visits: [
+          { visitTime: 100, transition: "typed", typed: true },
+          { visitTime: 150, transition: "link" },
+          { visitTime: 200, transition: "reload" },
+        ],
       },
-    ]);
+    ];
+    const importMeta = { browser: "chrome", profilePath: "/tmp/chrome-profile" };
+    await harness.callDurableObject(ref, "addHistoryBatch", historyBatch, importMeta);
+    await harness.callDurableObject(ref, "addHistoryBatch", historyBatch, importMeta);
+    const aggregateOnlyHistoryBatch = [
+      {
+        url: "https://aggregate.example.com/docs",
+        title: "Aggregate history entry",
+        visitCount: 5,
+        typedCount: 2,
+        firstVisitTime: 300,
+        lastVisitTime: 700,
+      },
+    ];
+    await harness.callDurableObject(ref, "addHistoryBatch", aggregateOnlyHistoryBatch, importMeta);
+    await harness.callDurableObject(ref, "addHistoryBatch", aggregateOnlyHistoryBatch, importMeta);
 
     await expect(
       harness.callDurableObject(ref, "searchHistory", "durable", 10)
     ).resolves.toMatchObject([
-      { url: "https://example.com/docs/storage", title: "Durable storage guide" },
+      {
+        url: "https://example.com/docs/storage",
+        title: "Durable storage guide",
+        visit_count: 3,
+        typed_count: 1,
+        first_visit: 100,
+        last_visit: 200,
+      },
+    ]);
+    await expect(
+      harness.callDurableObject(ref, "searchHistory", "aggregate", 10)
+    ).resolves.toMatchObject([
+      {
+        url: "https://aggregate.example.com/docs",
+        title: "Aggregate history entry",
+        visit_count: 5,
+        typed_count: 2,
+        first_visit: 300,
+        last_visit: 700,
+      },
     ]);
     await expect(harness.callDurableObject(ref, "deleteHistoryRange", 100, 200)).resolves.toBe(1);
     await expect(harness.callDurableObject(ref, "searchHistory", "durable", 10)).resolves.toEqual(
@@ -832,6 +871,7 @@ describe("internal storage DOs under workerd", () => {
       transition: "typed",
       typed: true,
       visitTime: 100,
+      panelId: "panel-a",
     });
     await harness.callDurableObject(ref, "updateHistoryTitle", {
       url: "https://example.com/app",
@@ -858,6 +898,7 @@ describe("internal storage DOs under workerd", () => {
       transition: "back_forward",
       typed: false,
       visitTime: 200,
+      panelId: "panel-a",
     });
 
     await expect(
@@ -873,6 +914,207 @@ describe("internal storage DOs under workerd", () => {
         typed_count: 1,
         first_visit: 100,
         last_visit: 200,
+      },
+    ]);
+  }, 30_000);
+
+  it("deletes BrowserDataDO history ranges per visit and recomputes URL summaries", async () => {
+    const harness = await createWorkerdHarness();
+    manager = harness.manager;
+    await manager.registerAllDOClasses([
+      { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO" },
+    ]);
+
+    const ref = {
+      source: INTERNAL_DO_SOURCE,
+      className: "BrowserDataDO",
+      objectKey: "global-history-range",
+    };
+    for (const visit of [
+      { visitTime: 100, transition: "typed", typed: true },
+      { visitTime: 200, transition: "link", typed: false },
+      { visitTime: 300, transition: "reload", typed: false },
+    ]) {
+      await harness.callDurableObject(ref, "recordHistoryVisit", {
+        url: "https://example.com/app",
+        title: "Range App",
+        panelId: "panel-a",
+        ...visit,
+      });
+    }
+    await harness.callDurableObject(ref, "recordHistoryVisit", {
+      url: "https://example.com/other",
+      title: "Range Other",
+      transition: "link",
+      visitTime: 220,
+      panelId: "panel-b",
+    });
+
+    await expect(harness.callDurableObject(ref, "deleteHistoryRange", 150, 250)).resolves.toBe(2);
+    await expect(
+      harness.callDurableObject(ref, "getHistory", { limit: 10 })
+    ).resolves.toMatchObject([
+      {
+        url: "https://example.com/app",
+        title: "Range App",
+        visit_count: 2,
+        typed_count: 1,
+        first_visit: 100,
+        last_visit: 300,
+      },
+    ]);
+    await expect(harness.callDurableObject(ref, "searchHistory", "other", 10)).resolves.toEqual([]);
+
+    await expect(harness.callDurableObject(ref, "deleteHistoryRange", 50, 150)).resolves.toBe(1);
+    await expect(
+      harness.callDurableObject(ref, "getHistory", { limit: 10 })
+    ).resolves.toMatchObject([
+      {
+        url: "https://example.com/app",
+        visit_count: 1,
+        typed_count: 0,
+        first_visit: 300,
+        last_visit: 300,
+      },
+    ]);
+
+    await expect(harness.callDurableObject(ref, "deleteHistoryRange", 250, 350)).resolves.toBe(1);
+    await expect(harness.callDurableObject(ref, "getHistory", { limit: 10 })).resolves.toEqual([]);
+  }, 30_000);
+
+  it("keeps BrowserDataDO browser-data imports incremental across repeated runs", async () => {
+    const harness = await createWorkerdHarness();
+    manager = harness.manager;
+    await manager.registerAllDOClasses([
+      { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO" },
+    ]);
+
+    const ref = {
+      source: INTERNAL_DO_SOURCE,
+      className: "BrowserDataDO",
+      objectKey: "global-import-idempotency",
+    };
+    const meta = { browser: "chrome", profilePath: "/tmp/chrome-profile" };
+
+    await harness.callDurableObject(
+      ref,
+      "addBookmarksBatch",
+      [
+        {
+          title: "Docs",
+          url: "https://example.com/docs",
+          folder: ["Bookmarks Bar"],
+          dateAdded: 100,
+          sourceId: "bookmark-1",
+        },
+      ],
+      meta
+    );
+    await harness.callDurableObject(
+      ref,
+      "addBookmarksBatch",
+      [
+        {
+          title: "Docs Updated",
+          url: "https://example.com/docs",
+          folder: ["Bookmarks Bar"],
+          dateAdded: 100,
+          dateModified: 200,
+          sourceId: "bookmark-1",
+        },
+      ],
+      meta
+    );
+
+    await expect(harness.callDurableObject(ref, "getAllBookmarks")).resolves.toMatchObject([
+      {
+        title: "Docs Updated",
+        url: "https://example.com/docs",
+        folder_path: "/Bookmarks Bar",
+        date_added: 100,
+        date_modified: 200,
+      },
+    ]);
+
+    await harness.callDurableObject(
+      ref,
+      "addSearchEnginesBatch",
+      [
+        {
+          name: "Example Search",
+          keyword: "ex",
+          searchUrl: "https://example.com/search?q={searchTerms}",
+          isDefault: false,
+          sourceId: "search-1",
+        },
+      ],
+      meta
+    );
+    await harness.callDurableObject(
+      ref,
+      "addSearchEnginesBatch",
+      [
+        {
+          name: "Example Search Updated",
+          keyword: "ex",
+          searchUrl: "https://example.com/search?q={searchTerms}",
+          suggestUrl: "https://example.com/suggest?q={searchTerms}",
+          isDefault: true,
+          sourceId: "search-1",
+        },
+      ],
+      meta
+    );
+    await expect(harness.callDurableObject(ref, "getSearchEngines")).resolves.toMatchObject([
+      {
+        name: "Example Search Updated",
+        keyword: "ex",
+        is_default: 1,
+      },
+    ]);
+
+    await harness.callDurableObject(
+      ref,
+      "addAutofillBatch",
+      [{ fieldName: "email", value: "me@example.com", timesUsed: 3, dateLastUsed: 100 }],
+      meta
+    );
+    await harness.callDurableObject(
+      ref,
+      "addAutofillBatch",
+      [{ fieldName: "email", value: "me@example.com", timesUsed: 3, dateLastUsed: 100 }],
+      meta
+    );
+    await harness.callDurableObject(
+      ref,
+      "addAutofillBatch",
+      [{ fieldName: "email", value: "me@example.com", timesUsed: 5, dateLastUsed: 200 }],
+      meta
+    );
+    await expect(
+      harness.callDurableObject(ref, "getAutofillSuggestions", "email")
+    ).resolves.toMatchObject([
+      {
+        field_name: "email",
+        value: "me@example.com",
+        times_used: 5,
+        date_last_used: 200,
+      },
+    ]);
+
+    await harness.callDurableObject(ref, "addPermissionsBatch", [
+      { origin: "https://example.com", permission: "notifications", setting: "allow" },
+    ]);
+    await harness.callDurableObject(ref, "addPermissionsBatch", [
+      { origin: "https://example.com", permission: "notifications", setting: "allow" },
+    ]);
+    await expect(
+      harness.callDurableObject(ref, "getPermissions", "https://example.com")
+    ).resolves.toMatchObject([
+      {
+        origin: "https://example.com",
+        permission: "notifications",
+        setting: "allow",
       },
     ]);
   }, 30_000);
@@ -914,6 +1156,168 @@ describe("internal storage DOs under workerd", () => {
 
     await expect(harness.callDurableObject(ref, "clearCookies", "example.com")).resolves.toBe(1);
     await expect(harness.callDurableObject(ref, "clearCookies")).resolves.toBe(1);
+  }, 30_000);
+
+  it("records BrowserDataDO import runs with summaries and cookie provenance", async () => {
+    const harness = await createWorkerdHarness();
+    manager = harness.manager;
+    await manager.registerAllDOClasses([
+      { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO" },
+    ]);
+
+    const ref = { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO", objectKey: "global" };
+
+    await harness.callDurableObject(
+      ref,
+      "addCookiesBatch",
+      [
+        {
+          name: "sid",
+          value: "one",
+          domain: ".example.com",
+          hostOnly: false,
+          path: "/",
+          secure: true,
+          httpOnly: true,
+          sameSite: "lax",
+          sourceScheme: "secure",
+          sourcePort: 443,
+        },
+      ],
+      { browser: "chrome", profilePath: "/p" }
+    );
+
+    // Provenance is populated from the batch meta.
+    await expect(
+      harness.callDurableObject(ref, "getCookies", "example.com")
+    ).resolves.toMatchObject([{ name: "sid", source_browser: "chrome" }]);
+
+    const runId = await harness.callDurableObject(ref, "recordImportRun", {
+      browser: "chrome",
+      profilePath: "/p",
+      status: "success",
+      dataTypes: ["cookies"],
+      summaries: [{ dataType: "cookies", scanned: 1, skipped: 0, errors: 0 }],
+    });
+    expect(typeof runId).toBe("number");
+
+    await expect(harness.callDurableObject(ref, "getImportHistory")).resolves.toMatchObject([
+      {
+        browser: "chrome",
+        status: "success",
+        summaries: [{ data_type: "cookies", scanned: 1 }],
+      },
+    ]);
+  }, 30_000);
+
+  it("classifies dry-run cookie diffs and exposes secret-free views", async () => {
+    const harness = await createWorkerdHarness();
+    manager = harness.manager;
+    await manager.registerAllDOClasses([
+      { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO" },
+    ]);
+
+    const ref = { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO", objectKey: "global" };
+    const baseCookie = {
+      name: "sid",
+      domain: ".example.com",
+      hostOnly: false,
+      path: "/",
+      secure: true,
+      httpOnly: true,
+      sameSite: "lax",
+      sourceScheme: "secure",
+      sourcePort: 443,
+    };
+    await harness.callDurableObject(ref, "addCookiesBatch", [{ ...baseCookie, value: "one" }], {
+      browser: "chrome",
+      profilePath: "/p",
+    });
+
+    // Same key + same value = unchanged; same key + new value = changed; new key = added.
+    const diff = (await harness.callDurableObject(ref, "classifyAgainstStore", "cookies", [
+      { ...baseCookie, value: "one" },
+      { ...baseCookie, value: "two" },
+      { ...baseCookie, name: "other", value: "x" },
+    ])) as { added: number; changed: number; unchanged: number; scanned: number };
+    expect(diff).toMatchObject({ scanned: 3, added: 1, changed: 1, unchanged: 1 });
+
+    await expect(harness.callDurableObject(ref, "getCookieDomains")).resolves.toMatchObject([
+      { domain: ".example.com", count: 1 },
+    ]);
+    await expect(
+      harness.callDurableObject(ref, "getDomainReadiness", "example.com")
+    ).resolves.toMatchObject({ domain: "example.com", cookies: 1, password: false });
+  }, 30_000);
+
+  it("matches BrowserDataDO domain readiness by hostname boundary", async () => {
+    const harness = await createWorkerdHarness();
+    manager = harness.manager;
+    await manager.registerAllDOClasses([
+      { source: INTERNAL_DO_SOURCE, className: "BrowserDataDO" },
+    ]);
+
+    const ref = {
+      source: INTERNAL_DO_SOURCE,
+      className: "BrowserDataDO",
+      objectKey: "global-domain-readiness",
+    };
+
+    await harness.callDurableObject(ref, "addCookiesBatch", [
+      {
+        name: "sid",
+        value: "one",
+        domain: ".notgithub.com",
+        hostOnly: false,
+        path: "/",
+        secure: true,
+        httpOnly: true,
+        sameSite: "lax",
+        sourceScheme: "secure",
+        sourcePort: 443,
+      },
+      {
+        name: "sid",
+        value: "two",
+        domain: ".sub.github.com",
+        hostOnly: false,
+        path: "/",
+        secure: true,
+        httpOnly: true,
+        sameSite: "lax",
+        sourceScheme: "secure",
+        sourcePort: 443,
+      },
+    ]);
+    await harness.callDurableObject(ref, "addPermissionsBatch", [
+      { origin: "https://notgithub.com", permission: "notifications", setting: "allow" },
+      { origin: "https://api.github.com", permission: "camera", setting: "block" },
+    ]);
+    await harness.callDurableObject(ref, "addHistoryBatch", [
+      {
+        url: "https://notgithub.com/path",
+        title: "Not GitHub",
+        visitCount: 1,
+        lastVisitTime: 100,
+      },
+      {
+        url: "https://docs.github.com/path",
+        title: "GitHub Docs",
+        visitCount: 1,
+        lastVisitTime: 200,
+      },
+    ]);
+
+    await expect(
+      harness.callDurableObject(ref, "getDomainReadiness", "github.com")
+    ).resolves.toMatchObject({
+      domain: "github.com",
+      cookies: 1,
+      password: false,
+      permissions: [{ permission: "camera", setting: "block" }],
+      recentHistoryCount: 1,
+      lastVisit: 200,
+    });
   }, 30_000);
 
   it("round-trips BrowserDataDO encrypted passwords in real workerd storage", async () => {

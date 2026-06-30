@@ -416,6 +416,9 @@ if (chrome) {
   console.log("Cookies imported and synced to browser session");
 }
 
+// Re-running startImport for the same browser/profile is incremental. It pulls
+// new or changed source records without duplicating existing stored data.
+
 // Step 2: Open browser — now has imported cookies
 const browser = await openPanel("https://github.com");
 const page = await browser.cdp.lightweightPage();

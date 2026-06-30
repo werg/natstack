@@ -41,6 +41,7 @@ export class BrowserHistoryRecorder {
         transition,
         typed: Boolean(intent.typed),
         visitTime: now,
+        panelId,
       })
       .catch((error: unknown) => {
         log.warn(

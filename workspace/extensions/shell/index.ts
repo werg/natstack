@@ -7,6 +7,7 @@ import { runExec } from "./exec.js";
 import { SessionManager } from "./sessionManager.js";
 import { prepareVscodeShellIntegrationLaunch } from "./shellIntegrationEnv.js";
 import { SnugServer } from "./snugServer.js";
+import { nodeSetInterval } from "./nodeTimers.js";
 import { execRequestSchema, openRequestSchema } from "./types.js";
 
 const BLOCKED_ENV = /^(LD_PRELOAD|NODE_OPTIONS|PYTHONSTARTUP|SHELL)$|^DYLD_/;
@@ -168,7 +169,7 @@ export async function activate(ctx: ExtensionContext) {
   await snug.start();
   const scratchDir = path.join(workspace.path, ".snug", "scratch");
   void sweepScratch(scratchDir);
-  const scratchJanitor = setInterval(() => void sweepScratch(scratchDir), SCRATCH_JANITOR_INTERVAL_MS);
+  const scratchJanitor = nodeSetInterval(() => void sweepScratch(scratchDir), SCRATCH_JANITOR_INTERVAL_MS);
   scratchJanitor.unref?.();
   if (sessions.ptyAvailable) {
     ctx.health.healthy({ summary: "Shell extension activated" });

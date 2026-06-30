@@ -59,6 +59,37 @@ export interface ImportResult {
     error?: string;
     warnings: string[];
 }
+export interface BrowserOpenTabsRequest {
+    browser: BrowserName;
+    /** Pass a DetectedProfile object or a profile path string. */
+    profile?: DetectedProfile | string;
+    /** Subset of tabs to open as panels (by window/tab index from getOpenTabs). */
+    selection?: Array<{ windowIndex: number; tabIndex: number }>;
+}
+export interface ImportedOpenTab {
+    url: string;
+    title?: string;
+    browser: BrowserName;
+    profilePath: string;
+    windowIndex: number;
+    tabIndex: number;
+    active: boolean;
+    pinned?: boolean;
+    lastAccessed?: number;
+}
+export interface OpenTabsAsPanelsResult {
+    tabsFound: number;
+    panelsOpened: number;
+    panels: Array<{
+        id: string;
+        title: string;
+        url: string;
+    }>;
+    skipped: Array<{
+        url: string;
+        reason: string;
+    }>;
+}
 export interface StoredBookmark {
     id: number;
     title: string;
@@ -130,15 +161,93 @@ export interface StoredAutofill {
     value: string;
     times_used: number;
 }
-export interface ImportLogEntry {
+export interface ImportRunSummary {
+    id: number;
+    run_id: number;
+    data_type: string;
+    scanned: number;
+    added: number;
+    changed: number;
+    unchanged: number;
+    skipped: number;
+    errors: number;
+}
+export interface ImportRun {
     id: number;
     browser: string;
     profile_path: string;
-    data_type: string;
-    items_imported: number;
-    items_skipped: number;
-    imported_at: number;
+    mode: string;
+    status: string;
+    started_at: number;
+    finished_at: number;
+    data_types: string;
     warnings: string | null;
+    summaries: ImportRunSummary[];
+}
+export interface PreviewDiffSample {
+    status: string;
+    label: string;
+    detail?: string;
+}
+export interface PreviewTypeResult {
+    dataType: string;
+    scanned: number;
+    added: number;
+    changed: number;
+    unchanged: number;
+    skipped: number;
+    samples: PreviewDiffSample[];
+    warnings: string[];
+    error?: string;
+}
+export interface ProfileImportState {
+    lastRun: ImportRun | null;
+    runs: ImportRun[];
+}
+export interface CookieDomainSummary {
+    domain: string;
+    count: number;
+    secure: number;
+    httpOnly: number;
+    sourceBrowser: string | null;
+    earliest: number | null;
+    latest: number | null;
+}
+export interface HistoryDomainSummary {
+    domain: string;
+    visits: number;
+    typed: number;
+    pages: number;
+    lastVisit: number;
+}
+export interface PasswordOriginSummary {
+    origin: string;
+    count: number;
+}
+export interface AutofillFieldSummary {
+    fieldName: string;
+    count: number;
+    timesUsed: number;
+}
+export interface DomainReadiness {
+    domain: string;
+    cookies: number;
+    password: boolean;
+    permissions: Array<{ permission: string; setting: string }>;
+    recentHistoryCount: number;
+    lastVisit: number | null;
+}
+export interface AutocompleteDebugSuggestion {
+    url?: string;
+    title?: string;
+    keyword?: string;
+    source: "history" | "bookmark" | "search-engine";
+    score: number;
+    reasons: string[];
+}
+export interface AutocompleteDebugResult {
+    query: string;
+    suggestions: AutocompleteDebugSuggestion[];
 }
 // ---- API ----
 export interface BrowserDataApi {
@@ -146,7 +255,19 @@ export interface BrowserDataApi {
     detectBrowsers(): Promise<DetectedBrowser[]>;
     // Import
     startImport(request: ImportRequest): Promise<ImportResult[]>;
-    getImportHistory(): Promise<ImportLogEntry[]>;
+    previewImport(request: ImportRequest): Promise<PreviewTypeResult[]>;
+    getImportHistory(): Promise<ImportRun[]>;
+    getProfileImportState(query: { browser: string; profilePath?: string; profile?: DetectedProfile | string }): Promise<ProfileImportState>;
+    getOpenTabs(request: BrowserOpenTabsRequest): Promise<ImportedOpenTab[]>;
+    openTabsAsPanels(request: BrowserOpenTabsRequest): Promise<OpenTabsAsPanelsResult>;
+    // Secret-free views
+    getCookieDomains(): Promise<CookieDomainSummary[]>;
+    getHistoryDomains(limit?: number): Promise<HistoryDomainSummary[]>;
+    getPasswordOrigins(): Promise<PasswordOriginSummary[]>;
+    getAutofillFieldNames(): Promise<AutofillFieldSummary[]>;
+    getDomainReadiness(domain: string): Promise<DomainReadiness>;
+    // Debug (gated — returns full URLs)
+    getAutocompleteDebug(query: string): Promise<AutocompleteDebugResult>;
     // Bookmarks
     getBookmarks(folderPath?: string): Promise<StoredBookmark[]>;
     addBookmark(bookmark: {

@@ -5,13 +5,13 @@
   "natstack": {
     "title": "Ad Blocking",
     "description": "Configure ad and tracker blocking",
-    "shell": true,
     "hiddenInLauncher": false,
     "autoArchiveWhenEmpty": true
   },
   "dependencies": {
-    "@workspace/react": "*",
-    "@workspace/runtime": "*",
+    "@workspace/react": "workspace:*",
+    "@workspace/runtime": "workspace:*",
     "@workspace/about-shared": "workspace:*"
-  }
+  },
+  "type": "module"
 }

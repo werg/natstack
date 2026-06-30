@@ -1408,9 +1408,12 @@ export async function initBuildSystemV2(
     async getAboutPages(): Promise<AboutPageMeta[]> {
       const pages: AboutPageMeta[] = [];
       for (const n of currentState().graph.allNodes()) {
-        if (!n.manifest.shell) continue;
+        // About pages are gated purely by location: any unit under workspace/about/.
+        // (No `shell` manifest flag — an about page is just a normal panel that
+        // lives in about/.)
+        if (!n.relativePath.startsWith("about/")) continue;
         pages.push({
-          name: n.relativePath.startsWith("about/") ? n.relativePath.slice(6) : n.relativePath,
+          name: n.relativePath.slice("about/".length),
           title: n.manifest.title ?? n.name,
           description: n.manifest.description,
           hiddenInLauncher: n.manifest.hiddenInLauncher ?? false,

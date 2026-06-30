@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Card, Flex, Heading, Text, Box, Link, Badge, Separator, DataList } from "@radix-ui/themes";
 import { rpc } from "@workspace/runtime";
 import { useIsMobile, usePaletteCommands } from "@workspace/react";
-import { mountAboutPanel, BrandMark } from "@workspace/about-shared/ui";
+import { AboutThemeRoot, BrandMark } from "@workspace/about-shared/ui";
 import type { AppInfo } from "@workspace/about-shared/types";
 
 function ConnectionBadge({ info }: { info: AppInfo }) {
@@ -107,4 +107,10 @@ function AboutPage() {
   );
 }
 
-mountAboutPanel(AboutPage);
+export default function AboutPanelRoot() {
+  return (
+    <AboutThemeRoot>
+      <AboutPage />
+    </AboutThemeRoot>
+  );
+}
